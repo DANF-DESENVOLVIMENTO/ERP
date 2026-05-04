@@ -200,11 +200,15 @@ class _ErpDanfAppState extends State<ErpDanfApp> {
     return ValueListenableBuilder<Object?>(
       valueListenable: widget.runtimeErrorListenable,
       builder: (context, runtimeError, _) {
-        final home = runtimeError != null
-            ? FirebaseConfigurationScreen(error: runtimeError)
-            : widget.firebaseInitializationError != null
+        final firebaseError =
+            widget.firebaseInitializationError ??
+            (_looksLikeFirebaseConfigurationError(runtimeError)
+                ? runtimeError
+                : null);
+
+        final home = firebaseError != null
             ? FirebaseConfigurationScreen(
-                error: widget.firebaseInitializationError!,
+                error: firebaseError,
               )
             : FirebaseAuthShell(
                 firebaseInitializationError: widget.firebaseInitializationError,
@@ -225,6 +229,19 @@ class _ErpDanfAppState extends State<ErpDanfApp> {
       },
     );
   }
+}
+
+bool _looksLikeFirebaseConfigurationError(Object? error) {
+  if (error == null) {
+    return false;
+  }
+
+  final message = error.toString().toLowerCase();
+  return message.contains('firebase') ||
+      message.contains('google-service-info') ||
+      message.contains('google_service_info') ||
+      message.contains('defaultfirebaseoptions') ||
+      message.contains('core/no-app');
 }
 
 ThemeData _buildTheme({required Color seed, required Brightness brightness}) {

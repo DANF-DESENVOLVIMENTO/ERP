@@ -85,4 +85,5 @@ class DefaultFirebaseOptions {
     storageBucket: 'erp-danf.firebasestorage.app',
     measurementId: 'G-QSCSQC1581',
   );
+
 }

@@ -635,64 +635,68 @@ class FirebaseConfigurationScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final card = Container(
+      padding: const EdgeInsets.all(28),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(28),
+        border: Border.all(color: const Color(0xFFE5E7EB)),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x120F172A),
+            blurRadius: 22,
+            offset: Offset(0, 10),
+          ),
+        ],
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: const Color(0xFFFFF7ED),
+              borderRadius: BorderRadius.circular(18),
+            ),
+            child: const Icon(
+              Icons.cloud_off_outlined,
+              color: Color(0xFFEA580C),
+              size: 30,
+            ),
+          ),
+          const SizedBox(height: 20),
+          const Text(
+            'Firebase não configurado',
+            style: TextStyle(fontSize: 28, fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 10),
+          const Text(
+            'O ERP usa o Firebase para sincronizar os dados e manter os usuários internos do sistema.',
+            style: TextStyle(fontSize: 16, color: Color(0xFF52605C)),
+          ),
+          const SizedBox(height: 18),
+          const Text(
+            'Próximo passo: execute `flutterfire configure` e gere os arquivos de configuração da plataforma.',
+            style: TextStyle(fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 16),
+          Text(
+            'Erro atual: $error',
+            style: const TextStyle(color: Color(0xFF7F1D1D)),
+          ),
+        ],
+      ),
+    );
+
     return Scaffold(
-      body: Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 620),
-          child: Padding(
+      body: SafeArea(
+        child: Center(
+          child: SingleChildScrollView(
             padding: const EdgeInsets.all(24),
-            child: Container(
-              padding: const EdgeInsets.all(28),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(28),
-                border: Border.all(color: const Color(0xFFE5E7EB)),
-                boxShadow: const [
-                  BoxShadow(
-                    color: Color(0x120F172A),
-                    blurRadius: 22,
-                    offset: Offset(0, 10),
-                  ),
-                ],
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(14),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFFFF7ED),
-                      borderRadius: BorderRadius.circular(18),
-                    ),
-                    child: const Icon(
-                      Icons.cloud_off_outlined,
-                      color: Color(0xFFEA580C),
-                      size: 30,
-                    ),
-                  ),
-                  const SizedBox(height: 20),
-                  const Text(
-                    'Firebase não configurado',
-                    style: TextStyle(fontSize: 28, fontWeight: FontWeight.w800),
-                  ),
-                  const SizedBox(height: 10),
-                  const Text(
-                    'O ERP usa o Firebase para sincronizar os dados e manter os usuários internos do sistema.',
-                    style: TextStyle(fontSize: 16, color: Color(0xFF52605C)),
-                  ),
-                  const SizedBox(height: 18),
-                  const Text(
-                    'Próximo passo: execute `flutterfire configure` e gere os arquivos de configuração da plataforma.',
-                    style: TextStyle(fontWeight: FontWeight.w600),
-                  ),
-                  const SizedBox(height: 16),
-                  Text(
-                    'Erro atual: $error',
-                    style: const TextStyle(color: Color(0xFF7F1D1D)),
-                  ),
-                ],
-              ),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 620),
+              child: card,
             ),
           ),
         ),
