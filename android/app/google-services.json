@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "829915151381",
+    "project_id": "erp-danf",
+    "storage_bucket": "erp-danf.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:829915151381:android:8a89a64a6d8e69426b621c",
+        "android_client_info": {
+          "package_name": "com.example.erp_danf"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCr7adhTqvVJN275Cf6TDWBjcVcKjMol7w"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

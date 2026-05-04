@@ -1,0 +1,17586 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io' as io;
+
+import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart';
+import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+import '../auth/firebase_auth_shell.dart';
+import '../auth/workspace_credentials.dart';
+import '../auth/workspace_session.dart';
+import '../data/mock_data.dart';
+import '../models/erp_models.dart';
+import '../services/company_drive_storage_service.dart';
+import '../services/firebase_workflow_repository.dart';
+
+Future<void> _openLocalFile(BuildContext context, String? filePath) async {
+  if (filePath == null || filePath.trim().isEmpty) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Arquivo local não disponível para abrir.')),
+    );
+    return;
+  }
+
+  if (kIsWeb) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Abertura de arquivo indisponível na web.')),
+    );
+    return;
+  }
+
+  final uri = Uri.tryParse(filePath);
+  final isRemoteUrl =
+      uri != null && (uri.scheme == 'http' || uri.scheme == 'https');
+
+  if (!isRemoteUrl) {
+    final file = io.File(filePath);
+    if (!await file.exists()) {
+      if (!context.mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Arquivo não encontrado no caminho salvo.'),
+        ),
+      );
+      return;
+    }
+  }
+
+  try {
+    if (io.Platform.isMacOS) {
+      await io.Process.start('open', [filePath]);
+    } else if (io.Platform.isWindows) {
+      await io.Process.start('cmd', [
+        '/c',
+        'start',
+        '',
+        filePath,
+      ], runInShell: true);
+    } else if (io.Platform.isLinux) {
+      await io.Process.start('xdg-open', [filePath]);
+    } else {
+      if (!context.mounted) {
+        return;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Plataforma sem suporte para abrir arquivo.'),
+        ),
+      );
+    }
+  } catch (_) {
+    if (!context.mounted) {
+      return;
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Não foi possível abrir o arquivo selecionado.'),
+      ),
+    );
+  }
+}
+
+String _stageOwnerSummaryLabel(WorkflowStage stage) {
+  return switch (stage) {
+    WorkflowStage.customerRegistration => 'Vendedor',
+    WorkflowStage.estimating => 'Orçamentista',
+    WorkflowStage.finance => 'Financeiro',
+    WorkflowStage.relationship => 'Relacionamento',
+    WorkflowStage.engineering => 'Engenharia',
+    WorkflowStage.assembly => 'Montagem',
+    WorkflowStage.installation => 'Instalação',
+  };
+}
+
+String _workspaceProfileOwnerLabel(EmployeeWorkspaceProfile profile) {
+  final name = profile.name.trim();
+  final login = profile.login.trim();
+
+  if (name.isEmpty && login.isEmpty) {
+    return '';
+  }
+
+  if (name.isEmpty) {
+    return login;
+  }
+
+  if (login.isEmpty) {
+    return name;
+  }
+
+  return '$name (@$login)';
+}
+
+List<EmployeeWorkspaceProfile> _assemblyAssignedProfilesForOrder(
+  WorkflowOrder order,
+  List<EmployeeWorkspaceProfile> profiles,
+) {
+  final assignedEmails = order.assemblyAssignedEmployeeEmails
+      .map((email) => email.trim().toLowerCase())
+      .where((email) => email.isNotEmpty)
+      .toSet();
+  if (assignedEmails.isEmpty) {
+    return const <EmployeeWorkspaceProfile>[];
+  }
+
+  return profiles
+      .where(
+        (profile) =>
+            assignedEmails.contains(profile.email.trim().toLowerCase()),
+      )
+      .toList(growable: false);
+}
+
+List<EmployeeWorkspaceProfile> _profilesForEmails(
+  List<String> emails,
+  List<EmployeeWorkspaceProfile> profiles,
+) {
+  final normalizedEmails = emails
+      .map((email) => email.trim().toLowerCase())
+      .where((email) => email.isNotEmpty)
+      .toList(growable: false);
+  if (normalizedEmails.isEmpty) {
+    return const <EmployeeWorkspaceProfile>[];
+  }
+
+  return normalizedEmails
+      .map((email) {
+        final matches = profiles.where(
+          (profile) => profile.email.trim().toLowerCase() == email,
+        );
+        return matches.isEmpty ? null : matches.first;
+      })
+      .whereType<EmployeeWorkspaceProfile>()
+      .toList(growable: false);
+}
+
+enum _DriveSyncStatus { checking, synced, offline, notConfigured }
+
+enum _InstallationProgressAction { complete, scheduleReturn }
+
+class ErpDanfApp extends StatefulWidget {
+  const ErpDanfApp({
+    super.key,
+    this.firebaseInitializationError,
+    required this.runtimeErrorListenable,
+  });
+
+  final Object? firebaseInitializationError;
+  final ValueListenable<Object?> runtimeErrorListenable;
+
+  @override
+  State<ErpDanfApp> createState() => _ErpDanfAppState();
+}
+
+class _ErpDanfAppState extends State<ErpDanfApp> {
+  ThemeMode _themeMode = ThemeMode.light;
+
+  void _setThemeMode(ThemeMode mode) {
+    if (_themeMode == mode) {
+      return;
+    }
+
+    setState(() {
+      _themeMode = mode;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    const seed = Color(0xFFB8C9BE);
+
+    return ValueListenableBuilder<Object?>(
+      valueListenable: widget.runtimeErrorListenable,
+      builder: (context, runtimeError, _) {
+        final home = runtimeError != null
+            ? FirebaseConfigurationScreen(error: runtimeError)
+            : widget.firebaseInitializationError != null
+            ? FirebaseConfigurationScreen(
+                error: widget.firebaseInitializationError!,
+              )
+            : FirebaseAuthShell(
+                firebaseInitializationError: widget.firebaseInitializationError,
+                authenticatedBuilder: (context) => ErpDashboardPage(
+                  themeMode: _themeMode,
+                  onThemeModeChanged: _setThemeMode,
+                ),
+              );
+
+        return MaterialApp(
+          debugShowCheckedModeBanner: false,
+          title: 'ERP DANF',
+          theme: _buildTheme(seed: seed, brightness: Brightness.light),
+          darkTheme: _buildTheme(seed: seed, brightness: Brightness.dark),
+          themeMode: _themeMode,
+          home: home,
+        );
+      },
+    );
+  }
+}
+
+ThemeData _buildTheme({required Color seed, required Brightness brightness}) {
+  final colorScheme = ColorScheme.fromSeed(
+    seedColor: seed,
+    brightness: brightness,
+  );
+  final isDark = brightness == Brightness.dark;
+
+  return ThemeData(
+    useMaterial3: true,
+    brightness: brightness,
+    colorScheme: colorScheme,
+    scaffoldBackgroundColor: isDark
+        ? const Color(0xFF16211E)
+        : const Color(0xFFF4F6F2),
+    cardColor: isDark ? const Color(0xFF24302C) : const Color(0xFFFFFEFC),
+    dialogTheme: DialogThemeData(
+      backgroundColor: isDark
+          ? const Color(0xFF24302C)
+          : const Color(0xFFFFFEFC),
+    ),
+    textTheme: (isDark ? ThemeData.dark() : ThemeData.light()).textTheme.apply(
+      bodyColor: isDark ? const Color(0xFFE7F1EC) : const Color(0xFF14211D),
+      displayColor: isDark ? const Color(0xFFE7F1EC) : const Color(0xFF14211D),
+    ),
+    inputDecorationTheme: InputDecorationTheme(
+      filled: true,
+      fillColor: isDark
+          ? const Color(0xFF2A3732)
+          : Colors.white.withValues(alpha: 0.92),
+      hintStyle: TextStyle(
+        color: isDark ? const Color(0xFF8FA39C) : const Color(0xFF7B8782),
+      ),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+      border: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(22),
+        borderSide: BorderSide(
+          color: isDark ? const Color(0xFF4D625B) : const Color(0xFFE4EAE5),
+        ),
+      ),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(22),
+        borderSide: BorderSide(
+          color: isDark ? const Color(0xFF4D625B) : const Color(0xFFE4EAE5),
+        ),
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(22),
+        borderSide: BorderSide(
+          color: isDark ? const Color(0xFFB9D7C4) : const Color(0xFFB9C9BF),
+        ),
+      ),
+    ),
+    filledButtonTheme: FilledButtonThemeData(
+      style: FilledButton.styleFrom(
+        backgroundColor: isDark
+            ? const Color(0xFFE7F1EC)
+            : const Color(0xFF14211D),
+        foregroundColor: isDark ? const Color(0xFF14211D) : Colors.white,
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        textStyle: const TextStyle(fontWeight: FontWeight.w700),
+      ),
+    ),
+    outlinedButtonTheme: OutlinedButtonThemeData(
+      style: OutlinedButton.styleFrom(
+        foregroundColor: isDark
+            ? const Color(0xFFE7F1EC)
+            : const Color(0xFF14211D),
+        side: BorderSide(
+          color: isDark ? const Color(0xFF5B7169) : const Color(0xFFD6DEDA),
+        ),
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        textStyle: const TextStyle(fontWeight: FontWeight.w700),
+      ),
+    ),
+    iconButtonTheme: IconButtonThemeData(
+      style: IconButton.styleFrom(
+        backgroundColor: isDark
+            ? const Color(0xFF2A3732)
+            : Colors.white.withValues(alpha: 0.94),
+        foregroundColor: isDark
+            ? const Color(0xFFE7F1EC)
+            : const Color(0xFF14211D),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+      ),
+    ),
+    snackBarTheme: SnackBarThemeData(
+      behavior: SnackBarBehavior.floating,
+      backgroundColor: isDark ? const Color(0xFF1A2522) : null,
+      contentTextStyle: TextStyle(
+        color: isDark ? const Color(0xFFE7F1EC) : null,
+      ),
+    ),
+  );
+}
+
+const Set<WorkflowStage> _workAndCatalogStages = {
+  WorkflowStage.estimating,
+  WorkflowStage.finance,
+  WorkflowStage.relationship,
+  WorkflowStage.engineering,
+  WorkflowStage.assembly,
+  WorkflowStage.installation,
+};
+
+enum _StageOrdersView { list, kanban }
+
+class ErpDashboardPage extends StatefulWidget {
+  const ErpDashboardPage({
+    super.key,
+    required this.themeMode,
+    required this.onThemeModeChanged,
+  });
+
+  final ThemeMode themeMode;
+  final ValueChanged<ThemeMode> onThemeModeChanged;
+
+  @override
+  State<ErpDashboardPage> createState() => _ErpDashboardPageState();
+}
+
+class _ErpDashboardPageState extends State<ErpDashboardPage> {
+  static const _platformLogStorageKey = 'erp_danf_platform_logs';
+  final FirebaseWorkflowRepository _repository = FirebaseWorkflowRepository();
+  List<WorkflowOrder> _orders = List.of(mockOrders);
+  List<EmployeeWorkspaceProfile> _workspaceProfiles = workspaceProfiles
+      .map((profile) => profile.copyWith())
+      .toList(growable: true);
+  List<_PlatformLogEntry> _platformLogs = const [];
+  StreamSubscription<List<WorkflowOrder>>? _ordersSubscription;
+  StreamSubscription<List<EmployeeWorkspaceProfile>>? _profilesSubscription;
+  final TextEditingController _customerSearchController =
+      TextEditingController();
+  String _selectedViewKey = 'workspace';
+  String? _selectedOrderCode;
+  String? _selectedManagedUserEmail;
+  int _customerRegistrationSubtab = 0;
+  final Map<WorkflowStage, int> _stageWorkspaceSubtabs = {
+    WorkflowStage.estimating: 0,
+    WorkflowStage.finance: 0,
+    WorkflowStage.relationship: 0,
+    WorkflowStage.engineering: 0,
+    WorkflowStage.assembly: 0,
+    WorkflowStage.installation: 0,
+  };
+  String _customerSearchQuery = '';
+  bool _ordersLoaded = false;
+  bool _profilesLoaded = false;
+  String? _busyMessage;
+  Object? _syncError;
+  bool _didCheckLocalDriveBackend = false;
+  _DriveSyncStatus _driveSyncStatus = _DriveSyncStatus.checking;
+  final Map<WorkflowStage, _StageOrdersView> _stageOrdersViews = {
+    for (final stage in workflowStages) stage: _StageOrdersView.kanban,
+  };
+  DateTime _selectedInstallationCalendarDate = DateUtils.dateOnly(
+    DateTime.now(),
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_loadPlatformLogs());
+    _startFirebaseSync();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_refreshDriveSyncStatus());
+    });
+  }
+
+  @override
+  void dispose() {
+    _ordersSubscription?.cancel();
+    _profilesSubscription?.cancel();
+    _customerSearchController.dispose();
+    _repository.dispose();
+    super.dispose();
+  }
+
+  void _setStateSafely(VoidCallback fn) {
+    if (!mounted) {
+      return;
+    }
+
+    final phase = SchedulerBinding.instance.schedulerPhase;
+    if (phase == SchedulerPhase.idle ||
+        phase == SchedulerPhase.postFrameCallbacks) {
+      setState(fn);
+      return;
+    }
+
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      setState(fn);
+    });
+  }
+
+  Future<void> _startFirebaseSync() async {
+    try {
+      await _repository.ensureWorkspaceProfiles(workspaceProfiles);
+    } catch (error) {
+      _setStateSafely(() {
+        _syncError = error;
+        _profilesLoaded = true;
+      });
+    }
+
+    _ordersSubscription = _repository.watchOrders().listen((orders) {
+      _setStateSafely(() {
+        _orders = orders;
+        _ordersLoaded = true;
+        _syncError = null;
+        if (_selectedOrderCode != null &&
+            !_orders.any((order) => order.code == _selectedOrderCode)) {
+          _selectedOrderCode = null;
+        }
+      });
+    }, onError: _handleSyncError);
+
+    _profilesSubscription = _repository.watchWorkspaceProfiles().listen((
+      profiles,
+    ) {
+      _setStateSafely(() {
+        _workspaceProfiles = profiles.isEmpty
+            ? workspaceProfiles.map((profile) => profile.copyWith()).toList()
+            : profiles;
+        _profilesLoaded = true;
+        _syncError = null;
+        if (_selectedManagedUserEmail != null &&
+            !_workspaceProfiles.any(
+              (profile) => profile.email == _selectedManagedUserEmail,
+            )) {
+          _selectedManagedUserEmail = null;
+        }
+      });
+    }, onError: _handleSyncError);
+  }
+
+  Future<void> _refreshDriveSyncStatus() async {
+    if (!_repository.isDriveUploadConfigured) {
+      if (mounted) {
+        setState(() {
+          _driveSyncStatus = _DriveSyncStatus.notConfigured;
+        });
+      }
+      return;
+    }
+
+    if (mounted) {
+      setState(() {
+        _driveSyncStatus = _DriveSyncStatus.checking;
+      });
+    }
+
+    if (!_repository.isUsingLocalDriveUpload) {
+      final availabilityError = await _repository
+          .checkDriveUploadAvailability();
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _driveSyncStatus = availabilityError == null
+            ? _DriveSyncStatus.synced
+            : _DriveSyncStatus.offline;
+      });
+      return;
+    }
+
+    if (_didCheckLocalDriveBackend) {
+      final availabilityError = await _repository
+          .checkDriveUploadAvailability();
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _driveSyncStatus = availabilityError == null
+            ? _DriveSyncStatus.synced
+            : _DriveSyncStatus.offline;
+      });
+      return;
+    }
+
+    _didCheckLocalDriveBackend = true;
+    final result = await _repository.ensureLocalDriveBackendRunning();
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _driveSyncStatus = result.isAvailable
+          ? _DriveSyncStatus.synced
+          : _DriveSyncStatus.offline;
+    });
+
+    if (result.isAvailable && result.didLaunch) {
+      _showAppMessage('Servidor local do Drive iniciado automaticamente.');
+      return;
+    }
+
+    if (!result.isAvailable) {
+      _showAppMessage(
+        'Servidor local do Drive indisponível. Detalhe: ${result.errorMessage}',
+        isError: true,
+      );
+    }
+  }
+
+  Future<void> _loadPlatformLogs() async {
+    final preferences = await SharedPreferences.getInstance();
+    final storedEntries =
+        preferences.getStringList(_platformLogStorageKey) ?? const [];
+    final loadedEntries = <_PlatformLogEntry>[];
+
+    for (final rawEntry in storedEntries) {
+      try {
+        final decoded = jsonDecode(rawEntry);
+        if (decoded is Map<String, dynamic>) {
+          final entry = _PlatformLogEntry.fromMap(decoded);
+          if (_shouldDisplayPlatformLogEntry(entry)) {
+            loadedEntries.add(entry);
+          }
+        }
+      } catch (_) {
+        continue;
+      }
+    }
+
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _platformLogs = loadedEntries;
+    });
+
+    await _persistPlatformLogs();
+  }
+
+  Future<void> _persistPlatformLogs() async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setStringList(
+      _platformLogStorageKey,
+      _platformLogs.map((entry) => jsonEncode(entry.toMap())).toList(),
+    );
+  }
+
+  Future<void> _appendPlatformLog({
+    required String action,
+    required String area,
+    String? details,
+  }) async {
+    final actor = _currentWorkspaceProfile.name.trim().isNotEmpty
+        ? _currentWorkspaceProfile.name.trim()
+        : (_currentUserEmail ?? 'Sistema');
+    final entry = _PlatformLogEntry(
+      actor: actor,
+      action: action,
+      area: area,
+      details: details,
+      createdAt: DateTime.now(),
+    );
+
+    if (!_shouldDisplayPlatformLogEntry(entry)) {
+      return;
+    }
+
+    if (mounted) {
+      setState(() {
+        _platformLogs = [
+          entry,
+          ..._platformLogs,
+        ].take(200).toList(growable: false);
+      });
+    } else {
+      _platformLogs = [
+        entry,
+        ..._platformLogs,
+      ].take(200).toList(growable: false);
+    }
+
+    await _persistPlatformLogs();
+  }
+
+  Future<void> _clearPlatformLogs() async {
+    if (mounted) {
+      setState(() {
+        _platformLogs = const [];
+      });
+    } else {
+      _platformLogs = const [];
+    }
+
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.remove(_platformLogStorageKey);
+  }
+
+  bool _shouldDisplayPlatformLogEntry(_PlatformLogEntry entry) {
+    return entry.area != 'Navegação' && entry.area != 'Sessão';
+  }
+
+  List<EmployeeWorkspaceProfile> _resolveMentionedProfiles(String message) {
+    final matches = RegExp(r'(?:^|\\s)@([A-Za-z0-9._-]+)')
+        .allMatches(message)
+        .map((match) => (match.group(1) ?? '').trim().toLowerCase())
+        .where((login) => login.isNotEmpty)
+        .toSet();
+    if (matches.isEmpty) {
+      return const <EmployeeWorkspaceProfile>[];
+    }
+
+    return _workspaceProfiles
+        .where(
+          (profile) => matches.contains(profile.login.trim().toLowerCase()),
+        )
+        .toList(growable: false);
+  }
+
+  int _unreadMentionCountForOrder(WorkflowOrder order) {
+    final email = _currentUserEmail;
+    if (email == null || email.isEmpty) {
+      return 0;
+    }
+
+    return order.conversationMessages.where((message) {
+      return message.mentionedUserEmails.contains(email) &&
+          !message.readByUserEmails.contains(email) &&
+          message.authorEmail != email;
+    }).length;
+  }
+
+  List<_OrderConversationNotification> get _conversationNotifications {
+    final email = _currentUserEmail;
+    if (email == null || email.isEmpty) {
+      return const <_OrderConversationNotification>[];
+    }
+
+    final notifications = <_OrderConversationNotification>[];
+    for (final order in _orders) {
+      for (final message in order.conversationMessages) {
+        if (!message.mentionedUserEmails.contains(email) ||
+            message.readByUserEmails.contains(email) ||
+            message.authorEmail == email) {
+          continue;
+        }
+        notifications.add(
+          _OrderConversationNotification(
+            orderCode: order.code,
+            orderLabel: _displayOrderCode(order, _orders),
+            workName: order.workName,
+            stage: order.currentStage,
+            authorName: message.authorName,
+            preview: message.message,
+            createdAt: message.createdAt,
+          ),
+        );
+      }
+    }
+
+    notifications.sort(
+      (left, right) => right.createdAt.compareTo(left.createdAt),
+    );
+    return notifications;
+  }
+
+  Future<void> _markConversationMentionsAsRead(String orderCode) async {
+    final email = _currentUserEmail;
+    if (email == null || email.isEmpty) {
+      return;
+    }
+
+    final selected = _findOrderByCode(orderCode);
+    if (selected == null) {
+      return;
+    }
+
+    var changed = false;
+    final updatedMessages = selected.conversationMessages
+        .map((message) {
+          if (!message.mentionedUserEmails.contains(email) ||
+              message.readByUserEmails.contains(email)) {
+            return message;
+          }
+
+          changed = true;
+          return message.copyWith(
+            readByUserEmails: {
+              ...message.readByUserEmails,
+              email,
+            }.toList(growable: false),
+          );
+        })
+        .toList(growable: false);
+
+    if (!changed) {
+      return;
+    }
+
+    final savedOrder = await _repository.saveOrder(
+      selected.copyWith(conversationMessages: updatedMessages),
+    );
+    _mergeOrderLocally(savedOrder);
+    _setStateSafely(() {});
+  }
+
+  Future<bool> _sendConversationMessage(
+    String orderCode,
+    String messageText,
+  ) async {
+    final selected = _findOrderByCode(orderCode);
+    if (selected == null) {
+      return false;
+    }
+
+    final normalizedMessage = messageText.trim();
+    if (normalizedMessage.isEmpty) {
+      return false;
+    }
+
+    final authorProfile = _currentWorkspaceProfile;
+    final authorEmail = (_currentUserEmail ?? authorProfile.email)
+        .trim()
+        .toLowerCase();
+    final mentionedProfiles = _resolveMentionedProfiles(normalizedMessage);
+    final mentionedEmails = mentionedProfiles
+        .map((profile) => profile.email.trim().toLowerCase())
+        .where((email) => email.isNotEmpty && email != authorEmail)
+        .toSet()
+        .toList(growable: false);
+    final newMessage = OrderConversationMessage(
+      id: DateTime.now().microsecondsSinceEpoch.toString(),
+      authorEmail: authorEmail,
+      authorName: authorProfile.name.trim().isEmpty
+          ? (authorProfile.login.trim().isEmpty
+                ? 'Colaborador'
+                : authorProfile.login)
+          : authorProfile.name.trim(),
+      message: normalizedMessage,
+      createdAt: DateTime.now(),
+      mentionedUserEmails: mentionedEmails,
+      readByUserEmails: authorEmail.isEmpty ? const [] : [authorEmail],
+    );
+    final updatedOrder = selected.copyWith(
+      conversationMessages: [...selected.conversationMessages, newMessage],
+    );
+
+    final savedOrder = await _runBusyTask(
+      () => _repository.saveOrder(updatedOrder),
+      busyMessage: 'Enviando mensagem...',
+      errorPrefix: 'Não foi possível enviar a mensagem',
+    );
+    if (savedOrder == null) {
+      return false;
+    }
+
+    _mergeOrderLocally(savedOrder);
+    unawaited(
+      _appendPlatformLog(
+        action: 'Comentou no card do cliente',
+        area: savedOrder.currentStage.title,
+        details: '${_displayOrderCode(savedOrder)} • ${savedOrder.workName}',
+      ),
+    );
+    return true;
+  }
+
+  Future<void> _openOrderDetailsScreen(
+    WorkflowOrder order, {
+    bool openConversationOnLoad = false,
+  }) async {
+    final orderStage = order.currentStage;
+    setState(() {
+      _selectedViewKey = 'stage:${orderStage.name}';
+      _selectedOrderCode = order.code;
+      if (_usesWorkAndCatalogSubtabs(orderStage)) {
+        _stageWorkspaceSubtabs[orderStage] = 0;
+      }
+    });
+
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        fullscreenDialog: true,
+        builder: (context) => _OrderDetailsScreen(
+          stage: orderStage,
+          orderCode: order.code,
+          showEngineeringChecklist: orderStage == WorkflowStage.engineering,
+          showFlowActions: _currentWorkspaceProfile.allowedStages.contains(
+            orderStage,
+          ),
+          resolveOrderByCode: _findOrderByCode,
+          getAllOrders: () =>
+              List<WorkflowOrder>.from(_orders, growable: false),
+          currentProfile: _currentWorkspaceProfile,
+          workspaceProfiles: _workspaceProfiles,
+          unreadMentionCount: _unreadMentionCountForOrder(order),
+          openConversationOnLoad: openConversationOnLoad,
+          onMarkConversationRead: _markConversationMentionsAsRead,
+          onSendConversationMessage: _sendConversationMessage,
+          onAdvanceOrder: () => _moveSelectedOrder(1),
+          onReturnOrder: () => _moveSelectedOrder(-1),
+          onSendToEngineering: () =>
+              _routeSelectedOrderToStage(WorkflowStage.engineering),
+          onSendToInstallation: () =>
+              _routeSelectedOrderToStage(WorkflowStage.installation),
+          onAttachMaterials: _attachMaterialsToSelectedOrder,
+          onAttachElectricalProject: _attachElectricalProjectToSelectedOrder,
+          onAttachPanelLayout: _attachPanelLayoutToSelectedOrder,
+          onAttachPushButtonTable: _attachPushButtonTableToSelectedOrder,
+          onAttachEngineeringData: _attachEngineeringDataToSelectedOrder,
+          onAttachConsolidatedProposal:
+              _attachConsolidatedProposalToSelectedOrder,
+          onAttachContract: _attachContractToSelectedOrder,
+          onAttachServiceOrderPdf: _attachServiceOrderPdfToSelectedOrder,
+          onToggleFinanceClientApproval:
+              _toggleFinanceClientApprovalForSelectedOrder,
+          onScheduleInstallation: _scheduleInstallationForSelectedOrder,
+          onToggleInstallationExecutionItem: _toggleInstallationExecutionItem,
+          onScheduleEngineeringActivity: _scheduleEngineeringActivity,
+          onUpdateEngineeringChecklistStatus: _updateEngineeringChecklistStatus,
+          onEditOrder:
+              !_currentWorkspaceProfile.isAdministrator || order.isServiceOrder
+              ? null
+              : () =>
+                    _openCustomerRegistrationForm(_findOrderByCode(order.code)),
+          onDeleteOrder: _currentWorkspaceProfile.isAdministrator
+              ? _deleteSelectedOrder
+              : null,
+        ),
+      ),
+    );
+  }
+
+  void _handleSyncError(Object error) {
+    _setStateSafely(() {
+      _syncError = error;
+      _ordersLoaded = true;
+      _profilesLoaded = true;
+    });
+  }
+
+  String? get _currentUserEmail =>
+      WorkspaceSession.instance.currentProfileId?.trim().toLowerCase();
+
+  EmployeeWorkspaceProfile? get _matchedWorkspaceProfile {
+    final email = _currentUserEmail;
+    if (email == null || email.isEmpty) {
+      return null;
+    }
+
+    for (final profile in _workspaceProfiles) {
+      if (profile.email.toLowerCase() == email) {
+        return profile;
+      }
+    }
+
+    return null;
+  }
+
+  bool get _currentUserHasWorkspaceAccess => _matchedWorkspaceProfile != null;
+
+  bool get _hasFirestorePermissionError {
+    final errorText = _syncError?.toString().toLowerCase() ?? '';
+    return errorText.contains('permission-denied');
+  }
+
+  List<_FlowNavItem> get _visibleTabs {
+    final profile = _currentWorkspaceProfile;
+    return [
+      const _FlowNavItem(
+        routeKey: 'workspace',
+        label: 'Área de trabalho',
+        icon: Icons.workspaces_outline,
+        color: Color(0xFF12372A),
+      ),
+      if (profile.isAdministrator)
+        const _FlowNavItem(
+          routeKey: 'log',
+          label: 'Log',
+          icon: Icons.receipt_long_outlined,
+          color: Color(0xFF475569),
+        ),
+      ...profile.allowedStages.map(
+        (stage) => _FlowNavItem(
+          routeKey: 'stage:${stage.name}',
+          label: stage.title,
+          icon: stage.icon,
+          color: stage.color,
+          stage: stage,
+        ),
+      ),
+      if (profile.isAdministrator)
+        const _FlowNavItem(
+          routeKey: 'admin',
+          label: 'Administração',
+          icon: Icons.admin_panel_settings_outlined,
+          color: Color(0xFF0F172A),
+        ),
+    ];
+  }
+
+  WorkflowStage? get _selectedStage {
+    if (!_selectedViewKey.startsWith('stage:')) {
+      return null;
+    }
+
+    final stageName = _selectedViewKey.replaceFirst('stage:', '');
+    return WorkflowStage.values.byName(stageName);
+  }
+
+  bool _usesWorkAndCatalogSubtabs(WorkflowStage stage) {
+    return _workAndCatalogStages.contains(stage);
+  }
+
+  int _stageWorkspaceSubtabIndex(WorkflowStage stage) {
+    return _stageWorkspaceSubtabs[stage] ?? 0;
+  }
+
+  List<WorkflowOrder> get _filteredOrders {
+    final stage = _selectedStage;
+    if (stage == null) {
+      return _orders;
+    }
+
+    if (stage == WorkflowStage.customerRegistration) {
+      return _orders
+          .where((order) => order.currentStage == stage)
+          .toList(growable: false);
+    }
+
+    if (_usesWorkAndCatalogSubtabs(stage) &&
+        _stageWorkspaceSubtabIndex(stage) == 0) {
+      return _orders
+          .where((order) => order.currentStage == stage)
+          .toList(growable: false);
+    }
+
+    return _orders;
+  }
+
+  List<WorkflowOrder> get _selectedOrderPool {
+    if (_selectedStage == WorkflowStage.customerRegistration &&
+        _customerRegistrationSubtab == 1) {
+      return _orders
+          .where(
+            (order) =>
+                order.currentStage != WorkflowStage.customerRegistration &&
+                _matchesCustomerSearch(order),
+          )
+          .toList(growable: false);
+    }
+
+    final stage = _selectedStage;
+    if (stage != null &&
+        _usesWorkAndCatalogSubtabs(stage) &&
+        _stageWorkspaceSubtabIndex(stage) == 1) {
+      return _orders
+          .where(
+            (order) =>
+                order.currentStage != WorkflowStage.customerRegistration &&
+                _matchesCustomerSearch(order),
+          )
+          .toList(growable: false);
+    }
+
+    return _filteredOrders;
+  }
+
+  EmployeeWorkspaceProfile get _currentWorkspaceProfile {
+    final matchedProfile = _matchedWorkspaceProfile;
+    if (matchedProfile != null) {
+      return matchedProfile;
+    }
+
+    return const EmployeeWorkspaceProfile(
+      email: '',
+      login: '',
+      name: 'Conta sem acesso',
+      cellPhone: '',
+      role: 'Aguardando liberação no Firebase',
+      isAdministrator: false,
+      allowedStages: [],
+      accent: Color(0xFF12372A),
+      accessCodeHash: '',
+    );
+  }
+
+  List<WorkspaceTask> get _currentWorkspaceTasks {
+    final profile = _currentWorkspaceProfile;
+    final email = _currentUserEmail;
+
+    return workspaceTasks
+        .where((task) {
+          final taskAssignedToUser =
+              email != null && task.assigneeEmail.toLowerCase() == email;
+          final taskWithinAllowedStages = profile.allowedStages.contains(
+            task.stage,
+          );
+
+          return taskWithinAllowedStages &&
+              (taskAssignedToUser ||
+                  profile.email.isEmpty ||
+                  profile.isAdministrator);
+        })
+        .toList(growable: false);
+  }
+
+  EmployeeWorkspaceProfile? get _selectedManagedProfile {
+    if (_workspaceProfiles.isEmpty) {
+      return null;
+    }
+
+    if (_selectedManagedUserEmail != null) {
+      final matched = _workspaceProfiles.where(
+        (profile) => profile.email == _selectedManagedUserEmail,
+      );
+      if (matched.isNotEmpty) {
+        return matched.first;
+      }
+    }
+
+    return _workspaceProfiles.first;
+  }
+
+  WorkflowOrder? get _selectedOrder {
+    final orders = _selectedOrderPool;
+    if (orders.isEmpty) {
+      return null;
+    }
+
+    if (_selectedOrderCode == null) {
+      return null;
+    }
+
+    final matched = orders.where((order) => order.code == _selectedOrderCode);
+    if (matched.isNotEmpty) {
+      return matched.first;
+    }
+
+    return null;
+  }
+
+  WorkflowOrder? _findOrderByCode(String code) {
+    final matched = _orders.where((order) => order.code == code);
+    if (matched.isEmpty) {
+      return null;
+    }
+
+    return matched.first;
+  }
+
+  void _selectTab(int index) {
+    final tabs = _visibleTabs;
+    if (index < 0 || index >= tabs.length) {
+      return;
+    }
+
+    final selectedTab = tabs[index];
+    if (_selectedViewKey == selectedTab.routeKey) {
+      return;
+    }
+
+    setState(() {
+      _selectedViewKey = selectedTab.routeKey;
+      _selectedOrderCode = null;
+      if (_selectedViewKey !=
+          'stage:${WorkflowStage.customerRegistration.name}') {
+        _customerRegistrationSubtab = 0;
+      }
+      for (final stage in _workAndCatalogStages) {
+        if (_selectedViewKey != 'stage:${stage.name}') {
+          _stageWorkspaceSubtabs[stage] = 0;
+        }
+      }
+    });
+  }
+
+  void _selectCustomerRegistrationSubtab(int index) {
+    setState(() {
+      _customerRegistrationSubtab = index;
+      _selectedOrderCode = null;
+    });
+  }
+
+  void _selectStageWorkspaceSubtab(WorkflowStage stage, int index) {
+    setState(() {
+      _stageWorkspaceSubtabs[stage] = index;
+      _selectedOrderCode = null;
+    });
+  }
+
+  void _selectOrder(WorkflowOrder order) {
+    setState(() {
+      _selectedOrderCode = order.code;
+    });
+  }
+
+  void _selectStageOrdersView(WorkflowStage stage, _StageOrdersView view) {
+    if (_stageOrdersViews[stage] == view) {
+      return;
+    }
+
+    setState(() {
+      _stageOrdersViews[stage] = view;
+    });
+  }
+
+  void _selectInstallationCalendarDate(DateTime date) {
+    setState(() {
+      _selectedInstallationCalendarDate = DateUtils.dateOnly(date);
+    });
+  }
+
+  void _selectManagedUser(String email) {
+    setState(() {
+      _selectedManagedUserEmail = email;
+    });
+  }
+
+  List<_ServiceOrderClientOption> get _serviceOrderClientOptions {
+    final latestByClientId = <String, WorkflowOrder>{};
+
+    for (final order in _orders) {
+      if (order.client.id.trim().isEmpty) {
+        continue;
+      }
+
+      if (latestByClientId.containsKey(order.client.id)) {
+        continue;
+      }
+
+      latestByClientId[order.client.id] = order;
+    }
+
+    final options = latestByClientId.values
+        .map(
+          (order) => _ServiceOrderClientOption(
+            client: order.client,
+            address: order.address,
+            referenceWorkName: order.workName,
+          ),
+        )
+        .toList(growable: true);
+
+    options.sort(
+      (left, right) => left.client.name.toLowerCase().compareTo(
+        right.client.name.toLowerCase(),
+      ),
+    );
+    return options;
+  }
+
+  Future<void> _openCreateManagedUserDialog() async {
+    final draft = await showDialog<_WorkspaceUserDraft>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => const _WorkspaceUserDialog(),
+    );
+
+    if (draft == null) {
+      return;
+    }
+
+    final normalizedLogin = draft.login.trim().toLowerCase();
+    if (_workspaceProfiles.any(
+      (profile) =>
+          profile.login.toLowerCase() == normalizedLogin ||
+          profile.email.toLowerCase() == normalizedLogin,
+    )) {
+      _showAppMessage(
+        'Já existe um usuário com esse login interno.',
+        isError: true,
+      );
+      return;
+    }
+
+    final allowedStages =
+        draft.isAdministrator
+              ? List<WorkflowStage>.from(workflowStages)
+              : List<WorkflowStage>.from(draft.allowedStages)
+          ..sort(
+            (left, right) => workflowStages
+                .indexOf(left)
+                .compareTo(workflowStages.indexOf(right)),
+          );
+
+    final profile = EmployeeWorkspaceProfile(
+      email: normalizedLogin,
+      login: normalizedLogin,
+      name: draft.name.trim(),
+      cellPhone: draft.cellPhone.trim(),
+      role: draft.role.trim(),
+      isAdministrator: draft.isAdministrator,
+      allowedStages: allowedStages,
+      accent: _nextWorkspaceProfileAccent(),
+      accessCodeHash: hashWorkspaceAccessCode(draft.accessCode),
+      photoFileName: draft.photoFileName,
+      photoFilePath: draft.photoFilePath,
+    );
+
+    setState(() {
+      _workspaceProfiles = [..._workspaceProfiles, profile];
+      _selectedManagedUserEmail = profile.email;
+    });
+
+    final savedProfile = await _runBusyTask(
+      () async {
+        return _repository.saveWorkspaceProfile(profile);
+      },
+      busyMessage: 'Criando usuário...',
+      successMessage: 'Usuário criado com sucesso.',
+      errorPrefix: 'Não foi possível criar o usuário',
+    );
+
+    if (savedProfile == null) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _workspaceProfiles = _workspaceProfiles
+            .where((item) => item.email != profile.email)
+            .toList(growable: false);
+        if (_selectedManagedUserEmail == profile.email) {
+          _selectedManagedUserEmail = null;
+        }
+      });
+      return;
+    }
+
+    setState(() {
+      _workspaceProfiles = _workspaceProfiles
+          .map((item) => item.email == savedProfile.email ? savedProfile : item)
+          .toList(growable: false);
+      _selectedManagedUserEmail = savedProfile.email;
+    });
+    unawaited(
+      _appendPlatformLog(
+        action: 'Criou usuário',
+        area: 'Administração',
+        details: '${savedProfile.name} (@${savedProfile.login})',
+      ),
+    );
+
+    if (!_repository.isDriveUploadConfigured &&
+        profile.photoFilePath != null &&
+        profile.photoFilePath!.trim().isNotEmpty) {
+      _showAppMessage(
+        'Usuário criado, mas a foto ficou salva apenas neste computador. Configure o backend do Drive para hospedá-la centralmente.',
+        isError: true,
+      );
+    }
+  }
+
+  Future<void> _openEditManagedUserDialog(
+    EmployeeWorkspaceProfile profile,
+  ) async {
+    final draft = await showDialog<_WorkspaceUserDraft>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => _WorkspaceUserDialog(initialProfile: profile),
+    );
+
+    if (draft == null) {
+      return;
+    }
+
+    final updatedStages =
+        draft.isAdministrator
+              ? List<WorkflowStage>.from(workflowStages)
+              : List<WorkflowStage>.from(draft.allowedStages)
+          ..sort(
+            (left, right) => workflowStages
+                .indexOf(left)
+                .compareTo(workflowStages.indexOf(right)),
+          );
+
+    final updatedProfile = profile.copyWith(
+      name: draft.name.trim(),
+      cellPhone: draft.cellPhone.trim(),
+      role: draft.role.trim(),
+      isAdministrator: draft.isAdministrator,
+      allowedStages: updatedStages,
+      accessCodeHash: draft.accessCode.trim().isEmpty
+          ? profile.accessCodeHash
+          : hashWorkspaceAccessCode(draft.accessCode),
+      photoFileName: draft.photoFileName,
+      photoFilePath: draft.photoFilePath,
+    );
+
+    setState(() {
+      _workspaceProfiles = _workspaceProfiles
+          .map(
+            (item) =>
+                item.email == updatedProfile.email ? updatedProfile : item,
+          )
+          .toList(growable: false);
+      _selectedManagedUserEmail = updatedProfile.email;
+    });
+
+    final savedProfile = await _runBusyTask(
+      () => _repository.saveWorkspaceProfile(updatedProfile),
+      busyMessage: 'Salvando usuário...',
+      successMessage: 'Usuário atualizado com sucesso.',
+      errorPrefix: 'Não foi possível salvar o usuário',
+    );
+
+    if (savedProfile == null) {
+      setState(() {
+        _workspaceProfiles = _workspaceProfiles
+            .map((item) => item.email == profile.email ? profile : item)
+            .toList(growable: false);
+      });
+      return;
+    }
+
+    setState(() {
+      _workspaceProfiles = _workspaceProfiles
+          .map((item) => item.email == savedProfile.email ? savedProfile : item)
+          .toList(growable: false);
+    });
+    unawaited(
+      _appendPlatformLog(
+        action: 'Atualizou usuário',
+        area: 'Administração',
+        details: '${savedProfile.name} (@${savedProfile.login})',
+      ),
+    );
+
+    if (!_repository.isDriveUploadConfigured &&
+        draft.photoFilePath != null &&
+        draft.photoFilePath!.trim().isNotEmpty &&
+        !_isRemoteFileLocation(draft.photoFilePath)) {
+      _showAppMessage(
+        'Usuário atualizado, mas a foto ficou salva apenas neste computador. Configure o backend do Drive para hospedá-la centralmente.',
+        isError: true,
+      );
+    }
+  }
+
+  Color _nextWorkspaceProfileAccent() {
+    const palette = <Color>[
+      Color(0xFF2563EB),
+      Color(0xFF4F46E5),
+      Color(0xFF15803D),
+      Color(0xFFB45309),
+      Color(0xFFC2410C),
+      Color(0xFF7C3AED),
+      Color(0xFF0F766E),
+      Color(0xFFBE185D),
+    ];
+
+    return palette[_workspaceProfiles.length % palette.length];
+  }
+
+  Future<void> _deleteManagedUser(EmployeeWorkspaceProfile profile) async {
+    if (!_currentWorkspaceProfile.isAdministrator) {
+      _showAppMessage(
+        'Apenas a conta administradora pode excluir usuários.',
+        isError: true,
+      );
+      return;
+    }
+
+    if (profile.email == _currentWorkspaceProfile.email) {
+      _showAppMessage(
+        'A conta administradora logada não pode excluir a si mesma.',
+        isError: true,
+      );
+      return;
+    }
+
+    final confirmed =
+        await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('Excluir usuário'),
+            content: Text(
+              'Deseja excluir o usuário "${profile.name}" (@${profile.login})? Esta ação remove o acesso ao sistema.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(false),
+                child: const Text('Cancelar'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(context).pop(true),
+                style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFFB91C1C),
+                  foregroundColor: Colors.white,
+                ),
+                child: const Text('Excluir'),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+
+    if (!confirmed) {
+      return;
+    }
+
+    final deleted = await _runBusyTask(
+      () async {
+        await _repository.deleteWorkspaceProfile(profile.email);
+        return true;
+      },
+      busyMessage: 'Excluindo usuário...',
+      successMessage: 'Usuário removido com sucesso.',
+      errorPrefix: 'Não foi possível excluir o usuário',
+    );
+
+    if (deleted == null) {
+      return;
+    }
+
+    setState(() {
+      _workspaceProfiles = _workspaceProfiles
+          .where((item) => item.email != profile.email)
+          .toList(growable: false);
+      if (_selectedManagedUserEmail == profile.email) {
+        _selectedManagedUserEmail = _workspaceProfiles.isEmpty
+            ? null
+            : _workspaceProfiles.first.email;
+      }
+    });
+    unawaited(
+      _appendPlatformLog(
+        action: 'Excluiu usuário',
+        area: 'Administração',
+        details: '${profile.name} (@${profile.login})',
+      ),
+    );
+  }
+
+  Future<void> _toggleManagedUserStage(
+    String email,
+    WorkflowStage stage,
+  ) async {
+    final profileIndex = _workspaceProfiles.indexWhere(
+      (profile) => profile.email == email,
+    );
+    if (profileIndex == -1) {
+      return;
+    }
+
+    final profile = _workspaceProfiles[profileIndex];
+    final updatedStages = List<WorkflowStage>.from(profile.allowedStages);
+    if (updatedStages.contains(stage)) {
+      if (updatedStages.length == 1) {
+        return;
+      }
+      updatedStages.remove(stage);
+    } else {
+      updatedStages.add(stage);
+    }
+
+    updatedStages.sort(
+      (left, right) =>
+          workflowStages.indexOf(left).compareTo(workflowStages.indexOf(right)),
+    );
+
+    setState(() {
+      _workspaceProfiles[profileIndex] = profile.copyWith(
+        allowedStages: updatedStages,
+      );
+    });
+
+    final saved = await _runBusyTask(
+      () async {
+        await _repository.updateAllowedStages(email, updatedStages);
+        return true;
+      },
+      busyMessage: 'Salvando permissões...',
+      successMessage: 'Permissões do usuário atualizadas.',
+      errorPrefix: 'Não foi possível salvar as permissões',
+    );
+    if (saved == null) {
+      return;
+    }
+
+    unawaited(
+      _appendPlatformLog(
+        action: 'Atualizou permissões de acesso',
+        area: 'Administração',
+        details:
+            '${profile.name} agora tem ${updatedStages.length} quadro(s) liberado(s)',
+      ),
+    );
+  }
+
+  void _mergeOrderLocally(WorkflowOrder order) {
+    final orderIndex = _orders.indexWhere((item) => item.code == order.code);
+    setState(() {
+      if (orderIndex == -1) {
+        _orders = [order, ..._orders];
+      } else {
+        _orders[orderIndex] = order;
+      }
+      _selectedOrderCode = order.code;
+    });
+  }
+
+  Future<void> _deleteSelectedOrder() async {
+    if (!_currentWorkspaceProfile.isAdministrator) {
+      _showAppMessage(
+        'Apenas a conta administradora pode excluir clientes.',
+        isError: true,
+      );
+      return;
+    }
+
+    final selected = _selectedOrder;
+    if (selected == null) {
+      return;
+    }
+
+    final confirmed =
+        await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('Excluir cliente'),
+            content: Text(
+              'Deseja excluir o cliente "${selected.workName}" (${selected.code})? Esta ação é irreversível.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(false),
+                child: const Text('Cancelar'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(context).pop(true),
+                style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFFB91C1C),
+                  foregroundColor: Colors.white,
+                ),
+                child: const Text('Excluir'),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+
+    if (!confirmed) {
+      return;
+    }
+
+    final deleted = await _runBusyTask(
+      () async {
+        await _repository.deleteOrder(selected.code);
+        return true;
+      },
+      busyMessage: 'Excluindo cliente...',
+      successMessage: '${selected.workName} removido com sucesso.',
+      errorPrefix: 'Não foi possível excluir o cliente',
+    );
+    if (deleted == null) {
+      return;
+    }
+
+    setState(() {
+      _orders = _orders
+          .where((order) => order.code != selected.code)
+          .toList(growable: false);
+      if (_selectedOrderCode == selected.code) {
+        _selectedOrderCode = null;
+      }
+    });
+    unawaited(
+      _appendPlatformLog(
+        action: 'Excluiu cadastro',
+        area: 'Cadastro de Clientes',
+        details: '${selected.code} • ${selected.workName}',
+      ),
+    );
+  }
+
+  void _showAppMessage(String message, {bool isError = false}) {
+    if (!mounted) {
+      return;
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: isError ? const Color(0xFFB91C1C) : null,
+      ),
+    );
+  }
+
+  bool _isRemoteFileLocation(String? location) {
+    final normalized = location?.trim();
+    if (normalized == null || normalized.isEmpty) {
+      return false;
+    }
+
+    final uri = Uri.tryParse(normalized);
+    return uri != null && (uri.scheme == 'http' || uri.scheme == 'https');
+  }
+
+  bool _orderHasLocalOnlyAttachments(WorkflowOrder order) {
+    final attachmentLocations = <String?>[
+      order.proposalFilePath,
+      order.detailFilePath,
+      order.materialFilePath,
+      order.consolidatedProposalFilePath,
+      order.contractFilePath,
+      order.electricalProjectFilePath,
+      order.engineeringDataFilePath,
+    ];
+
+    for (final location in attachmentLocations) {
+      final normalized = location?.trim();
+      if (normalized == null || normalized.isEmpty) {
+        continue;
+      }
+
+      if (!_isRemoteFileLocation(normalized)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  void _showDriveUploadConfigurationWarningIfNeeded(WorkflowOrder order) {
+    if (_repository.isDriveUploadConfigured) {
+      return;
+    }
+
+    if (!_orderHasLocalOnlyAttachments(order)) {
+      return;
+    }
+
+    _showAppMessage(
+      'Cadastro salvo, mas os anexos ficaram apenas neste computador. Configure COMPANY_DRIVE_UPLOAD_URL para enviar ao Drive.',
+      isError: true,
+    );
+  }
+
+  Future<bool> _promptDriveAuthenticationReconnect() async {
+    if (!mounted) {
+      return false;
+    }
+
+    final shouldReconnect =
+        await showDialog<bool>(
+          context: context,
+          barrierDismissible: false,
+          builder: (context) => AlertDialog(
+            title: const Text('Reconectar Google Drive'),
+            content: const Text(
+              'A autenticacao local do Google Drive expirou. O app pode abrir o login do Google Cloud CLI para reconectar agora.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(false),
+                child: const Text('Cancelar'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(context).pop(true),
+                child: const Text('Reconectar'),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+    if (!shouldReconnect) {
+      return false;
+    }
+    if (!mounted) {
+      return false;
+    }
+
+    final rootNavigator = Navigator.of(context, rootNavigator: true);
+    unawaited(
+      showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        useRootNavigator: true,
+        builder: (context) => PopScope(
+          canPop: false,
+          child: AlertDialog(
+            content: Row(
+              children: const [
+                SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: CircularProgressIndicator(strokeWidth: 2.5),
+                ),
+                SizedBox(width: 16),
+                Expanded(child: Text('Reconectando Google Drive...')),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await Future<void>.delayed(Duration.zero);
+
+    try {
+      final result = await _repository.reconnectLocalDriveAuthentication();
+      if (!mounted) {
+        return false;
+      }
+
+      if (!result.isSuccess) {
+        _showAppMessage(
+          result.errorMessage ??
+              'Nao foi possivel reautenticar o Google Drive.',
+          isError: true,
+        );
+        return false;
+      }
+
+      return true;
+    } finally {
+      if (rootNavigator.mounted && rootNavigator.canPop()) {
+        rootNavigator.pop();
+      }
+    }
+  }
+
+  Future<T?> _runBusyTask<T>(
+    Future<T> Function() action, {
+    required String busyMessage,
+    String? successMessage,
+    String errorPrefix = 'Não foi possível concluir a ação',
+    bool allowDriveReconnectRetry = true,
+  }) async {
+    if (mounted) {
+      setState(() {
+        _busyMessage = busyMessage;
+      });
+    }
+
+    try {
+      final result = await action();
+      if (successMessage != null) {
+        _showAppMessage(successMessage);
+      }
+      return result;
+    } on DriveAuthExpiredException {
+      if (allowDriveReconnectRetry &&
+          await _promptDriveAuthenticationReconnect()) {
+        return _runBusyTask(
+          action,
+          busyMessage: busyMessage,
+          successMessage: successMessage,
+          errorPrefix: errorPrefix,
+          allowDriveReconnectRetry: false,
+        );
+      }
+      _showAppMessage(
+        '$errorPrefix: A autenticacao local do Google Drive expirou.',
+        isError: true,
+      );
+      return null;
+    } catch (error) {
+      _showAppMessage('$errorPrefix: $error', isError: true);
+      return null;
+    } finally {
+      if (mounted) {
+        setState(() {
+          _busyMessage = null;
+        });
+      }
+    }
+  }
+
+  void _openOrderFromWorkspace(String orderCode) {
+    final matchedOrder = _orders.where((order) => order.code == orderCode);
+    if (matchedOrder.isEmpty) {
+      return;
+    }
+
+    final order = matchedOrder.first;
+    setState(() {
+      _selectedViewKey = 'stage:${order.currentStage.name}';
+      _selectedOrderCode = order.code;
+      if (order.currentStage == WorkflowStage.customerRegistration) {
+        _customerRegistrationSubtab = 0;
+      }
+      if (_usesWorkAndCatalogSubtabs(order.currentStage)) {
+        _stageWorkspaceSubtabs[order.currentStage] = 0;
+      }
+    });
+  }
+
+  void _signOut() {
+    WorkspaceSession.instance.signOut();
+  }
+
+  Widget _buildContentForTab(_FlowNavItem tab) {
+    if (tab.routeKey == 'workspace') {
+      return _WorkflowSection(
+        profile: _currentWorkspaceProfile,
+        tasks: _currentWorkspaceTasks,
+        allOrders: _orders,
+        onOpenTaskOrder: _openOrderFromWorkspace,
+      );
+    }
+
+    if (tab.routeKey == 'log') {
+      if (!_currentWorkspaceProfile.isAdministrator) {
+        return _WorkflowSection(
+          profile: _currentWorkspaceProfile,
+          tasks: _currentWorkspaceTasks,
+          allOrders: _orders,
+          onOpenTaskOrder: _openOrderFromWorkspace,
+        );
+      }
+
+      return _PlatformLogSection(
+        entries: _platformLogs,
+        onClearLogs: _clearPlatformLogs,
+      );
+    }
+
+    if (tab.routeKey == 'admin') {
+      return _AdminAccessSection(
+        currentProfile: _currentWorkspaceProfile,
+        profiles: _workspaceProfiles,
+        selectedProfile: _selectedManagedProfile,
+        onSelectProfile: _selectManagedUser,
+        onCreateProfile: _openCreateManagedUserDialog,
+        onEditProfile: _openEditManagedUserDialog,
+        currentUserEmail: _currentWorkspaceProfile.email,
+        onDeleteProfile: _deleteManagedUser,
+        onToggleStage: _toggleManagedUserStage,
+      );
+    }
+
+    final stage = tab.stage!;
+    final selectedOrderMatchesStage =
+        _selectedOrder != null && _selectedOrder!.currentStage == stage;
+    return _StageWorkspaceSection(
+      stage: stage,
+      currentProfile: _currentWorkspaceProfile,
+      canDeleteOrder: _currentWorkspaceProfile.isAdministrator,
+      orders: _orders,
+      selectedOrder: _selectedStage == stage ? _selectedOrder : null,
+      onOrderSelected: _selectOrder,
+      onOpenOrderDetails: _openOrderDetailsScreen,
+      onOpenOrderConversation: (order) =>
+          _openOrderDetailsScreen(order, openConversationOnLoad: true),
+      onAdvanceOrder: () => _moveSelectedOrder(1),
+      onReturnOrder: () => _moveSelectedOrder(-1),
+      onSendToEngineering: () =>
+          _routeSelectedOrderToStage(WorkflowStage.engineering),
+      onSendToInstallation: () =>
+          _routeSelectedOrderToStage(WorkflowStage.installation),
+      onAttachMaterials: _attachMaterialsToSelectedOrder,
+      onAttachElectricalProject: _attachElectricalProjectToSelectedOrder,
+      onAttachPanelLayout: _attachPanelLayoutToSelectedOrder,
+      onAttachPushButtonTable: _attachPushButtonTableToSelectedOrder,
+      onAttachEngineeringData: _attachEngineeringDataToSelectedOrder,
+      onAttachConsolidatedProposal: _attachConsolidatedProposalToSelectedOrder,
+      onAttachContract: _attachContractToSelectedOrder,
+      onAttachServiceOrderPdf: _attachServiceOrderPdfToSelectedOrder,
+      onToggleFinanceClientApproval:
+          _toggleFinanceClientApprovalForSelectedOrder,
+      onScheduleInstallation: _scheduleInstallationForSelectedOrder,
+      onToggleInstallationExecutionItem: _toggleInstallationExecutionItem,
+      onScheduleEngineeringActivity: _scheduleEngineeringActivity,
+      onUpdateEngineeringChecklistStatus: _updateEngineeringChecklistStatus,
+      onCreateServiceOrder: stage == WorkflowStage.relationship
+          ? _openServiceOrderForm
+          : null,
+      onCreateAdditionalProposal:
+          stage == WorkflowStage.customerRegistration &&
+              _customerRegistrationSubtab == 1 &&
+              _availableAdditionalProposalBaseOrders().isNotEmpty
+          ? _openAdditionalProposalSelectionFlow
+          : null,
+      onCreateOrder: stage == WorkflowStage.customerRegistration
+          ? _openCustomerRegistrationForm
+          : null,
+      onEditOrder:
+          stage == _selectedStage &&
+              _selectedOrder != null &&
+              selectedOrderMatchesStage &&
+              !_selectedOrder!.isServiceOrder
+          ? () => _openCustomerRegistrationForm(_selectedOrder)
+          : null,
+      onDeleteOrder:
+          stage == _selectedStage &&
+              _selectedOrder != null &&
+              selectedOrderMatchesStage
+          ? _deleteSelectedOrder
+          : null,
+      customerRegistrationSubtab: stage == WorkflowStage.customerRegistration
+          ? _customerRegistrationSubtab
+          : null,
+      onCustomerRegistrationSubtabChanged:
+          stage == WorkflowStage.customerRegistration
+          ? _selectCustomerRegistrationSubtab
+          : null,
+      stageWorkspaceSubtab: _usesWorkAndCatalogSubtabs(stage)
+          ? _stageWorkspaceSubtabIndex(stage)
+          : null,
+      onStageWorkspaceSubtabChanged: _usesWorkAndCatalogSubtabs(stage)
+          ? (index) => _selectStageWorkspaceSubtab(stage, index)
+          : null,
+      selectedOrdersView: _stageOrdersViews[stage] ?? _StageOrdersView.list,
+      onOrdersViewChanged: (view) => _selectStageOrdersView(stage, view),
+      selectedInstallationCalendarDate: _selectedInstallationCalendarDate,
+      onInstallationCalendarDateChanged: _selectInstallationCalendarDate,
+      customerSearchQuery: _customerSearchQuery,
+      customerSearchController: _customerSearchController,
+      onCustomerSearchChanged: (value) => setState(() {
+        _customerSearchQuery = value;
+        _selectedOrderCode = null;
+      }),
+      onClearCustomerSearch: () => setState(() {
+        _customerSearchController.clear();
+        _customerSearchQuery = '';
+        _selectedOrderCode = null;
+      }),
+      workspaceProfiles: _workspaceProfiles,
+    );
+  }
+
+  Future<void> _openCustomerRegistrationForm([WorkflowOrder? order]) async {
+    final draft = await showDialog<_CustomerRegistrationDraft>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => _CustomerRegistrationDialog(
+        initialDraft: order == null
+            ? null
+            : _CustomerRegistrationDraft(
+                workName: order.workName,
+                phone: order.client.phone,
+                address: order.address,
+                proposalFileName: order.proposalFileName,
+                proposalFilePath: order.proposalFilePath,
+                detailFileName: order.detailFileName,
+                detailFilePath: order.detailFilePath,
+              ),
+        isEditing: order != null,
+        allowProposalEdit: order?.currentStage != WorkflowStage.estimating,
+        allowDetailAccess:
+            order?.currentStage != WorkflowStage.estimating &&
+            order?.currentStage != WorkflowStage.relationship,
+      ),
+    );
+
+    if (draft == null) {
+      return;
+    }
+
+    final now = DateTime.now();
+    final creatorLabel = _currentOrderOwnerLabel();
+    if (order != null) {
+      final updatedOrder = order.copyWith(
+        client: order.client.copyWith(
+          name: draft.workName,
+          city: _cityFromAddress(draft.address),
+          phone: draft.phone,
+        ),
+        workName: draft.workName,
+        address: draft.address,
+        proposalFileName: draft.proposalFileName,
+        proposalFilePath: draft.proposalFilePath,
+        detailFileName: draft.detailFileName,
+        detailFilePath: draft.detailFilePath,
+        history: Map<WorkflowStage, String>.from(
+          order.history,
+        )..[order.currentStage] = 'Cadastro editado em ${_formatDateTime(now)}',
+      );
+
+      final savedOrder = await _runBusyTask(
+        () => _repository.saveOrder(updatedOrder),
+        busyMessage: 'Salvando cadastro...',
+        successMessage: '${updatedOrder.workName} atualizado.',
+        errorPrefix: 'Não foi possível salvar o cadastro',
+      );
+      if (savedOrder == null) {
+        return;
+      }
+
+      setState(() {
+        _selectedOrderCode = savedOrder.code;
+      });
+      _mergeOrderLocally(savedOrder);
+      _showDriveUploadConfigurationWarningIfNeeded(savedOrder);
+      unawaited(
+        _appendPlatformLog(
+          action: 'Editou cadastro',
+          area: 'Cadastro de Clientes',
+          details: '${savedOrder.code} • ${savedOrder.workName}',
+        ),
+      );
+      return;
+    }
+
+    final newClientId = _nextClientId();
+    final newOrderCode = _primaryProposalCode(newClientId);
+    final newOrder = WorkflowOrder(
+      code: newOrderCode,
+      client: ClientProfile(
+        id: newClientId,
+        name: draft.workName,
+        city: _cityFromAddress(draft.address),
+        segment: 'Cadastro inicial',
+        contact: 'A definir',
+        phone: draft.phone,
+        temperature: 'Novo',
+      ),
+      workName: draft.workName,
+      address: draft.address,
+      proposalFileName: draft.proposalFileName,
+      proposalFilePath: draft.proposalFilePath,
+      detailFileName: draft.detailFileName,
+      detailFilePath: draft.detailFilePath,
+      materialFileName: '',
+      materialFilePath: null,
+      consolidatedProposalFileName: '',
+      consolidatedProposalFilePath: null,
+      contractFileName: '',
+      contractFilePath: null,
+      electricalProjectFileName: '',
+      electricalProjectFilePath: null,
+      panelLayoutFileName: '',
+      panelLayoutFilePath: null,
+      pushButtonTableFileName: '',
+      pushButtonTableFilePath: null,
+      engineeringDataFileName: '',
+      engineeringDataFilePath: null,
+      engineeringChecklistStatuses: const {},
+      engineeringActivitySchedules: const {},
+      assemblyWorkflowStatus: AssemblyWorkflowStatus.waiting,
+      assemblyAssignedEmployeeEmails: const [],
+      currentStage: WorkflowStage.customerRegistration,
+      owner: creatorLabel,
+      stageOwners: {WorkflowStage.customerRegistration: creatorLabel},
+      proposalGroupCode: newOrderCode,
+      proposalVersion: 1,
+      kind: WorkflowOrderKind.standard,
+      serviceDescription: '',
+      serviceOrderFileName: '',
+      serviceOrderFilePath: null,
+      financeClientApproved: false,
+      installationWorkflowStatus: InstallationWorkflowStatus.waiting,
+      installationScheduledAt: null,
+      installationAssignedEmployeeEmails: const [],
+      installationAssignedTeam: '',
+      installationNotes: '',
+      installationVisitHistory: const [],
+      value: 0,
+      deadline: now.add(const Duration(days: 1)),
+      progress: 1 / workflowStages.length,
+      nextAction: WorkflowStage.customerRegistration.checklist.first,
+      blocker: 'Aguardando conferência do cadastro e anexos.',
+      tags: const ['Novo cadastro'],
+      conversationMessages: const [],
+      history: {
+        WorkflowStage.customerRegistration:
+            'Cadastro criado por $creatorLabel em ${_formatDateTime(now)}',
+      },
+    );
+
+    final savedOrder = await _runBusyTask(
+      () => _repository.saveOrder(newOrder),
+      busyMessage: 'Criando cadastro...',
+      successMessage: '${newOrder.workName} criado no cadastro do cliente.',
+      errorPrefix: 'Não foi possível criar o cadastro',
+    );
+    if (savedOrder == null) {
+      return;
+    }
+
+    setState(() {
+      _selectedViewKey = 'stage:${WorkflowStage.customerRegistration.name}';
+      _customerRegistrationSubtab = 0;
+      _selectedOrderCode = savedOrder.code;
+    });
+    _mergeOrderLocally(savedOrder);
+    _showDriveUploadConfigurationWarningIfNeeded(savedOrder);
+    unawaited(
+      _appendPlatformLog(
+        action: 'Criou cadastro',
+        area: 'Cadastro de Clientes',
+        details: '${savedOrder.code} • ${savedOrder.workName}',
+      ),
+    );
+  }
+
+  Future<void> _openServiceOrderForm() async {
+    final clientOptions = _serviceOrderClientOptions;
+    if (clientOptions.isEmpty) {
+      _showAppMessage(
+        'Cadastre pelo menos um cliente antes de criar uma ordem de serviço.',
+        isError: true,
+      );
+      return;
+    }
+
+    final draft = await showDialog<_ServiceOrderDraft>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => _ServiceOrderDialog(clients: clientOptions),
+    );
+
+    if (draft == null) {
+      return;
+    }
+
+    final now = DateTime.now();
+    final actorLabel = _currentOrderOwnerLabel();
+    final newOrderCode = _nextServiceOrderCode(draft.client.id);
+    final newOrder = WorkflowOrder(
+      code: newOrderCode,
+      client: draft.client,
+      workName: draft.serviceTitle.trim(),
+      address: draft.address.trim(),
+      proposalFileName: '',
+      proposalFilePath: null,
+      detailFileName: '',
+      detailFilePath: null,
+      materialFileName: '',
+      materialFilePath: null,
+      consolidatedProposalFileName: '',
+      consolidatedProposalFilePath: null,
+      contractFileName: '',
+      contractFilePath: null,
+      electricalProjectFileName: '',
+      electricalProjectFilePath: null,
+      panelLayoutFileName: '',
+      panelLayoutFilePath: null,
+      pushButtonTableFileName: '',
+      pushButtonTableFilePath: null,
+      engineeringDataFileName: '',
+      engineeringDataFilePath: null,
+      engineeringChecklistStatuses: const {},
+      engineeringActivitySchedules: const {},
+      assemblyWorkflowStatus: AssemblyWorkflowStatus.waiting,
+      assemblyAssignedEmployeeEmails: const [],
+      currentStage: WorkflowStage.estimating,
+      owner: actorLabel,
+      stageOwners: {
+        WorkflowStage.relationship: actorLabel,
+        WorkflowStage.estimating: actorLabel,
+      },
+      proposalGroupCode: newOrderCode,
+      proposalVersion: 1,
+      kind: WorkflowOrderKind.serviceOrder,
+      serviceDescription: draft.serviceDescription.trim(),
+      serviceOrderFileName: '',
+      serviceOrderFilePath: null,
+      financeClientApproved: false,
+      installationWorkflowStatus: InstallationWorkflowStatus.waiting,
+      installationScheduledAt: null,
+      installationAssignedEmployeeEmails: const [],
+      installationAssignedTeam: '',
+      installationNotes: '',
+      installationVisitHistory: const [],
+      value: 0,
+      deadline: now.add(const Duration(days: 2)),
+      progress: 2 / workflowStages.length,
+      nextAction: 'Emitir PDF da ordem de serviço',
+      blocker: 'Aguardando emissão da ordem de serviço pelo Orçamentista.',
+      tags: const ['Ordem de serviço'],
+      conversationMessages: const [],
+      history: {
+        WorkflowStage.relationship:
+            'OS criada por $actorLabel em ${_formatDateTime(now)}',
+        WorkflowStage.estimating:
+            'Encaminhada ao Orçamentista em ${_formatDateTime(now)}',
+      },
+    );
+
+    final savedOrder = await _runBusyTask(
+      () => _repository.saveOrder(newOrder),
+      busyMessage: 'Criando ordem de serviço...',
+      successMessage: 'Ordem de serviço criada e enviada ao Orçamentista.',
+      errorPrefix: 'Não foi possível criar a ordem de serviço',
+    );
+    if (savedOrder == null) {
+      return;
+    }
+
+    final canOpenEstimating = _currentWorkspaceProfile.allowedStages.contains(
+      WorkflowStage.estimating,
+    );
+    setState(() {
+      _selectedViewKey = canOpenEstimating
+          ? 'stage:${WorkflowStage.estimating.name}'
+          : 'stage:${WorkflowStage.relationship.name}';
+      _stageWorkspaceSubtabs[WorkflowStage.estimating] = 0;
+      _selectedOrderCode = savedOrder.code;
+    });
+    _mergeOrderLocally(savedOrder);
+    unawaited(
+      _appendPlatformLog(
+        action: 'Criou ordem de serviço',
+        area: 'Relacionamento',
+        details: '${savedOrder.code} • ${savedOrder.client.name}',
+      ),
+    );
+  }
+
+  Future<void> _scheduleInstallationForSelectedOrder() async {
+    final selected = _selectedOrder;
+    if (selected == null) {
+      return;
+    }
+
+    final existingPlannedVisit = _plannedInstallationVisitForSchedule(
+      selected,
+      selected.installationScheduledAt,
+    );
+
+    final draft = await showDialog<_InstallationScheduleDraft>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => _InstallationScheduleDialog(
+        order: selected,
+        initialDraft: _InstallationScheduleDraft(
+          scheduledAt:
+              selected.installationScheduledAt ??
+              DateTime(
+                DateTime.now().year,
+                DateTime.now().month,
+                DateTime.now().day + 1,
+                8,
+              ),
+          assignedTeam: '',
+          plannedItems: existingPlannedVisit?.plannedItems ?? const [],
+          notes: existingPlannedVisit?.notes ?? selected.installationNotes,
+        ),
+      ),
+    );
+
+    if (draft == null) {
+      return;
+    }
+
+    final hadSchedule = selected.installationScheduledAt != null;
+    final now = DateTime.now();
+    final nextVisitHistory = [
+      ...selected.installationVisitHistory,
+      if (hadSchedule)
+        _installationReportEntry(
+          order: selected,
+          scheduledAt: selected.installationScheduledAt!,
+          createdAt: now,
+          report:
+              'Reagendamento registrado para ${_formatDateTime(draft.scheduledAt)}.'
+              '${draft.notes.trim().isEmpty ? '' : ' Observações: ${draft.notes.trim()}'}',
+        ),
+      InstallationVisitLog(
+        scheduledAt: draft.scheduledAt,
+        employeeEmails: const [],
+        plannedItems: draft.plannedItems,
+        completedItems: const [],
+        notes: draft.notes.trim(),
+        createdAt: now,
+      ),
+    ];
+    final previewOrder = selected.copyWith(
+      installationWorkflowStatus: InstallationWorkflowStatus.scheduled,
+      installationScheduledAt: draft.scheduledAt,
+    );
+    final updatedOrder = selected.copyWith(
+      installationWorkflowStatus: InstallationWorkflowStatus.scheduled,
+      installationScheduledAt: draft.scheduledAt,
+      installationAssignedEmployeeEmails: const [],
+      installationAssignedTeam: '',
+      installationNotes: draft.notes.trim(),
+      installationVisitHistory: nextVisitHistory,
+      progress: _effectiveOrderProgress(previewOrder),
+      nextAction: _defaultNextActionForStage(
+        WorkflowStage.installation,
+        previewOrder,
+      ),
+      blocker: _installationWorkflowBlocker(
+        InstallationWorkflowStatus.scheduled,
+      ),
+      history: Map<WorkflowStage, String>.from(selected.history)
+        ..[WorkflowStage.installation] =
+            'Instalação agendada para ${_formatDateTime(draft.scheduledAt)}',
+    );
+
+    final savedOrder = await _runBusyTask(
+      () => _repository.saveOrder(updatedOrder),
+      busyMessage: 'Salvando agenda de instalação...',
+      successMessage: 'Calendário de instalação atualizado.',
+      errorPrefix: 'Não foi possível salvar a agenda de instalação',
+    );
+    if (savedOrder == null) {
+      return;
+    }
+
+    setState(() {
+      _selectedOrderCode = savedOrder.code;
+      _selectedInstallationCalendarDate = DateUtils.dateOnly(draft.scheduledAt);
+    });
+    _mergeOrderLocally(savedOrder);
+    unawaited(
+      _appendPlatformLog(
+        action: hadSchedule ? 'Reagendou instalação' : 'Agendou instalação',
+        area: 'Instalação',
+        details: '${savedOrder.code} • ${_formatDateTime(draft.scheduledAt)}',
+      ),
+    );
+  }
+
+  Future<List<String>?> _pickInstallationEmployees(WorkflowOrder order) async {
+    final eligibleProfiles = _installationEligibleProfiles();
+    if (eligibleProfiles.isEmpty) {
+      _showAppMessage(
+        'Nenhum colaborador está disponível para seleção.',
+        isError: true,
+      );
+      return null;
+    }
+
+    return showDialog<List<String>>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => _AssemblyTeamSelectionDialog(
+        profiles: eligibleProfiles,
+        initialSelectedEmails: order.installationAssignedEmployeeEmails,
+        title: 'Equipe da instalação',
+        subtitle: 'Selecione os funcionários que vão executar esta visita.',
+        emptySelectionMessage:
+            'Selecione pelo menos um funcionário da instalação.',
+      ),
+    );
+  }
+
+  Future<void> _startInstallationVisit() async {
+    final selected = _selectedOrder;
+    if (selected == null || selected.installationScheduledAt == null) {
+      return;
+    }
+
+    final assignedEmployeeEmails = await _pickInstallationEmployees(selected);
+    if (assignedEmployeeEmails == null || assignedEmployeeEmails.isEmpty) {
+      return;
+    }
+
+    final plannedVisit = _plannedInstallationVisitForSchedule(
+      selected,
+      selected.installationScheduledAt,
+    );
+    if (plannedVisit == null || plannedVisit.plannedItems.isEmpty) {
+      _showAppMessage(
+        'Cadastre os trabalhos e a observação da instalação antes de iniciar a visita.',
+        isError: true,
+      );
+      return;
+    }
+
+    final now = DateTime.now();
+    final nextVisitHistory = List<InstallationVisitLog>.from(
+      selected.installationVisitHistory,
+    );
+    final plannedVisitIndex = nextVisitHistory.lastIndexWhere(
+      (visit) =>
+          _isSameDateTime(
+            visit.scheduledAt,
+            selected.installationScheduledAt!,
+          ) &&
+          visit.plannedItems.isNotEmpty,
+    );
+    if (plannedVisitIndex == -1) {
+      _showAppMessage(
+        'Nao foi possivel localizar o planejamento desta visita.',
+        isError: true,
+      );
+      return;
+    }
+    nextVisitHistory[plannedVisitIndex] = nextVisitHistory[plannedVisitIndex]
+        .copyWith(employeeEmails: assignedEmployeeEmails, createdAt: now);
+    final previewOrder = selected.copyWith(
+      installationWorkflowStatus: InstallationWorkflowStatus.doing,
+      installationAssignedEmployeeEmails: assignedEmployeeEmails,
+      installationVisitHistory: nextVisitHistory,
+    );
+    final updatedOrder = selected.copyWith(
+      installationWorkflowStatus: InstallationWorkflowStatus.doing,
+      installationAssignedEmployeeEmails: assignedEmployeeEmails,
+      installationAssignedTeam: _profileNamesForEmails(assignedEmployeeEmails),
+      installationVisitHistory: nextVisitHistory,
+      progress: _effectiveOrderProgress(previewOrder),
+      nextAction: _defaultNextActionForStage(
+        WorkflowStage.installation,
+        previewOrder,
+      ),
+      blocker: _installationWorkflowBlocker(InstallationWorkflowStatus.doing),
+      history: Map<WorkflowStage, String>.from(selected.history)
+        ..[WorkflowStage.installation] =
+            'Visita iniciada em ${_formatDateTime(selected.installationScheduledAt!)}',
+    );
+
+    final savedOrder = await _runBusyTask(
+      () => _repository.saveOrder(updatedOrder),
+      busyMessage: 'Iniciando instalação...',
+      successMessage: 'Instalação em andamento.',
+      errorPrefix: 'Não foi possível iniciar a instalação',
+    );
+    if (savedOrder == null) {
+      return;
+    }
+
+    _mergeOrderLocally(savedOrder);
+    unawaited(
+      _appendPlatformLog(
+        action: 'Iniciou visita de instalação',
+        area: 'Instalação',
+        details:
+            '${_displayOrderCode(savedOrder)} • ${_formatDateTime(selected.installationScheduledAt!)}',
+      ),
+    );
+  }
+
+  String _profileNamesForEmails(List<String> emails) {
+    final normalizedEmails = emails
+        .map((email) => email.trim().toLowerCase())
+        .where((email) => email.isNotEmpty)
+        .toList(growable: false);
+    final names = <String>[];
+    for (final email in normalizedEmails) {
+      final profile = _workspaceProfiles.where(
+        (profile) => profile.email.trim().toLowerCase() == email,
+      );
+      if (profile.isEmpty) {
+        names.add(email);
+        continue;
+      }
+      final matched = profile.first;
+      names.add(matched.name.trim().isEmpty ? matched.login : matched.name);
+    }
+    return names.join(', ');
+  }
+
+  InstallationVisitLog _installationReportEntry({
+    required WorkflowOrder order,
+    required DateTime scheduledAt,
+    required DateTime createdAt,
+    required String report,
+  }) {
+    return InstallationVisitLog(
+      scheduledAt: scheduledAt,
+      employeeEmails: order.installationAssignedEmployeeEmails,
+      plannedItems: const [],
+      completedItems: const [],
+      notes: report,
+      createdAt: createdAt,
+    );
+  }
+
+  InstallationVisitLog? _plannedInstallationVisitForSchedule(
+    WorkflowOrder order,
+    DateTime? scheduledAt,
+  ) {
+    if (scheduledAt == null) {
+      return null;
+    }
+
+    for (
+      var index = order.installationVisitHistory.length - 1;
+      index >= 0;
+      index--
+    ) {
+      final visit = order.installationVisitHistory[index];
+      if (_isSameDateTime(visit.scheduledAt, scheduledAt) &&
+          visit.plannedItems.isNotEmpty) {
+        return visit;
+      }
+    }
+    return null;
+  }
+
+  int _activeInstallationVisitIndex(WorkflowOrder order) {
+    for (
+      var index = order.installationVisitHistory.length - 1;
+      index >= 0;
+      index--
+    ) {
+      final visit = order.installationVisitHistory[index];
+      if (visit.plannedItems.isNotEmpty && visit.employeeEmails.isNotEmpty) {
+        return index;
+      }
+    }
+    return -1;
+  }
+
+  bool _isSameDateTime(DateTime left, DateTime right) {
+    return left.year == right.year &&
+        left.month == right.month &&
+        left.day == right.day &&
+        left.hour == right.hour &&
+        left.minute == right.minute;
+  }
+
+  Future<void> _completeInstallation() async {
+    final selected = _selectedOrder;
+    if (selected == null) {
+      return;
+    }
+
+    final activeVisitIndex = _activeInstallationVisitIndex(selected);
+    if (activeVisitIndex == -1) {
+      _showAppMessage(
+        'Registre os trabalhos executados antes de concluir a instalação.',
+        isError: true,
+      );
+      return;
+    }
+
+    final activeVisit = selected.installationVisitHistory[activeVisitIndex];
+    final pendingItems = activeVisit.plannedItems
+        .where((item) => !activeVisit.completedItems.contains(item))
+        .toList(growable: false);
+    if (pendingItems.isNotEmpty) {
+      _showAppMessage(
+        'Marque todos os trabalhos executados ou agende retorno para concluir depois.',
+        isError: true,
+      );
+      return;
+    }
+
+    final now = DateTime.now();
+    final previewOrder = selected.copyWith(
+      installationWorkflowStatus: InstallationWorkflowStatus.done,
+    );
+    final completionReport = _installationReportEntry(
+      order: selected,
+      scheduledAt: selected.installationScheduledAt ?? now,
+      createdAt: now,
+      report:
+          'Conclusão registrada em ${_formatDateTime(now)}.'
+          '${selected.installationNotes.trim().isEmpty ? '' : ' Observações: ${selected.installationNotes.trim()}'}',
+    );
+    final updatedOrder = selected.copyWith(
+      installationWorkflowStatus: InstallationWorkflowStatus.done,
+      installationVisitHistory: [
+        ...selected.installationVisitHistory,
+        completionReport,
+      ],
+      progress: _effectiveOrderProgress(previewOrder),
+      nextAction: _defaultNextActionForStage(
+        WorkflowStage.installation,
+        previewOrder,
+      ),
+      blocker: _installationWorkflowBlocker(InstallationWorkflowStatus.done),
+      history: Map<WorkflowStage, String>.from(selected.history)
+        ..[WorkflowStage.installation] =
+            'Instalação concluída em ${_formatDateTime(now)}',
+    );
+
+    final savedOrder = await _runBusyTask(
+      () => _repository.saveOrder(updatedOrder),
+      busyMessage: 'Concluindo instalação...',
+      successMessage: 'Instalação concluída.',
+      errorPrefix: 'Não foi possível concluir a instalação',
+    );
+    if (savedOrder == null) {
+      return;
+    }
+
+    _mergeOrderLocally(savedOrder);
+  }
+
+  Future<void> _toggleInstallationExecutionItem(
+    int visitIndex,
+    String item,
+  ) async {
+    final selected = _selectedOrder;
+    if (selected == null || selected.installationVisitHistory.isEmpty) {
+      return;
+    }
+
+    final visits = List<InstallationVisitLog>.from(
+      selected.installationVisitHistory,
+    );
+    if (visitIndex < 0 || visitIndex >= visits.length) {
+      return;
+    }
+    final visit = visits[visitIndex];
+    final completedItems = visit.completedItems.toSet();
+    if (completedItems.contains(item)) {
+      completedItems.remove(item);
+    } else {
+      completedItems.add(item);
+    }
+    visits[visitIndex] = visit.copyWith(
+      completedItems: completedItems.toList(growable: false),
+    );
+
+    final savedOrder = await _runBusyTask(
+      () => _repository.saveOrder(
+        selected.copyWith(installationVisitHistory: visits),
+      ),
+      busyMessage: 'Atualizando execução da instalação...',
+      errorPrefix: 'Não foi possível atualizar a execução',
+    );
+    if (savedOrder == null) {
+      return;
+    }
+
+    _mergeOrderLocally(savedOrder);
+  }
+
+  Future<void> _handleInstallationInProgressAdvance() async {
+    final action = await showDialog<_InstallationProgressAction>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Instalação em andamento'),
+        content: const Text(
+          'Concluir a instalação ou agendar retorno para outro dia?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancelar'),
+          ),
+          OutlinedButton(
+            onPressed: () => Navigator.of(
+              context,
+            ).pop(_InstallationProgressAction.scheduleReturn),
+            child: const Text('Agendar retorno'),
+          ),
+          FilledButton(
+            onPressed: () =>
+                Navigator.of(context).pop(_InstallationProgressAction.complete),
+            child: const Text('Concluir'),
+          ),
+        ],
+      ),
+    );
+
+    if (action == _InstallationProgressAction.complete) {
+      await _completeInstallation();
+      return;
+    }
+
+    if (action == _InstallationProgressAction.scheduleReturn) {
+      await _scheduleInstallationForSelectedOrder();
+    }
+  }
+
+  Future<void> _scheduleEngineeringActivity(String taskKey) async {
+    final selected = _selectedOrder;
+    if (selected == null) {
+      return;
+    }
+
+    final task = _engineeringChecklistTaskByKey(taskKey);
+    if (task == null || !task.supportsScheduling) {
+      _showAppMessage(
+        'Essa atividade da engenharia não aceita agendamento.',
+        isError: true,
+      );
+      return;
+    }
+
+    final existingSchedule = selected.engineeringActivitySchedules[taskKey];
+    final draft = await showDialog<_EngineeringActivityScheduleDraft>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => _EngineeringActivityScheduleDialog(
+        order: selected,
+        task: task,
+        initialDraft: _EngineeringActivityScheduleDraft(
+          scheduledAt:
+              existingSchedule?.scheduledAt ??
+              DateTime(
+                DateTime.now().year,
+                DateTime.now().month,
+                DateTime.now().day + 1,
+                8,
+              ),
+          notes: existingSchedule?.notes ?? '',
+        ),
+      ),
+    );
+
+    if (draft == null) {
+      return;
+    }
+
+    final updatedSchedules =
+        Map<String, EngineeringTaskSchedule>.from(
+            selected.engineeringActivitySchedules,
+          )
+          ..[taskKey] = EngineeringTaskSchedule(
+            scheduledAt: draft.scheduledAt,
+            notes: draft.notes.trim(),
+          );
+    final updatedStatuses = Map<String, EngineeringChecklistStatus>.from(
+      selected.engineeringChecklistStatuses,
+    );
+    updatedStatuses[taskKey] = _normalizeEngineeringChecklistStatus(
+      updatedStatuses[taskKey] ?? EngineeringChecklistStatus.notStarted,
+    );
+
+    final historyMessage =
+        '${task.label} agendada para ${_formatDateTime(draft.scheduledAt)}';
+    final updatedOrder = selected.copyWith(
+      engineeringActivitySchedules: updatedSchedules,
+      engineeringChecklistStatuses: updatedStatuses,
+      nextAction: historyMessage,
+      blocker: 'Aguardando execução de atividade agendada pela Engenharia.',
+      history: Map<WorkflowStage, String>.from(selected.history)
+        ..[WorkflowStage.engineering] = historyMessage,
+    );
+
+    final savedOrder = await _runBusyTask(
+      () => _repository.saveOrder(updatedOrder),
+      busyMessage: 'Salvando agenda da engenharia...',
+      successMessage: 'Atividade da engenharia agendada.',
+      errorPrefix: 'Não foi possível salvar a agenda da engenharia',
+    );
+    if (savedOrder == null) {
+      return;
+    }
+
+    setState(() {
+      _selectedOrderCode = savedOrder.code;
+    });
+    _mergeOrderLocally(savedOrder);
+    unawaited(
+      _appendPlatformLog(
+        action: existingSchedule == null
+            ? 'Agendou atividade da engenharia'
+            : 'Reagendou atividade da engenharia',
+        area: 'Engenharia',
+        details:
+            '${_displayOrderCode(savedOrder)} • ${task.label} • ${_formatDateTime(draft.scheduledAt)}',
+      ),
+    );
+  }
+
+  String _defaultNextActionForStage(WorkflowStage stage, WorkflowOrder order) {
+    if (order.isServiceOrder) {
+      return switch (stage) {
+        WorkflowStage.estimating => 'Emitir PDF da ordem de serviço',
+        WorkflowStage.finance => 'Confirmar aprovação do cliente',
+        WorkflowStage.relationship =>
+          'Definir destino final da ordem de serviço',
+        WorkflowStage.engineering =>
+          _engineeringFlowSnapshot(order).currentTask?.label ??
+              'Liberar ordem para montagem',
+        WorkflowStage.assembly => switch (order.assemblyWorkflowStatus) {
+          AssemblyWorkflowStatus.waiting => 'Aguardando início da montagem',
+          AssemblyWorkflowStatus.doing => 'Executar montagem',
+          AssemblyWorkflowStatus.done =>
+            'Montagem concluída. Liberar para instalação',
+        },
+        WorkflowStage.installation => _installationNextAction(order),
+        _ => stage.checklist.first,
+      };
+    }
+
+    if (stage == WorkflowStage.engineering) {
+      return _engineeringFlowSnapshot(order).currentTask?.label ??
+          'Liberar ordem para montagem';
+    }
+
+    if (stage == WorkflowStage.assembly) {
+      return switch (order.assemblyWorkflowStatus) {
+        AssemblyWorkflowStatus.waiting => 'Aguardando início da montagem',
+        AssemblyWorkflowStatus.doing => 'Executar montagem',
+        AssemblyWorkflowStatus.done =>
+          'Montagem concluída. Liberar para instalação',
+      };
+    }
+
+    if (stage == WorkflowStage.installation) {
+      return _installationNextAction(order);
+    }
+
+    return stage.checklist.first;
+  }
+
+  String _assemblyWorkflowBlocker(AssemblyWorkflowStatus status) {
+    return switch (status) {
+      AssemblyWorkflowStatus.waiting => 'Aguardando início da Montagem.',
+      AssemblyWorkflowStatus.doing => 'Montagem em andamento.',
+      AssemblyWorkflowStatus.done =>
+        'Montagem concluída. Pronto para Instalação.',
+    };
+  }
+
+  String _installationWorkflowBlocker(InstallationWorkflowStatus status) {
+    return switch (status) {
+      InstallationWorkflowStatus.waiting =>
+        'Aguardando liberação da agenda de instalação.',
+      InstallationWorkflowStatus.scheduled =>
+        'Instalação agendada. Aguardando definição da equipe.',
+      InstallationWorkflowStatus.doing => 'Instalação em andamento em campo.',
+      InstallationWorkflowStatus.done => 'Instalação concluída.',
+    };
+  }
+
+  String _installationNextAction(WorkflowOrder order) {
+    return switch (order.installationWorkflowStatus) {
+      InstallationWorkflowStatus.waiting => 'Agendar instalação',
+      InstallationWorkflowStatus.scheduled => 'Selecionar equipe da instalação',
+      InstallationWorkflowStatus.doing => 'Concluir ou agendar retorno',
+      InstallationWorkflowStatus.done => 'Instalação concluída',
+    };
+  }
+
+  List<EmployeeWorkspaceProfile> _assemblyEligibleProfiles() {
+    final profiles = _workspaceProfiles
+        .where((profile) => profile.email.trim().isNotEmpty)
+        .toList(growable: false);
+    profiles.sort((left, right) {
+      final leftName = left.name.trim().isEmpty ? left.login : left.name;
+      final rightName = right.name.trim().isEmpty ? right.login : right.name;
+      return leftName.toLowerCase().compareTo(rightName.toLowerCase());
+    });
+    return profiles;
+  }
+
+  List<EmployeeWorkspaceProfile> _installationEligibleProfiles() {
+    final profiles = _workspaceProfiles
+        .where((profile) => profile.email.trim().isNotEmpty)
+        .toList(growable: false);
+    profiles.sort((left, right) {
+      final leftName = left.name.trim().isEmpty ? left.login : left.name;
+      final rightName = right.name.trim().isEmpty ? right.login : right.name;
+      return leftName.toLowerCase().compareTo(rightName.toLowerCase());
+    });
+    return profiles;
+  }
+
+  Future<void> _updateAssemblyWorkflowStatus(
+    AssemblyWorkflowStatus status, {
+    List<String>? assignedEmployeeEmails,
+  }) async {
+    final selected = _selectedOrder;
+    if (selected == null) {
+      return;
+    }
+
+    final now = DateTime.now();
+    final nextAssignedEmployeeEmails = status == AssemblyWorkflowStatus.waiting
+        ? const <String>[]
+        : assignedEmployeeEmails ??
+              List<String>.from(selected.assemblyAssignedEmployeeEmails);
+    final previewOrder = selected.copyWith(
+      assemblyWorkflowStatus: status,
+      assemblyAssignedEmployeeEmails: nextAssignedEmployeeEmails,
+    );
+    final updatedOrder = selected.copyWith(
+      assemblyWorkflowStatus: status,
+      assemblyAssignedEmployeeEmails: nextAssignedEmployeeEmails,
+      progress: _effectiveOrderProgress(previewOrder),
+      nextAction: _defaultNextActionForStage(
+        WorkflowStage.assembly,
+        previewOrder,
+      ),
+      blocker: _assemblyWorkflowBlocker(status),
+      history: Map<WorkflowStage, String>.from(selected.history)
+        ..[WorkflowStage.assembly] =
+            'Montagem marcada como ${status.title.toLowerCase()} em ${_formatDateTime(now)}',
+    );
+
+    final savedOrder = await _runBusyTask(
+      () => _repository.saveOrder(updatedOrder),
+      busyMessage: 'Atualizando status da montagem...',
+      successMessage: 'Status da montagem atualizado.',
+      errorPrefix: 'Não foi possível atualizar a montagem',
+    );
+    if (savedOrder == null) {
+      return;
+    }
+
+    _mergeOrderLocally(savedOrder);
+    unawaited(
+      _appendPlatformLog(
+        action: 'Atualizou status da montagem',
+        area: 'Montagem',
+        details:
+            '${_displayOrderCode(savedOrder)} • ${savedOrder.assemblyWorkflowStatus.title}',
+      ),
+    );
+  }
+
+  Future<List<String>?> _pickAssemblyEmployees(WorkflowOrder order) async {
+    final eligibleProfiles = _assemblyEligibleProfiles();
+    if (eligibleProfiles.isEmpty) {
+      _showAppMessage(
+        'Nenhum colaborador com permissão de Montagem está disponível para seleção.',
+        isError: true,
+      );
+      return null;
+    }
+
+    return showDialog<List<String>>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => _AssemblyTeamSelectionDialog(
+        profiles: eligibleProfiles,
+        initialSelectedEmails: order.assemblyAssignedEmployeeEmails,
+      ),
+    );
+  }
+
+  Future<void> _completeAssemblyAndAdvanceToInstallation() async {
+    final selected = _selectedOrder;
+    if (selected == null) {
+      return;
+    }
+
+    final now = DateTime.now();
+    final actorLabel = _currentOrderOwnerLabel();
+    final targetStage = WorkflowStage.installation;
+    final updatedHistory = Map<WorkflowStage, String>.from(selected.history)
+      ..[WorkflowStage.assembly] = 'Concluído em ${_formatDateTime(now)}'
+      ..[targetStage] = 'Recebido da Montagem em ${_formatDateTime(now)}';
+    final nextAssemblyStatus = AssemblyWorkflowStatus.done;
+    final previewOrder = selected.copyWith(
+      currentStage: targetStage,
+      assemblyWorkflowStatus: nextAssemblyStatus,
+      installationWorkflowStatus: InstallationWorkflowStatus.waiting,
+      installationScheduledAt: null,
+      clearInstallationScheduledAt: true,
+      installationAssignedEmployeeEmails: const [],
+    );
+
+    final updatedOrder = selected.copyWith(
+      currentStage: targetStage,
+      assemblyWorkflowStatus: nextAssemblyStatus,
+      installationWorkflowStatus: InstallationWorkflowStatus.waiting,
+      installationScheduledAt: null,
+      clearInstallationScheduledAt: true,
+      installationAssignedEmployeeEmails: const [],
+      installationAssignedTeam: '',
+      owner: actorLabel,
+      stageOwners: _updatedStageOwnersForAction(
+        selected,
+        WorkflowStage.assembly,
+        actorLabel,
+      ),
+      progress: _effectiveOrderProgress(previewOrder),
+      nextAction: _defaultNextActionForStage(targetStage, previewOrder),
+      blocker: _installationWorkflowBlocker(InstallationWorkflowStatus.waiting),
+      history: updatedHistory,
+    );
+
+    final savedOrder = await _runBusyTask(
+      () => _repository.saveOrder(updatedOrder),
+      busyMessage: 'Concluindo montagem e enviando para instalação...',
+      successMessage: 'Montagem concluída e pedido enviado para instalação.',
+      errorPrefix: 'Não foi possível concluir a montagem',
+    );
+    if (savedOrder == null) {
+      return;
+    }
+
+    setState(() {
+      _selectedViewKey = 'stage:${savedOrder.currentStage.name}';
+      _selectedOrderCode = savedOrder.code;
+    });
+    _mergeOrderLocally(savedOrder);
+    unawaited(
+      _appendPlatformLog(
+        action: 'Concluiu montagem e enviou para Instalação',
+        area: 'Instalação',
+        details: '${_displayOrderCode(savedOrder)} • ${savedOrder.workName}',
+      ),
+    );
+  }
+
+  WorkflowOrder _resolvePrimaryProposal(WorkflowOrder order) {
+    final proposalGroupCode = order.proposalGroupCode.trim();
+    if (proposalGroupCode.isEmpty) {
+      return order;
+    }
+
+    final groupedOrders = _orders
+        .where((item) => item.proposalGroupCode == proposalGroupCode)
+        .toList(growable: false);
+    if (groupedOrders.isEmpty) {
+      return order;
+    }
+
+    groupedOrders.sort((left, right) {
+      final versionCompare = left.proposalVersion.compareTo(
+        right.proposalVersion,
+      );
+      if (versionCompare != 0) {
+        return versionCompare;
+      }
+      return _extractOrderNumber(
+        left.code,
+      ).compareTo(_extractOrderNumber(right.code));
+    });
+    return groupedOrders.first;
+  }
+
+  List<WorkflowOrder> _availableAdditionalProposalBaseOrders() {
+    final primaryOrdersByGroup = <String, WorkflowOrder>{};
+    for (final order in _orders) {
+      if (order.isServiceOrder) {
+        continue;
+      }
+
+      final primaryOrder = _resolvePrimaryProposal(order);
+      final proposalGroupCode = primaryOrder.proposalGroupCode.trim().isEmpty
+          ? primaryOrder.code
+          : primaryOrder.proposalGroupCode.trim();
+      primaryOrdersByGroup[proposalGroupCode] = primaryOrder;
+    }
+
+    final availableOrders = primaryOrdersByGroup.values.toList(growable: false);
+    availableOrders.sort((left, right) {
+      final clientIdCompare = left.client.id.compareTo(right.client.id);
+      if (clientIdCompare != 0) {
+        return clientIdCompare;
+      }
+
+      final clientNameCompare = left.client.name.toLowerCase().compareTo(
+        right.client.name.toLowerCase(),
+      );
+      if (clientNameCompare != 0) {
+        return clientNameCompare;
+      }
+
+      return left.workName.toLowerCase().compareTo(
+        right.workName.toLowerCase(),
+      );
+    });
+    return availableOrders;
+  }
+
+  Future<void> _openAdditionalProposalSelectionFlow() async {
+    final availableOrders = _availableAdditionalProposalBaseOrders();
+    if (availableOrders.isEmpty) {
+      _showAppMessage(
+        'Nenhum cliente com proposta comercial disponível para gerar nova proposta.',
+        isError: true,
+      );
+      return;
+    }
+
+    WorkflowOrder? selectedOrder;
+    if (availableOrders.length == 1) {
+      selectedOrder = availableOrders.first;
+    } else {
+      selectedOrder = await showDialog<WorkflowOrder>(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) =>
+            _AdditionalProposalClientPickerDialog(baseOrders: availableOrders),
+      );
+    }
+
+    if (selectedOrder == null) {
+      return;
+    }
+
+    await _openAdditionalProposalForm(selectedOrder);
+  }
+
+  Future<void> _openAdditionalProposalForm(WorkflowOrder sourceOrder) async {
+    if (sourceOrder.isServiceOrder) {
+      _showAppMessage(
+        'Nova proposta vinculada está disponível apenas para propostas comerciais.',
+        isError: true,
+      );
+      return;
+    }
+
+    final primaryOrder = _resolvePrimaryProposal(sourceOrder);
+    final proposalGroupCode = primaryOrder.proposalGroupCode.trim().isEmpty
+        ? primaryOrder.code
+        : primaryOrder.proposalGroupCode;
+    final nextProposalVersion =
+        _orders
+            .where((order) => order.proposalGroupCode == proposalGroupCode)
+            .fold<int>(0, (highest, order) {
+              return order.proposalVersion > highest
+                  ? order.proposalVersion
+                  : highest;
+            }) +
+        1;
+
+    final draft = await showDialog<_AdditionalProposalDraft>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => _AdditionalProposalDialog(
+        baseOrder: primaryOrder,
+        proposalVersion: nextProposalVersion,
+      ),
+    );
+
+    if (draft == null) {
+      return;
+    }
+
+    final now = DateTime.now();
+    final creatorLabel = _currentOrderOwnerLabel();
+    final newOrderCode = _proposalCodeForClient(
+      primaryOrder.client.id,
+      proposalVersion: nextProposalVersion,
+    );
+    final newOrder = WorkflowOrder(
+      code: newOrderCode,
+      client: primaryOrder.client,
+      workName: draft.workName.trim(),
+      address: draft.address.trim(),
+      proposalFileName: draft.proposalFileName.trim(),
+      proposalFilePath: draft.proposalFilePath,
+      detailFileName: primaryOrder.detailFileName,
+      detailFilePath: primaryOrder.detailFilePath,
+      materialFileName: '',
+      materialFilePath: null,
+      consolidatedProposalFileName: '',
+      consolidatedProposalFilePath: null,
+      contractFileName: '',
+      contractFilePath: null,
+      electricalProjectFileName: '',
+      electricalProjectFilePath: null,
+      panelLayoutFileName: '',
+      panelLayoutFilePath: null,
+      pushButtonTableFileName: '',
+      pushButtonTableFilePath: null,
+      engineeringDataFileName: '',
+      engineeringDataFilePath: null,
+      engineeringChecklistStatuses: const {},
+      engineeringActivitySchedules: const {},
+      assemblyWorkflowStatus: AssemblyWorkflowStatus.waiting,
+      assemblyAssignedEmployeeEmails: const [],
+      currentStage: WorkflowStage.customerRegistration,
+      owner: creatorLabel,
+      stageOwners: {WorkflowStage.customerRegistration: creatorLabel},
+      proposalGroupCode: proposalGroupCode,
+      proposalVersion: nextProposalVersion,
+      kind: WorkflowOrderKind.standard,
+      serviceDescription: '',
+      serviceOrderFileName: '',
+      serviceOrderFilePath: null,
+      financeClientApproved: false,
+      installationWorkflowStatus: InstallationWorkflowStatus.waiting,
+      installationScheduledAt: null,
+      installationAssignedEmployeeEmails: const [],
+      installationAssignedTeam: '',
+      installationNotes: '',
+      installationVisitHistory: const [],
+      value: 0,
+      deadline: now.add(const Duration(days: 1)),
+      progress: 1 / workflowStages.length,
+      nextAction: WorkflowStage.customerRegistration.checklist.first,
+      blocker:
+          'Nova proposta vinculada criada para o cliente principal. Aguardando conferência do cadastro.',
+      tags: ['Proposta $nextProposalVersion', 'Cliente existente'],
+      conversationMessages: const [],
+      history: {
+        WorkflowStage.customerRegistration:
+            'Proposta $nextProposalVersion criada por $creatorLabel em ${_formatDateTime(now)}',
+      },
+    );
+
+    final savedOrder = await _runBusyTask(
+      () => _repository.saveOrder(newOrder),
+      busyMessage: 'Criando nova proposta...',
+      successMessage:
+          'Proposta $nextProposalVersion criada e vinculada ao card principal.',
+      errorPrefix: 'Não foi possível criar a nova proposta',
+    );
+    if (savedOrder == null) {
+      return;
+    }
+
+    setState(() {
+      _selectedViewKey = 'stage:${WorkflowStage.customerRegistration.name}';
+      _customerRegistrationSubtab = 0;
+      _selectedOrderCode = savedOrder.code;
+    });
+    _mergeOrderLocally(savedOrder);
+    _showDriveUploadConfigurationWarningIfNeeded(savedOrder);
+    unawaited(
+      _appendPlatformLog(
+        action: 'Criou nova proposta vinculada',
+        area: 'Cadastro de Clientes',
+        details: '${savedOrder.code} • Proposta ${savedOrder.proposalVersion}',
+      ),
+    );
+  }
+
+  Future<void> _moveSelectedOrder(int direction) async {
+    final selected = _selectedOrder;
+    if (selected == null) {
+      return;
+    }
+
+    if (direction > 0 && selected.currentStage == WorkflowStage.estimating) {
+      if (selected.isServiceOrder &&
+          selected.serviceOrderFileName.trim().isEmpty) {
+        _showAppMessage(
+          'Anexe o PDF da ordem de serviço no Orçamentista antes de avançar a etapa.',
+          isError: true,
+        );
+        return;
+      }
+
+      if (!selected.isServiceOrder &&
+          selected.materialFileName.trim().isEmpty) {
+        _showAppMessage(
+          'Adicione o arquivo Materiais no Orçamentista antes de avançar a etapa.',
+          isError: true,
+        );
+        return;
+      }
+    }
+
+    if (direction > 0 &&
+        selected.currentStage == WorkflowStage.finance &&
+        selected.isServiceOrder &&
+        !selected.financeClientApproved) {
+      _showAppMessage(
+        'O Financeiro precisa confirmar a aprovação do cliente antes de avançar a OS.',
+        isError: true,
+      );
+      return;
+    }
+
+    if (direction > 0 && selected.currentStage == WorkflowStage.engineering) {
+      final flowSnapshot = _engineeringFlowSnapshot(selected);
+      if (!flowSnapshot.isComplete && flowSnapshot.currentTask != null) {
+        await _updateEngineeringChecklistStatus(
+          flowSnapshot.currentTask!.key,
+          EngineeringChecklistStatus.done,
+        );
+        return;
+      }
+    }
+
+    if (selected.currentStage == WorkflowStage.assembly) {
+      if (direction > 0) {
+        if (selected.assemblyWorkflowStatus == AssemblyWorkflowStatus.waiting) {
+          final assignedEmployeeEmails = await _pickAssemblyEmployees(selected);
+          if (assignedEmployeeEmails == null ||
+              assignedEmployeeEmails.isEmpty) {
+            return;
+          }
+          await _updateAssemblyWorkflowStatus(
+            AssemblyWorkflowStatus.doing,
+            assignedEmployeeEmails: assignedEmployeeEmails,
+          );
+          return;
+        }
+        if (selected.assemblyWorkflowStatus == AssemblyWorkflowStatus.doing) {
+          await _completeAssemblyAndAdvanceToInstallation();
+          return;
+        }
+        if (selected.assemblyWorkflowStatus == AssemblyWorkflowStatus.done) {
+          await _completeAssemblyAndAdvanceToInstallation();
+          return;
+        }
+      } else {
+        if (selected.assemblyWorkflowStatus == AssemblyWorkflowStatus.done) {
+          await _updateAssemblyWorkflowStatus(AssemblyWorkflowStatus.doing);
+          return;
+        }
+        if (selected.assemblyWorkflowStatus == AssemblyWorkflowStatus.doing) {
+          await _updateAssemblyWorkflowStatus(AssemblyWorkflowStatus.waiting);
+          return;
+        }
+      }
+    }
+
+    if (selected.currentStage == WorkflowStage.installation) {
+      if (direction > 0) {
+        if (selected.installationWorkflowStatus ==
+            InstallationWorkflowStatus.waiting) {
+          await _scheduleInstallationForSelectedOrder();
+          return;
+        }
+        if (selected.installationWorkflowStatus ==
+            InstallationWorkflowStatus.scheduled) {
+          await _startInstallationVisit();
+          return;
+        }
+        if (selected.installationWorkflowStatus ==
+            InstallationWorkflowStatus.doing) {
+          await _handleInstallationInProgressAdvance();
+          return;
+        }
+      } else {
+        if (selected.installationWorkflowStatus ==
+            InstallationWorkflowStatus.doing) {
+          await _scheduleInstallationForSelectedOrder();
+          return;
+        }
+        if (selected.installationWorkflowStatus ==
+            InstallationWorkflowStatus.scheduled) {
+          final updatedOrder = selected.copyWith(
+            installationWorkflowStatus: InstallationWorkflowStatus.waiting,
+            clearInstallationScheduledAt: true,
+            installationAssignedEmployeeEmails: const [],
+            installationAssignedTeam: '',
+            progress: _effectiveOrderProgress(
+              selected.copyWith(
+                installationWorkflowStatus: InstallationWorkflowStatus.waiting,
+                clearInstallationScheduledAt: true,
+                installationAssignedEmployeeEmails: const [],
+                installationAssignedTeam: '',
+              ),
+            ),
+            nextAction: 'Agendar instalação',
+            blocker: _installationWorkflowBlocker(
+              InstallationWorkflowStatus.waiting,
+            ),
+          );
+          final savedOrder = await _runBusyTask(
+            () => _repository.saveOrder(updatedOrder),
+            busyMessage: 'Retornando instalação...',
+            errorPrefix: 'Não foi possível retornar a instalação',
+          );
+          if (savedOrder != null) {
+            _mergeOrderLocally(savedOrder);
+          }
+          return;
+        }
+      }
+    }
+
+    final currentIndex = workflowStages.indexOf(selected.currentStage);
+    final nextIndex = (currentIndex + direction).clamp(
+      0,
+      workflowStages.length - 1,
+    );
+    if (nextIndex == currentIndex) {
+      return;
+    }
+
+    final now = DateTime.now();
+    final actorLabel = _currentOrderOwnerLabel();
+    final updatedHistory = Map<WorkflowStage, String>.from(selected.history)
+      ..[selected.currentStage] = 'Concluído em ${_formatDateTime(now)}';
+    if (direction > 0) {
+      updatedHistory[workflowStages[nextIndex]] =
+          'Em andamento desde ${_formatDateTime(now)}';
+    } else {
+      updatedHistory[workflowStages[nextIndex]] =
+          'Reaberto em ${_formatDateTime(now)}';
+    }
+    final nextStage = workflowStages[nextIndex];
+    final nextAssemblyStatus = nextStage == WorkflowStage.assembly
+        ? AssemblyWorkflowStatus.waiting
+        : selected.assemblyWorkflowStatus;
+    final nextAssemblyAssignedEmployeeEmails =
+        nextStage == WorkflowStage.assembly
+        ? const <String>[]
+        : selected.assemblyAssignedEmployeeEmails;
+    final nextInstallationStatus = nextStage == WorkflowStage.installation
+        ? InstallationWorkflowStatus.waiting
+        : selected.installationWorkflowStatus;
+    final nextInstallationScheduledAt = nextStage == WorkflowStage.installation
+        ? null
+        : selected.installationScheduledAt;
+    final nextInstallationAssignedEmployeeEmails =
+        nextStage == WorkflowStage.installation
+        ? const <String>[]
+        : selected.installationAssignedEmployeeEmails;
+    final previewOrder = selected.copyWith(
+      currentStage: nextStage,
+      assemblyWorkflowStatus: nextAssemblyStatus,
+      assemblyAssignedEmployeeEmails: nextAssemblyAssignedEmployeeEmails,
+      installationWorkflowStatus: nextInstallationStatus,
+      installationScheduledAt: nextInstallationScheduledAt,
+      clearInstallationScheduledAt: nextStage == WorkflowStage.installation,
+      installationAssignedEmployeeEmails:
+          nextInstallationAssignedEmployeeEmails,
+    );
+
+    final updatedOrder = selected.copyWith(
+      currentStage: nextStage,
+      assemblyWorkflowStatus: nextAssemblyStatus,
+      assemblyAssignedEmployeeEmails: nextAssemblyAssignedEmployeeEmails,
+      installationWorkflowStatus: nextInstallationStatus,
+      installationScheduledAt: nextInstallationScheduledAt,
+      clearInstallationScheduledAt: nextStage == WorkflowStage.installation,
+      installationAssignedEmployeeEmails:
+          nextInstallationAssignedEmployeeEmails,
+      installationAssignedTeam: nextStage == WorkflowStage.installation
+          ? ''
+          : selected.installationAssignedTeam,
+      owner: actorLabel,
+      stageOwners: _updatedStageOwnersForAction(
+        selected,
+        selected.currentStage,
+        actorLabel,
+      ),
+      progress: _effectiveOrderProgress(previewOrder),
+      nextAction: _defaultNextActionForStage(nextStage, previewOrder),
+      blocker: nextStage == WorkflowStage.assembly
+          ? _assemblyWorkflowBlocker(AssemblyWorkflowStatus.waiting)
+          : nextStage == WorkflowStage.installation
+          ? _installationWorkflowBlocker(InstallationWorkflowStatus.waiting)
+          : nextIndex > currentIndex
+          ? 'Sem bloqueio. Fluxo avançado manualmente.'
+          : 'Etapa anterior reaberta para ajuste.',
+      history: updatedHistory,
+    );
+
+    final savedOrder = await _runBusyTask(
+      () => _repository.saveOrder(updatedOrder),
+      busyMessage: direction > 0 ? 'Avançando etapa...' : 'Retornando etapa...',
+      errorPrefix: 'Não foi possível atualizar a etapa',
+    );
+    if (savedOrder == null) {
+      return;
+    }
+
+    setState(() {
+      _selectedViewKey = 'stage:${savedOrder.currentStage.name}';
+      _selectedOrderCode = savedOrder.code;
+    });
+    _mergeOrderLocally(savedOrder);
+    unawaited(
+      _appendPlatformLog(
+        action: direction > 0
+            ? 'Avançou etapa do pedido'
+            : 'Retornou etapa do pedido',
+        area: savedOrder.currentStage.title,
+        details: '${savedOrder.code} • ${savedOrder.workName}',
+      ),
+    );
+  }
+
+  Future<void> _routeSelectedOrderToStage(WorkflowStage targetStage) async {
+    final selected = _selectedOrder;
+    if (selected == null) {
+      return;
+    }
+
+    final currentIndex = workflowStages.indexOf(selected.currentStage);
+    final targetIndex = workflowStages.indexOf(targetStage);
+    if (targetIndex == currentIndex) {
+      return;
+    }
+
+    final now = DateTime.now();
+    final actorLabel = _currentOrderOwnerLabel();
+    final updatedHistory = Map<WorkflowStage, String>.from(selected.history)
+      ..[selected.currentStage] = 'Concluído em ${_formatDateTime(now)}'
+      ..[targetStage] =
+          'Encaminhado por Relacionamento em ${_formatDateTime(now)}';
+    final nextAssemblyStatus = targetStage == WorkflowStage.assembly
+        ? AssemblyWorkflowStatus.waiting
+        : selected.assemblyWorkflowStatus;
+    final nextAssemblyAssignedEmployeeEmails =
+        targetStage == WorkflowStage.assembly
+        ? const <String>[]
+        : selected.assemblyAssignedEmployeeEmails;
+    final nextInstallationStatus = targetStage == WorkflowStage.installation
+        ? InstallationWorkflowStatus.waiting
+        : selected.installationWorkflowStatus;
+    final nextInstallationScheduledAt =
+        targetStage == WorkflowStage.installation
+        ? null
+        : selected.installationScheduledAt;
+    final nextInstallationAssignedEmployeeEmails =
+        targetStage == WorkflowStage.installation
+        ? const <String>[]
+        : selected.installationAssignedEmployeeEmails;
+    final previewOrder = selected.copyWith(
+      currentStage: targetStage,
+      assemblyWorkflowStatus: nextAssemblyStatus,
+      assemblyAssignedEmployeeEmails: nextAssemblyAssignedEmployeeEmails,
+      installationWorkflowStatus: nextInstallationStatus,
+      installationScheduledAt: nextInstallationScheduledAt,
+      clearInstallationScheduledAt: targetStage == WorkflowStage.installation,
+      installationAssignedEmployeeEmails:
+          nextInstallationAssignedEmployeeEmails,
+    );
+
+    final updatedOrder = selected.copyWith(
+      currentStage: targetStage,
+      assemblyWorkflowStatus: nextAssemblyStatus,
+      assemblyAssignedEmployeeEmails: nextAssemblyAssignedEmployeeEmails,
+      installationWorkflowStatus: nextInstallationStatus,
+      installationScheduledAt: nextInstallationScheduledAt,
+      clearInstallationScheduledAt: targetStage == WorkflowStage.installation,
+      installationAssignedEmployeeEmails:
+          nextInstallationAssignedEmployeeEmails,
+      installationAssignedTeam: targetStage == WorkflowStage.installation
+          ? ''
+          : selected.installationAssignedTeam,
+      owner: actorLabel,
+      stageOwners: _updatedStageOwnersForAction(
+        selected,
+        selected.currentStage,
+        actorLabel,
+      ),
+      progress: _effectiveOrderProgress(previewOrder),
+      nextAction: _defaultNextActionForStage(targetStage, previewOrder),
+      blocker: targetStage == WorkflowStage.assembly
+          ? _assemblyWorkflowBlocker(AssemblyWorkflowStatus.waiting)
+          : targetStage == WorkflowStage.installation
+          ? _installationWorkflowBlocker(InstallationWorkflowStatus.waiting)
+          : 'Encaminhado para ${targetStage.title.toLowerCase()}.',
+      history: updatedHistory,
+    );
+
+    final savedOrder = await _runBusyTask(
+      () => _repository.saveOrder(updatedOrder),
+      busyMessage: 'Encaminhando pedido...',
+      errorPrefix: 'Não foi possível encaminhar o pedido',
+    );
+    if (savedOrder == null) {
+      return;
+    }
+
+    setState(() {
+      _selectedViewKey = 'stage:${savedOrder.currentStage.name}';
+      _selectedOrderCode = savedOrder.code;
+    });
+    _mergeOrderLocally(savedOrder);
+    unawaited(
+      _appendPlatformLog(
+        action: 'Encaminhou pedido para ${targetStage.title}',
+        area: targetStage.title,
+        details: '${savedOrder.code} • ${savedOrder.workName}',
+      ),
+    );
+  }
+
+  Future<void> _attachMaterialsToSelectedOrder() async {
+    final selected = _selectedOrder;
+    if (selected == null) {
+      return;
+    }
+
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: const ['pdf', 'xls', 'xlsx'],
+        withData: false,
+      );
+
+      if (result == null || result.files.isEmpty) {
+        return;
+      }
+
+      final fileName = result.files.single.name;
+      final now = DateTime.now();
+      final updatedOrder = selected.copyWith(
+        materialFileName: fileName,
+        materialFilePath: result.files.single.path,
+        history: Map<WorkflowStage, String>.from(selected.history)
+          ..[WorkflowStage.estimating] =
+              'Arquivo Materiais anexado em ${_formatDateTime(now)}',
+      );
+
+      final savedOrder = await _runBusyTask(
+        () => _repository.saveOrder(updatedOrder),
+        busyMessage: 'Enviando arquivo Materiais...',
+        successMessage: 'Arquivo Materiais salvo no Firebase.',
+        errorPrefix: 'Não foi possível salvar o arquivo Materiais',
+      );
+      if (savedOrder == null) {
+        return;
+      }
+
+      _mergeOrderLocally(savedOrder);
+      _showDriveUploadConfigurationWarningIfNeeded(savedOrder);
+      unawaited(
+        _appendPlatformLog(
+          action: 'Anexou arquivo Materiais',
+          area: 'Orçamentista',
+          details: '${savedOrder.code} • ${savedOrder.materialFileName}',
+        ),
+      );
+    } on MissingPluginException {
+      _showWorkflowFilePickerUnavailableMessage();
+    } catch (error) {
+      final message = error.toString();
+      if (message.contains('LateInitializationError') ||
+          message.contains('LateError') ||
+          error is UnimplementedError) {
+        _showWorkflowFilePickerUnavailableMessage();
+        return;
+      }
+
+      rethrow;
+    }
+  }
+
+  Future<void> _attachConsolidatedProposalToSelectedOrder() async {
+    await _attachFileToSelectedOrder(
+      logAction: 'Anexou proposta consolidada',
+      logArea: 'Financeiro',
+      onUpdate: (selected, file) {
+        final now = DateTime.now();
+        return selected.copyWith(
+          consolidatedProposalFileName: file.name,
+          consolidatedProposalFilePath: file.path,
+          history: Map<WorkflowStage, String>.from(selected.history)
+            ..[WorkflowStage.finance] =
+                'Proposta consolidada anexada em ${_formatDateTime(now)}',
+        );
+      },
+    );
+  }
+
+  Future<void> _attachElectricalProjectToSelectedOrder() async {
+    await _attachFileToSelectedOrder(
+      allowedExtensions: const ['pdf', 'dwg', 'dxf', 'zip'],
+      successMessage: 'Projeto elétrico salvo no Firebase.',
+      busyMessage: 'Enviando projeto elétrico...',
+      errorPrefix: 'Não foi possível salvar o projeto elétrico',
+      logAction: 'Anexou projeto elétrico',
+      logArea: 'Engenharia',
+      onUpdate: (selected, file) {
+        final now = DateTime.now();
+        return selected.copyWith(
+          electricalProjectFileName: file.name,
+          electricalProjectFilePath: file.path,
+          history: Map<WorkflowStage, String>.from(selected.history)
+            ..[WorkflowStage.engineering] =
+                'Projeto elétrico anexado em ${_formatDateTime(now)}',
+        );
+      },
+    );
+  }
+
+  Future<void> _attachPanelLayoutToSelectedOrder() async {
+    await _attachFileToSelectedOrder(
+      allowedExtensions: const [
+        'pdf',
+        'dwg',
+        'dxf',
+        'png',
+        'jpg',
+        'jpeg',
+        'zip',
+      ],
+      successMessage: 'Layout do painel salvo no Firebase.',
+      busyMessage: 'Enviando layout do painel...',
+      errorPrefix: 'Não foi possível salvar o layout do painel',
+      logAction: 'Anexou layout do painel',
+      logArea: 'Engenharia',
+      onUpdate: (selected, file) {
+        final now = DateTime.now();
+        return selected.copyWith(
+          panelLayoutFileName: file.name,
+          panelLayoutFilePath: file.path,
+          history: Map<WorkflowStage, String>.from(selected.history)
+            ..[WorkflowStage.engineering] =
+                'Layout do painel anexado em ${_formatDateTime(now)}',
+        );
+      },
+    );
+  }
+
+  Future<void> _attachPushButtonTableToSelectedOrder() async {
+    await _attachFileToSelectedOrder(
+      allowedExtensions: const [
+        'pdf',
+        'xls',
+        'xlsx',
+        'csv',
+        'png',
+        'jpg',
+        'jpeg',
+        'zip',
+      ],
+      successMessage: 'Tabela de pulsadores salva no Firebase.',
+      busyMessage: 'Enviando tabela de pulsadores...',
+      errorPrefix: 'Não foi possível salvar a tabela de pulsadores',
+      logAction: 'Anexou tabela de pulsadores',
+      logArea: 'Engenharia',
+      onUpdate: (selected, file) {
+        final now = DateTime.now();
+        return selected.copyWith(
+          pushButtonTableFileName: file.name,
+          pushButtonTableFilePath: file.path,
+          history: Map<WorkflowStage, String>.from(selected.history)
+            ..[WorkflowStage.engineering] =
+                'Tabela de pulsadores anexada em ${_formatDateTime(now)}',
+        );
+      },
+    );
+  }
+
+  Future<void> _attachEngineeringDataToSelectedOrder() async {
+    await _attachFileToSelectedOrder(
+      allowedExtensions: const ['pdf', 'xls', 'xlsx', 'csv', 'zip'],
+      successMessage: 'Arquivo de dados salvo no Firebase.',
+      busyMessage: 'Enviando arquivo de dados...',
+      errorPrefix: 'Não foi possível salvar o arquivo de dados',
+      logAction: 'Anexou arquivo de dados',
+      logArea: 'Engenharia',
+      onUpdate: (selected, file) {
+        final now = DateTime.now();
+        return selected.copyWith(
+          engineeringDataFileName: file.name,
+          engineeringDataFilePath: file.path,
+          history: Map<WorkflowStage, String>.from(selected.history)
+            ..[WorkflowStage.engineering] =
+                'Arquivo de dados anexado em ${_formatDateTime(now)}',
+        );
+      },
+    );
+  }
+
+  Future<void> _updateEngineeringChecklistStatus(
+    String taskKey,
+    EngineeringChecklistStatus status,
+  ) async {
+    final selected = _selectedOrder;
+    if (selected == null) {
+      return;
+    }
+
+    final updatedStatuses = Map<String, EngineeringChecklistStatus>.from(
+      selected.engineeringChecklistStatuses,
+    );
+    final taskIndex = engineeringChecklistTasks.indexWhere(
+      (task) => task.key == taskKey,
+    );
+    if (taskIndex == -1) {
+      return;
+    }
+    final task = engineeringChecklistTasks[taskIndex];
+    if (status == EngineeringChecklistStatus.done) {
+      updatedStatuses[taskKey] = EngineeringChecklistStatus.done;
+    } else {
+      for (
+        var index = taskIndex;
+        index < engineeringChecklistTasks.length;
+        index++
+      ) {
+        updatedStatuses[engineeringChecklistTasks[index].key] =
+            EngineeringChecklistStatus.notStarted;
+      }
+    }
+    final flowSnapshot = _engineeringFlowSnapshotFromStatuses(updatedStatuses);
+    final now = DateTime.now();
+    final historyMessage = status == EngineeringChecklistStatus.done
+        ? flowSnapshot.isComplete
+              ? 'Kanban da engenharia concluído em ${_formatDateTime(now)}'
+              : '${task.label} concluída. Próxima etapa: ${flowSnapshot.currentTask!.label}'
+        : '${task.label} reaberta em ${_formatDateTime(now)}';
+    final updatedOrder = selected.copyWith(
+      engineeringChecklistStatuses: updatedStatuses,
+      progress: _effectiveOrderProgress(
+        selected.copyWith(engineeringChecklistStatuses: updatedStatuses),
+      ),
+      nextAction:
+          flowSnapshot.currentTask?.label ?? 'Liberar ordem para montagem',
+      blocker: flowSnapshot.isComplete
+          ? 'Sem bloqueio. Engenharia concluída e pronta para Montagem.'
+          : 'Kanban da engenharia em ${flowSnapshot.currentTask!.label}.',
+      history: Map<WorkflowStage, String>.from(selected.history)
+        ..[WorkflowStage.engineering] = historyMessage,
+    );
+
+    final savedOrder = await _runBusyTask(
+      () => _repository.saveOrder(updatedOrder),
+      busyMessage: 'Atualizando status da engenharia...',
+      successMessage: 'Status da engenharia atualizado.',
+      errorPrefix: 'Não foi possível atualizar o status da engenharia',
+    );
+    if (savedOrder == null) {
+      return;
+    }
+
+    _mergeOrderLocally(savedOrder);
+    unawaited(
+      _appendPlatformLog(
+        action: status == EngineeringChecklistStatus.done
+            ? 'Avançou kanban da engenharia'
+            : 'Reabriu etapa da engenharia',
+        area: 'Engenharia',
+        details:
+            '${_displayOrderCode(savedOrder)} • ${task.label}${status == EngineeringChecklistStatus.done ? ' concluída' : ' reaberta'}',
+      ),
+    );
+  }
+
+  Future<void> _attachContractToSelectedOrder() async {
+    await _attachFileToSelectedOrder(
+      logAction: 'Anexou contrato',
+      logArea: 'Financeiro',
+      onUpdate: (selected, file) {
+        final now = DateTime.now();
+        return selected.copyWith(
+          contractFileName: file.name,
+          contractFilePath: file.path,
+          history: Map<WorkflowStage, String>.from(selected.history)
+            ..[WorkflowStage.finance] =
+                'Contrato anexado em ${_formatDateTime(now)}',
+        );
+      },
+    );
+  }
+
+  Future<void> _attachServiceOrderPdfToSelectedOrder() async {
+    await _attachFileToSelectedOrder(
+      allowedExtensions: const ['pdf'],
+      busyMessage: 'Enviando PDF da ordem de serviço...',
+      successMessage: 'PDF da ordem de serviço salvo no Firebase.',
+      errorPrefix: 'Não foi possível salvar o PDF da ordem de serviço',
+      logAction: 'Anexou PDF da ordem de serviço',
+      logArea: 'Orçamentista',
+      onUpdate: (selected, file) {
+        final now = DateTime.now();
+        return selected.copyWith(
+          serviceOrderFileName: file.name,
+          serviceOrderFilePath: file.path,
+          nextAction: 'Aguardar aprovação do cliente no Financeiro',
+          history: Map<WorkflowStage, String>.from(selected.history)
+            ..[WorkflowStage.estimating] =
+                'PDF da ordem de serviço anexado em ${_formatDateTime(now)}',
+        );
+      },
+    );
+  }
+
+  Future<void> _toggleFinanceClientApprovalForSelectedOrder() async {
+    final selected = _selectedOrder;
+    if (selected == null) {
+      return;
+    }
+
+    final approved = !selected.financeClientApproved;
+    final now = DateTime.now();
+    final updatedOrder = selected.copyWith(
+      financeClientApproved: approved,
+      nextAction: approved
+          ? 'Retornar ao Relacionamento para encaminhamento'
+          : 'Aguardar aprovação do cliente',
+      blocker: approved
+          ? 'Sem bloqueio. Cliente aprovado no Financeiro.'
+          : 'Aguardando confirmação do cliente no Financeiro.',
+      history: Map<WorkflowStage, String>.from(selected.history)
+        ..[WorkflowStage.finance] = approved
+            ? 'Cliente aprovado no Financeiro em ${_formatDateTime(now)}'
+            : 'Aprovação do cliente removida em ${_formatDateTime(now)}',
+    );
+
+    final savedOrder = await _runBusyTask(
+      () => _repository.saveOrder(updatedOrder),
+      busyMessage: approved
+          ? 'Confirmando aprovação do cliente...'
+          : 'Removendo aprovação do cliente...',
+      successMessage: approved
+          ? 'Aprovação do cliente registrada.'
+          : 'Aprovação do cliente removida.',
+      errorPrefix: 'Não foi possível atualizar a aprovação do cliente',
+    );
+    if (savedOrder == null) {
+      return;
+    }
+
+    _mergeOrderLocally(savedOrder);
+    unawaited(
+      _appendPlatformLog(
+        action: approved
+            ? 'Confirmou aprovação da OS'
+            : 'Removeu aprovação da OS',
+        area: 'Financeiro',
+        details: '${savedOrder.code} • ${savedOrder.client.name}',
+      ),
+    );
+  }
+
+  Future<void> _attachFileToSelectedOrder({
+    List<String> allowedExtensions = const ['pdf', 'xls', 'xlsx'],
+    String busyMessage = 'Enviando anexo...',
+    String successMessage = 'Anexo salvo no Firebase.',
+    String errorPrefix = 'Não foi possível salvar o anexo',
+    String? logAction,
+    String? logArea,
+    required WorkflowOrder Function(WorkflowOrder selected, PlatformFile file)
+    onUpdate,
+  }) async {
+    final selected = _selectedOrder;
+    if (selected == null) {
+      return;
+    }
+
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: allowedExtensions,
+        withData: false,
+      );
+
+      if (result == null || result.files.isEmpty) {
+        return;
+      }
+
+      final updatedOrder = onUpdate(selected, result.files.single);
+      final savedOrder = await _runBusyTask(
+        () => _repository.saveOrder(updatedOrder),
+        busyMessage: busyMessage,
+        successMessage: successMessage,
+        errorPrefix: errorPrefix,
+      );
+      if (savedOrder == null) {
+        return;
+      }
+
+      _mergeOrderLocally(savedOrder);
+      _showDriveUploadConfigurationWarningIfNeeded(savedOrder);
+      if (logAction != null && logArea != null) {
+        unawaited(
+          _appendPlatformLog(
+            action: logAction,
+            area: logArea,
+            details: '${savedOrder.code} • ${result.files.single.name}',
+          ),
+        );
+      }
+    } on MissingPluginException {
+      _showWorkflowFilePickerUnavailableMessage();
+    } catch (error) {
+      final message = error.toString();
+      if (message.contains('LateInitializationError') ||
+          message.contains('LateError') ||
+          error is UnimplementedError) {
+        _showWorkflowFilePickerUnavailableMessage();
+        return;
+      }
+
+      rethrow;
+    }
+  }
+
+  void _showWorkflowFilePickerUnavailableMessage() {
+    if (!mounted) {
+      return;
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'Seletor de arquivo indisponível neste ambiente. Faça um restart completo do app para carregar o plugin.',
+        ),
+      ),
+    );
+  }
+
+  String _nextClientId() {
+    var maxCode = 1000;
+
+    for (final order in _orders) {
+      final parsed = int.tryParse(order.client.id);
+      if (parsed != null && parsed > maxCode) {
+        maxCode = parsed;
+      }
+    }
+
+    return '${maxCode + 1}';
+  }
+
+  String _primaryProposalCode(String clientId) {
+    return 'OP-$clientId';
+  }
+
+  String _proposalCodeForClient(
+    String clientId, {
+    required int proposalVersion,
+  }) {
+    final baseCode = _primaryProposalCode(clientId);
+    if (proposalVersion <= 1) {
+      return baseCode;
+    }
+
+    return '$baseCode-P$proposalVersion';
+  }
+
+  String _nextServiceOrderCode(String clientId) {
+    final baseCode = _primaryProposalCode(clientId);
+    final serviceOrderPattern = RegExp(
+      '^${RegExp.escape(baseCode)}-OS(\\d+)\$',
+    );
+    var highestSuffix = 0;
+
+    for (final order in _orders) {
+      if (order.client.id != clientId || !order.isServiceOrder) {
+        continue;
+      }
+
+      if (highestSuffix == 0) {
+        highestSuffix = 1;
+      }
+
+      final match = serviceOrderPattern.firstMatch(order.code.trim());
+      final parsedSuffix = int.tryParse(match?.group(1) ?? '');
+      if (parsedSuffix != null && parsedSuffix > highestSuffix) {
+        highestSuffix = parsedSuffix;
+      }
+    }
+
+    return '$baseCode-OS${highestSuffix + 1}';
+  }
+
+  bool _matchesCustomerSearch(WorkflowOrder order) {
+    final query = _customerSearchQuery.trim().toLowerCase();
+    if (query.isEmpty) {
+      return true;
+    }
+
+    return order.client.id.toLowerCase().contains(query) ||
+        order.client.name.toLowerCase().contains(query) ||
+        order.workName.toLowerCase().contains(query) ||
+        order.client.phone.toLowerCase().contains(query) ||
+        order.address.toLowerCase().contains(query);
+  }
+
+  String _cityFromAddress(String address) {
+    final parts = address.split(',');
+    if (parts.length >= 2) {
+      return '${parts[parts.length - 2].trim()}, ${parts.last.trim()}';
+    }
+
+    return address;
+  }
+
+  String _currentOrderOwnerLabel() {
+    final profile = _currentWorkspaceProfile;
+    final name = profile.name.trim();
+    final login = profile.login.trim();
+
+    if (name.isEmpty && login.isEmpty) {
+      return 'Cadastro';
+    }
+
+    if (name.isEmpty) {
+      return login;
+    }
+
+    if (login.isEmpty) {
+      return name;
+    }
+
+    return '$name (@$login)';
+  }
+
+  Map<WorkflowStage, String> _updatedStageOwnersForAction(
+    WorkflowOrder order,
+    WorkflowStage stage,
+    String actorLabel,
+  ) {
+    final updatedOwners = order.resolvedStageOwners();
+    final normalizedActorLabel = actorLabel.trim();
+
+    if (normalizedActorLabel.isNotEmpty) {
+      updatedOwners[stage] = normalizedActorLabel;
+    }
+
+    return updatedOwners;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isLoading = !_ordersLoaded || !_profilesLoaded;
+    final screenWidth = MediaQuery.sizeOf(context).width;
+    final isCompactLayout = screenWidth < 760;
+    final sidebarWidth = screenWidth < 900 ? 94.0 : 104.0;
+
+    if (!isLoading &&
+        (_hasFirestorePermissionError || !_currentUserHasWorkspaceAccess)) {
+      return _FirebaseAccessDeniedScreen(
+        email: _currentUserEmail,
+        syncError: _syncError?.toString(),
+        knownProfiles: _workspaceProfiles,
+        onSignOut: _signOut,
+      );
+    }
+
+    final tabs = _visibleTabs;
+    final selectedIndex = tabs.indexWhere(
+      (tab) => tab.routeKey == _selectedViewKey,
+    );
+    final activeTab = selectedIndex == -1 ? tabs.first : tabs[selectedIndex];
+    final content = isLoading
+        ? const Center(child: CircularProgressIndicator())
+        : KeyedSubtree(
+            key: ValueKey(activeTab.routeKey),
+            child: _buildContentForTab(activeTab),
+          );
+
+    return Scaffold(
+      body: Stack(
+        children: [
+          const Positioned.fill(child: _ShellBackdrop()),
+          SafeArea(
+            child: isCompactLayout
+                ? Column(
+                    children: [
+                      if (_syncError != null)
+                        _SyncErrorBanner(error: _syncError.toString()),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                        child: _FlowTopNavbar(
+                          items: tabs,
+                          selectedIndex: selectedIndex == -1
+                              ? 0
+                              : selectedIndex,
+                          onSelected: _selectTab,
+                          themeMode: widget.themeMode,
+                          onThemeModeChanged: widget.onThemeModeChanged,
+                          profile: _currentWorkspaceProfile,
+                          notificationCount: _conversationNotifications.length,
+                          notifications: _conversationNotifications,
+                          onOpenNotification: (notification) {
+                            final order = _findOrderByCode(
+                              notification.orderCode,
+                            );
+                            if (order == null) {
+                              return;
+                            }
+                            unawaited(
+                              _openOrderDetailsScreen(
+                                order,
+                                openConversationOnLoad: true,
+                              ),
+                            );
+                          },
+                          onSignOut: _signOut,
+                        ),
+                      ),
+                      Expanded(
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+                          child: content,
+                        ),
+                      ),
+                    ],
+                  )
+                : Row(
+                    children: [
+                      SizedBox(
+                        width: sidebarWidth,
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(18, 18, 10, 20),
+                          child: _FlowNavbar(
+                            items: tabs,
+                            selectedIndex: selectedIndex == -1
+                                ? 0
+                                : selectedIndex,
+                            onSelected: _selectTab,
+                            themeMode: widget.themeMode,
+                            onThemeModeChanged: widget.onThemeModeChanged,
+                            notificationCount:
+                                _conversationNotifications.length,
+                            notifications: _conversationNotifications,
+                            onOpenNotification: (notification) {
+                              final order = _findOrderByCode(
+                                notification.orderCode,
+                              );
+                              if (order == null) {
+                                return;
+                              }
+                              unawaited(
+                                _openOrderDetailsScreen(
+                                  order,
+                                  openConversationOnLoad: true,
+                                ),
+                              );
+                            },
+                          ),
+                        ),
+                      ),
+                      Expanded(
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(8, 18, 22, 20),
+                          child: Column(
+                            children: [
+                              _DesktopShellHeader(
+                                title: activeTab.label,
+                                profile: _currentWorkspaceProfile,
+                                onSignOut: _signOut,
+                                notificationCount:
+                                    _conversationNotifications.length,
+                                notifications: _conversationNotifications,
+                                driveSyncStatus: _driveSyncStatus,
+                                onOpenNotification: (notification) {
+                                  final order = _findOrderByCode(
+                                    notification.orderCode,
+                                  );
+                                  if (order == null) {
+                                    return;
+                                  }
+                                  unawaited(
+                                    _openOrderDetailsScreen(
+                                      order,
+                                      openConversationOnLoad: true,
+                                    ),
+                                  );
+                                },
+                              ),
+                              const SizedBox(height: 14),
+                              if (_syncError != null)
+                                Padding(
+                                  padding: const EdgeInsets.only(bottom: 12),
+                                  child: _SyncErrorBanner(
+                                    error: _syncError.toString(),
+                                  ),
+                                ),
+                              Expanded(child: content),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+          ),
+          if (_busyMessage != null)
+            Positioned.fill(
+              child: ColoredBox(
+                color: const Color(0x660F172A),
+                child: Center(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 24,
+                      vertical: 20,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(22),
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const CircularProgressIndicator(),
+                        const SizedBox(height: 16),
+                        Text(
+                          _busyMessage!,
+                          style: const TextStyle(fontWeight: FontWeight.w600),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ShellBackdrop extends StatelessWidget {
+  const _ShellBackdrop();
+
+  @override
+  Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+
+    return Container(
+      color: isDarkMode ? const Color(0xFF16211E) : const Color(0xFFF4F6F2),
+      child: Stack(
+        children: [
+          Positioned(
+            top: -120,
+            left: -80,
+            child: Container(
+              width: 320,
+              height: 320,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: isDarkMode
+                    ? const Color(0xFF33443E).withValues(alpha: 0.34)
+                    : const Color(0xFFEAF0EA),
+              ),
+            ),
+          ),
+          Positioned(
+            top: 80,
+            right: -60,
+            child: Container(
+              width: 260,
+              height: 260,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: isDarkMode
+                    ? const Color(0xFF2B3A35).withValues(alpha: 0.42)
+                    : const Color(0xFFF9FAF7),
+              ),
+            ),
+          ),
+          Positioned(
+            bottom: -110,
+            left: 180,
+            child: Container(
+              width: 340,
+              height: 340,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: isDarkMode
+                    ? const Color(0xFF2C3D37).withValues(alpha: 0.34)
+                    : const Color(0xFFE7EDE7),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DesktopShellHeader extends StatelessWidget {
+  const _DesktopShellHeader({
+    required this.title,
+    required this.profile,
+    required this.onSignOut,
+    required this.notificationCount,
+    required this.notifications,
+    required this.driveSyncStatus,
+    required this.onOpenNotification,
+  });
+
+  final String title;
+  final EmployeeWorkspaceProfile profile;
+  final VoidCallback onSignOut;
+  final int notificationCount;
+  final List<_OrderConversationNotification> notifications;
+  final _DriveSyncStatus driveSyncStatus;
+  final ValueChanged<_OrderConversationNotification> onOpenNotification;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+      decoration: _panelDecoration(context),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: TextStyle(
+                    fontSize: 24,
+                    fontWeight: FontWeight.w800,
+                    color: isDarkMode
+                        ? const Color(0xFFF4FBF8)
+                        : const Color(0xFF17211E),
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Painel operacional com busca rápida e acesso direto às áreas.',
+                  style: TextStyle(
+                    color: isDarkMode
+                        ? const Color(0xFF9FB2AC)
+                        : const Color(0xFF67746F),
+                    fontSize: 13,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 18),
+          const SizedBox(width: 14),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: BoxDecoration(
+              color: isDarkMode
+                  ? const Color(0xFF121C19)
+                  : Colors.white.withValues(alpha: 0.92),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(
+                color: isDarkMode
+                    ? const Color(0xFF23322E)
+                    : const Color(0xFFE4EAE5),
+              ),
+            ),
+            child: Text(
+              _formatDate(DateTime.now()),
+              style: TextStyle(
+                color: isDarkMode
+                    ? const Color(0xFFE7F1EC)
+                    : const Color(0xFF17211E),
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          _DriveSyncIndicator(status: driveSyncStatus),
+          const SizedBox(width: 10),
+          _ConversationNotificationsButton(
+            notifications: notifications,
+            notificationCount: notificationCount,
+            onOpenNotification: onOpenNotification,
+          ),
+          const SizedBox(width: 10),
+          _ShellProfileMenuButton(
+            profile: profile,
+            onSignOut: onSignOut,
+            expanded: true,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DriveSyncIndicator extends StatelessWidget {
+  const _DriveSyncIndicator({required this.status});
+
+  final _DriveSyncStatus status;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    final color = switch (status) {
+      _DriveSyncStatus.synced => const Color(0xFF16A34A),
+      _DriveSyncStatus.checking => const Color(0xFF2563EB),
+      _DriveSyncStatus.offline => const Color(0xFFDC2626),
+      _DriveSyncStatus.notConfigured => const Color(0xFFF59E0B),
+    };
+    final icon = switch (status) {
+      _DriveSyncStatus.synced => Icons.cloud_done_outlined,
+      _DriveSyncStatus.checking => Icons.sync_rounded,
+      _DriveSyncStatus.offline => Icons.cloud_off_outlined,
+      _DriveSyncStatus.notConfigured => Icons.cloud_queue_outlined,
+    };
+    final label = switch (status) {
+      _DriveSyncStatus.synced => 'Drive sincronizado',
+      _DriveSyncStatus.checking => 'Verificando Drive',
+      _DriveSyncStatus.offline => 'Drive offline',
+      _DriveSyncStatus.notConfigured => 'Drive não configurado',
+    };
+
+    return Tooltip(
+      message: label,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: isDarkMode
+              ? color.withValues(alpha: 0.14)
+              : color.withValues(alpha: 0.10),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: color.withValues(alpha: 0.32)),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 18, color: color),
+            const SizedBox(width: 8),
+            Text(
+              label,
+              style: TextStyle(
+                color: isDarkMode ? const Color(0xFFE7F1EC) : color,
+                fontWeight: FontWeight.w800,
+                fontSize: 12,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _OrderConversationNotification {
+  const _OrderConversationNotification({
+    required this.orderCode,
+    required this.orderLabel,
+    required this.workName,
+    required this.stage,
+    required this.authorName,
+    required this.preview,
+    required this.createdAt,
+  });
+
+  final String orderCode;
+  final String orderLabel;
+  final String workName;
+  final WorkflowStage stage;
+  final String authorName;
+  final String preview;
+  final DateTime createdAt;
+}
+
+class _ConversationNotificationsButton extends StatelessWidget {
+  const _ConversationNotificationsButton({
+    required this.notifications,
+    required this.notificationCount,
+    required this.onOpenNotification,
+    this.compact = false,
+  });
+
+  final List<_OrderConversationNotification> notifications;
+  final int notificationCount;
+  final ValueChanged<_OrderConversationNotification> onOpenNotification;
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    final countLabel = notificationCount > 9 ? '9+' : '$notificationCount';
+
+    return PopupMenuButton<_OrderConversationNotification>(
+      tooltip: 'Mensagens',
+      onSelected: onOpenNotification,
+      itemBuilder: (context) {
+        if (notifications.isEmpty) {
+          return const [
+            PopupMenuItem<_OrderConversationNotification>(
+              enabled: false,
+              child: Text('Nenhuma menção pendente.'),
+            ),
+          ];
+        }
+
+        return notifications
+            .take(8)
+            .map((notification) {
+              return PopupMenuItem<_OrderConversationNotification>(
+                value: notification,
+                child: SizedBox(
+                  width: 280,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '${notification.orderLabel} • ${notification.workName}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontWeight: FontWeight.w700),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        '${notification.authorName} mencionou você em ${notification.stage.title}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Color(0xFF52605C),
+                          fontSize: 12,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        notification.preview,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 12, height: 1.3),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            })
+            .toList(growable: false);
+      },
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          Container(
+            width: compact ? 44 : 46,
+            height: compact ? 44 : 46,
+            decoration: BoxDecoration(
+              color: isDarkMode
+                  ? const Color(0xFF121C19)
+                  : Colors.white.withValues(alpha: 0.96),
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(
+                color: isDarkMode
+                    ? const Color(0xFF23322E)
+                    : const Color(0xFFE4EAE5),
+              ),
+            ),
+            child: Icon(
+              notificationCount > 0
+                  ? Icons.notifications_active_outlined
+                  : Icons.notifications_none_rounded,
+            ),
+          ),
+          if (notificationCount > 0)
+            Positioned(
+              top: -4,
+              right: -4,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFDC2626),
+                  borderRadius: BorderRadius.circular(999),
+                  border: Border.all(color: Colors.white, width: 1.5),
+                ),
+                child: Text(
+                  countLabel,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 10,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ShellProfileMenuButton extends StatelessWidget {
+  const _ShellProfileMenuButton({
+    required this.profile,
+    required this.onSignOut,
+    this.expanded = false,
+  });
+
+  final EmployeeWorkspaceProfile profile;
+  final VoidCallback onSignOut;
+  final bool expanded;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    final imageProvider = _resolveProfileImageProvider(profile.photoFilePath);
+    final initials = profile.name.trim().isEmpty
+        ? '?'
+        : profile.name.trim().substring(0, 1).toUpperCase();
+
+    return PopupMenuButton<String>(
+      tooltip: 'Perfil',
+      onSelected: (value) {
+        if (value == 'signout') {
+          onSignOut();
+        }
+      },
+      itemBuilder: (context) => const [
+        PopupMenuItem<String>(
+          value: 'signout',
+          child: Row(
+            children: [
+              Icon(Icons.logout_outlined),
+              SizedBox(width: 10),
+              Text('Deslogar'),
+            ],
+          ),
+        ),
+      ],
+      child: Container(
+        padding: EdgeInsets.symmetric(
+          horizontal: expanded ? 10 : 8,
+          vertical: expanded ? 8 : 8,
+        ),
+        decoration: BoxDecoration(
+          color: isDarkMode
+              ? const Color(0xFF121C19)
+              : Colors.white.withValues(alpha: 0.96),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: isDarkMode
+                ? const Color(0xFF23322E)
+                : const Color(0xFFE4EAE5),
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 38,
+              height: 38,
+              clipBehavior: Clip.antiAlias,
+              decoration: BoxDecoration(
+                color: profile.accent.withValues(alpha: 0.14),
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: imageProvider != null
+                  ? Image(image: imageProvider, fit: BoxFit.cover)
+                  : Center(
+                      child: Text(
+                        initials,
+                        style: TextStyle(
+                          color: profile.accent,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+            ),
+            if (expanded) ...[
+              const SizedBox(width: 10),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    profile.name,
+                    style: TextStyle(
+                      color: isDarkMode
+                          ? const Color(0xFFF4FBF8)
+                          : const Color(0xFF17211E),
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  Text(
+                    profile.role,
+                    style: TextStyle(
+                      color: isDarkMode
+                          ? const Color(0xFF9FB2AC)
+                          : const Color(0xFF67746F),
+                      fontSize: 12,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(width: 8),
+              Icon(
+                Icons.expand_more_rounded,
+                color: isDarkMode
+                    ? const Color(0xFF9FB2AC)
+                    : const Color(0xFF67746F),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SyncErrorBanner extends StatelessWidget {
+  const _SyncErrorBanner({required this.error});
+
+  final String error;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFEF2F2),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: const Color(0xFFFECACA)),
+      ),
+      child: Text(
+        'Falha ao sincronizar com o Firebase: $error',
+        style: const TextStyle(
+          color: Color(0xFF991B1B),
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
+  }
+}
+
+class _FirebaseAccessDeniedScreen extends StatelessWidget {
+  const _FirebaseAccessDeniedScreen({
+    required this.email,
+    required this.syncError,
+    required this.knownProfiles,
+    required this.onSignOut,
+  });
+
+  final String? email;
+  final String? syncError;
+  final List<EmployeeWorkspaceProfile> knownProfiles;
+  final VoidCallback onSignOut;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    final allowedEmails =
+        knownProfiles
+            .map((profile) => profile.login)
+            .toSet()
+            .toList(growable: false)
+          ..sort();
+
+    return Scaffold(
+      body: Container(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: isDarkMode
+                ? const [Color(0xFF08110F), Color(0xFF12211E)]
+                : const [Color(0xFFF6F8F3), Color(0xFFE9EFE8)],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+        ),
+        child: SafeArea(
+          child: Center(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(24),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 760),
+                child: Container(
+                  padding: const EdgeInsets.all(28),
+                  decoration: BoxDecoration(
+                    color: isDarkMode ? const Color(0xFF101A18) : Colors.white,
+                    borderRadius: BorderRadius.circular(28),
+                    border: Border.all(color: const Color(0xFFFECACA)),
+                    boxShadow: [
+                      BoxShadow(
+                        color: isDarkMode
+                            ? const Color(0x66030B09)
+                            : const Color(0x141E293B),
+                        blurRadius: 30,
+                        offset: Offset(0, 18),
+                      ),
+                    ],
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFFEF2F2),
+                          borderRadius: BorderRadius.circular(18),
+                        ),
+                        child: const Icon(
+                          Icons.lock_outline_rounded,
+                          color: Color(0xFFB91C1C),
+                          size: 30,
+                        ),
+                      ),
+                      const SizedBox(height: 20),
+                      Text(
+                        'Acesso ao Firestore bloqueado',
+                        style: TextStyle(
+                          fontSize: 28,
+                          fontWeight: FontWeight.w800,
+                          color: isDarkMode
+                              ? const Color(0xFFE7F1EC)
+                              : const Color(0xFF14211D),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Text(
+                        email == null || email!.isEmpty
+                            ? 'Nenhum usuário interno foi encontrado na sessão autenticada.'
+                            : 'O usuário interno atual é "$email". Essa sessão não conseguiu ler ou gravar os dados do projeto Firebase.',
+                        style: TextStyle(
+                          fontSize: 15,
+                          height: 1.5,
+                          color: isDarkMode
+                              ? const Color(0xFFB8CBC4)
+                              : const Color(0xFF475569),
+                        ),
+                      ),
+                      const SizedBox(height: 18),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFFEF2F2),
+                          borderRadius: BorderRadius.circular(18),
+                          border: Border.all(color: const Color(0xFFFECACA)),
+                        ),
+                        child: Text(
+                          syncError ??
+                              'O Firebase retornou uma negação de permissão para esta sessão.',
+                          style: const TextStyle(
+                            color: Color(0xFF991B1B),
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 18),
+                      Text(
+                        'Usuários liberados neste ambiente:',
+                        style: TextStyle(
+                          fontWeight: FontWeight.w700,
+                          color: isDarkMode
+                              ? const Color(0xFFE7F1EC)
+                              : const Color(0xFF14211D),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: allowedEmails
+                            .map(
+                              (value) => Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                  vertical: 8,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFF8FAFC),
+                                  borderRadius: BorderRadius.circular(999),
+                                  border: Border.all(
+                                    color: const Color(0xFFE2E8F0),
+                                  ),
+                                ),
+                                child: Text(
+                                  value,
+                                  style: TextStyle(
+                                    color: isDarkMode
+                                        ? const Color(0xFFE7F1EC)
+                                        : const Color(0xFF334155),
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                            )
+                            .toList(growable: false),
+                      ),
+                      const SizedBox(height: 22),
+                      Text(
+                        'Se este usuário deveria ter acesso, ajuste as regras do Firestore ou libere o perfil correspondente no projeto.',
+                        style: TextStyle(
+                          fontSize: 14,
+                          height: 1.5,
+                          color: isDarkMode
+                              ? const Color(0xFFB8CBC4)
+                              : const Color(0xFF52605C),
+                        ),
+                      ),
+                      const SizedBox(height: 22),
+                      FilledButton.icon(
+                        onPressed: onSignOut,
+                        icon: const Icon(Icons.logout_rounded),
+                        label: const Text('Sair desta conta'),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _WorkflowSection extends StatelessWidget {
+  const _WorkflowSection({
+    required this.profile,
+    required this.tasks,
+    required this.allOrders,
+    required this.onOpenTaskOrder,
+  });
+
+  final EmployeeWorkspaceProfile profile;
+  final List<WorkspaceTask> tasks;
+  final List<WorkflowOrder> allOrders;
+  final ValueChanged<String> onOpenTaskOrder;
+
+  @override
+  Widget build(BuildContext context) {
+    final screenWidth = MediaQuery.sizeOf(context).width;
+    final isWide = screenWidth >= 900;
+    final tasksToday = tasks
+        .where((task) => task.status == WorkspaceTaskStatus.today)
+        .length;
+    final tasksDoing = tasks
+        .where((task) => task.status == WorkspaceTaskStatus.doing)
+        .length;
+    final tasksWaiting = tasks
+        .where((task) => task.status == WorkspaceTaskStatus.waiting)
+        .length;
+
+    return ListView(
+      padding: const EdgeInsets.all(24),
+      children: [
+        _EmployeeWorkspaceHero(
+          profile: profile,
+          taskCount: tasks.length,
+          tasksToday: tasksToday,
+          allowedStageCount: profile.allowedStages.length,
+        ),
+        const SizedBox(height: 18),
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final cardWidth = constraints.maxWidth >= 1100
+                ? (constraints.maxWidth - 32) / 3
+                : constraints.maxWidth >= 760
+                ? (constraints.maxWidth - 16) / 2
+                : constraints.maxWidth;
+
+            return Wrap(
+              spacing: 16,
+              runSpacing: 16,
+              children: [
+                SizedBox(
+                  width: cardWidth,
+                  child: _EmployeeWorkspaceMetric(
+                    title: 'Tarefas de hoje',
+                    value: tasksToday.toString(),
+                    subtitle: tasksToday == 1
+                        ? '1 item priorizado para hoje'
+                        : '$tasksToday itens priorizados para hoje',
+                    icon: Icons.today_outlined,
+                    accent: profile.accent,
+                  ),
+                ),
+                SizedBox(
+                  width: cardWidth,
+                  child: _EmployeeWorkspaceMetric(
+                    title: 'Em andamento',
+                    value: tasksDoing.toString(),
+                    subtitle: tasksDoing == 0
+                        ? 'Nenhuma tarefa em execução'
+                        : '$tasksDoing tarefa${tasksDoing == 1 ? '' : 's'} em execução',
+                    icon: Icons.play_circle_outline,
+                    accent: const Color(0xFF7C3AED),
+                  ),
+                ),
+                SizedBox(
+                  width: cardWidth,
+                  child: _EmployeeWorkspaceMetric(
+                    title: 'Aguardando',
+                    value: tasksWaiting.toString(),
+                    subtitle: tasksWaiting == 0
+                        ? 'Sem pendências em espera'
+                        : '$tasksWaiting pendência${tasksWaiting == 1 ? '' : 's'} aguardando retorno',
+                    icon: Icons.hourglass_empty_outlined,
+                    accent: const Color(0xFFB45309),
+                  ),
+                ),
+              ],
+            );
+          },
+        ),
+        const SizedBox(height: 22),
+        if (profile.isAdministrator)
+          _AdminSectorCompletionPanel(orders: allOrders)
+        else
+          _AllowedStageWorkspacePanel(
+            profile: profile,
+            allOrders: allOrders,
+            onOpenTaskOrder: onOpenTaskOrder,
+          ),
+        const SizedBox(height: 22),
+        if (tasks.isEmpty)
+          Container(
+            padding: const EdgeInsets.all(24),
+            decoration: _panelDecoration(context),
+            child: Row(
+              children: [
+                Container(
+                  width: 44,
+                  height: 44,
+                  decoration: BoxDecoration(
+                    color: profile.accent.withValues(alpha: 0.10),
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Icon(Icons.inbox_outlined, color: profile.accent),
+                ),
+                const SizedBox(width: 14),
+                const Expanded(
+                  child: Text(
+                    'Nenhuma tarefa pessoal disponível para este usuário no momento.',
+                    style: TextStyle(fontSize: 15, height: 1.35),
+                  ),
+                ),
+              ],
+            ),
+          )
+        else
+          _PersonalKanbanBoard(
+            tasks: tasks,
+            isWide: isWide,
+            onOpenTaskOrder: onOpenTaskOrder,
+          ),
+      ],
+    );
+  }
+}
+
+class _AllowedStageWorkspacePanel extends StatelessWidget {
+  const _AllowedStageWorkspacePanel({
+    required this.profile,
+    required this.allOrders,
+    required this.onOpenTaskOrder,
+  });
+
+  final EmployeeWorkspaceProfile profile;
+  final List<WorkflowOrder> allOrders;
+  final ValueChanged<String> onOpenTaskOrder;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: _panelDecoration(context),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Quadros permitidos',
+                      style: TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    SizedBox(height: 6),
+                    Text(
+                      'A sua área mostra somente os quadros e tarefas liberados para o seu perfil.',
+                      style: TextStyle(color: Color(0xFF52605C), height: 1.35),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 12),
+              _WorkspaceMetaChip(
+                icon: Icons.dashboard_customize_outlined,
+                label: '${profile.allowedStages.length} quadros',
+              ),
+            ],
+          ),
+          const SizedBox(height: 18),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final cardWidth = constraints.maxWidth >= 1180
+                  ? (constraints.maxWidth - 32) / 3
+                  : constraints.maxWidth >= 720
+                  ? (constraints.maxWidth - 16) / 2
+                  : constraints.maxWidth;
+
+              return Wrap(
+                spacing: 16,
+                runSpacing: 16,
+                children: profile.allowedStages
+                    .map(
+                      (stage) => SizedBox(
+                        width: cardWidth,
+                        child: _StageFilterChip(
+                          title: stage.title,
+                          subtitle: stage.subtitle,
+                          selected: true,
+                          color: stage.color,
+                          icon: stage.icon,
+                          metadata: stage.sla,
+                          onTap: () {
+                            final stageOrders = allOrders.where(
+                              (order) => order.currentStage == stage,
+                            );
+                            if (stageOrders.isNotEmpty) {
+                              onOpenTaskOrder(stageOrders.first.code);
+                            }
+                          },
+                          counter: allOrders
+                              .where((item) => item.currentStage == stage)
+                              .length,
+                        ),
+                      ),
+                    )
+                    .toList(growable: false),
+              );
+            },
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AdminSectorCompletionPanel extends StatelessWidget {
+  const _AdminSectorCompletionPanel({required this.orders});
+
+  final List<WorkflowOrder> orders;
+
+  @override
+  Widget build(BuildContext context) {
+    final now = DateTime.now();
+    final periods = [
+      _CompletionPeriod(
+        title: 'Semana',
+        subtitle: 'Últimos 7 dias',
+        start: DateUtils.dateOnly(now).subtract(const Duration(days: 6)),
+        end: now,
+      ),
+      _CompletionPeriod(
+        title: 'Mês',
+        subtitle: 'Mês atual',
+        start: DateTime(now.year, now.month),
+        end: now,
+      ),
+      _CompletionPeriod(
+        title: 'Ano',
+        subtitle: 'Ano atual',
+        start: DateTime(now.year),
+        end: now,
+      ),
+    ];
+
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: _panelDecoration(context),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF0F766E).withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: const Icon(
+                  Icons.bar_chart_rounded,
+                  color: Color(0xFF0F766E),
+                ),
+              ),
+              const SizedBox(width: 14),
+              const Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Conclusões por setor',
+                      style: TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    SizedBox(height: 6),
+                    Text(
+                      'Acompanhe quantos pedidos foram concluídos em cada setor na semana, no mês e no ano.',
+                      style: TextStyle(color: Color(0xFF52605C), height: 1.35),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 18),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final cardWidth = constraints.maxWidth >= 1180
+                  ? (constraints.maxWidth - 32) / 3
+                  : constraints.maxWidth >= 760
+                  ? (constraints.maxWidth - 16) / 2
+                  : constraints.maxWidth;
+
+              return Wrap(
+                spacing: 16,
+                runSpacing: 16,
+                children: periods
+                    .map(
+                      (period) => SizedBox(
+                        width: cardWidth,
+                        child: _SectorCompletionChart(
+                          period: period,
+                          entries: _completionEntriesForPeriod(
+                            orders: orders,
+                            period: period,
+                          ),
+                        ),
+                      ),
+                    )
+                    .toList(growable: false),
+              );
+            },
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CompletionPeriod {
+  const _CompletionPeriod({
+    required this.title,
+    required this.subtitle,
+    required this.start,
+    required this.end,
+  });
+
+  final String title;
+  final String subtitle;
+  final DateTime start;
+  final DateTime end;
+}
+
+class _SectorCompletionEntry {
+  const _SectorCompletionEntry({required this.stage, required this.count});
+
+  final WorkflowStage stage;
+  final int count;
+}
+
+class _SectorCompletionChart extends StatelessWidget {
+  const _SectorCompletionChart({required this.period, required this.entries});
+
+  final _CompletionPeriod period;
+  final List<_SectorCompletionEntry> entries;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    final total = entries.fold<int>(0, (sum, entry) => sum + entry.count);
+    final maxCount = entries.fold<int>(
+      0,
+      (max, entry) => entry.count > max ? entry.count : max,
+    );
+
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: isDarkMode ? const Color(0xFF2A3732) : const Color(0xFFF8FAFC),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: isDarkMode ? const Color(0xFF526860) : const Color(0xFFE2E8F0),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      period.title,
+                      style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      period.subtitle,
+                      style: TextStyle(
+                        color: isDarkMode
+                            ? const Color(0xFFC0D0C9)
+                            : const Color(0xFF52605C),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              _StatusBadge(label: '$total', color: const Color(0xFF0F766E)),
+            ],
+          ),
+          const SizedBox(height: 16),
+          ...entries.map(
+            (entry) => Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: _SectorCompletionBar(entry: entry, maxCount: maxCount),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SectorCompletionBar extends StatelessWidget {
+  const _SectorCompletionBar({required this.entry, required this.maxCount});
+
+  final _SectorCompletionEntry entry;
+  final int maxCount;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    final value = maxCount == 0 ? 0.0 : entry.count / maxCount;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Icon(entry.stage.icon, size: 16, color: entry.stage.color),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                entry.stage.title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontWeight: FontWeight.w700),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              entry.count.toString(),
+              style: TextStyle(
+                color: entry.stage.color,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 7),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(999),
+          child: LinearProgressIndicator(
+            value: value,
+            minHeight: 8,
+            backgroundColor: isDarkMode
+                ? const Color(0xFF526860)
+                : const Color(0xFFE2E8F0),
+            valueColor: AlwaysStoppedAnimation(entry.stage.color),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+List<_SectorCompletionEntry> _completionEntriesForPeriod({
+  required List<WorkflowOrder> orders,
+  required _CompletionPeriod period,
+}) {
+  return workflowStages
+      .map(
+        (stage) => _SectorCompletionEntry(
+          stage: stage,
+          count: orders
+              .where(
+                (order) => _wasStageCompletedInPeriod(
+                  order: order,
+                  stage: stage,
+                  period: period,
+                ),
+              )
+              .length,
+        ),
+      )
+      .toList(growable: false);
+}
+
+bool _wasStageCompletedInPeriod({
+  required WorkflowOrder order,
+  required WorkflowStage stage,
+  required _CompletionPeriod period,
+}) {
+  final completedAt = _stageCompletionDate(order, stage);
+  if (completedAt == null) {
+    return false;
+  }
+
+  return !completedAt.isBefore(period.start) &&
+      !completedAt.isAfter(period.end);
+}
+
+DateTime? _stageCompletionDate(WorkflowOrder order, WorkflowStage stage) {
+  final historyText = order.history[stage]?.trim();
+  if (historyText == null || historyText.isEmpty) {
+    return null;
+  }
+
+  final stageIndex = workflowStages.indexOf(stage);
+  final currentStageIndex = workflowStages.indexOf(order.currentStage);
+  final normalizedHistory = historyText.toLowerCase();
+  final isCompleted =
+      normalizedHistory.contains('conclu') ||
+      currentStageIndex > stageIndex ||
+      (stage == WorkflowStage.installation &&
+          order.installationWorkflowStatus == InstallationWorkflowStatus.done);
+
+  if (!isCompleted) {
+    return null;
+  }
+
+  return _parseHistoryDateTime(historyText);
+}
+
+DateTime? _parseHistoryDateTime(String text) {
+  final match = RegExp(
+    r'(\d{2})/(\d{2})/(\d{4})\s+(\d{2}):(\d{2})',
+  ).firstMatch(text);
+  if (match == null) {
+    return null;
+  }
+
+  final day = int.tryParse(match.group(1) ?? '');
+  final month = int.tryParse(match.group(2) ?? '');
+  final year = int.tryParse(match.group(3) ?? '');
+  final hour = int.tryParse(match.group(4) ?? '');
+  final minute = int.tryParse(match.group(5) ?? '');
+  if (day == null ||
+      month == null ||
+      year == null ||
+      hour == null ||
+      minute == null) {
+    return null;
+  }
+
+  return DateTime(year, month, day, hour, minute);
+}
+
+class _WorkspaceUserDraft {
+  const _WorkspaceUserDraft({
+    required this.name,
+    required this.login,
+    required this.cellPhone,
+    required this.role,
+    required this.accessCode,
+    required this.isAdministrator,
+    required this.allowedStages,
+    required this.photoFileName,
+    required this.photoFilePath,
+  });
+
+  final String name;
+  final String login;
+  final String cellPhone;
+  final String role;
+  final String accessCode;
+  final bool isAdministrator;
+  final List<WorkflowStage> allowedStages;
+  final String photoFileName;
+  final String? photoFilePath;
+}
+
+class _WorkspaceUserDialog extends StatefulWidget {
+  const _WorkspaceUserDialog({this.initialProfile});
+
+  final EmployeeWorkspaceProfile? initialProfile;
+
+  @override
+  State<_WorkspaceUserDialog> createState() => _WorkspaceUserDialogState();
+}
+
+class _WorkspaceUserDialogState extends State<_WorkspaceUserDialog> {
+  final _formKey = GlobalKey<FormState>();
+  final _nameController = TextEditingController();
+  final _loginController = TextEditingController();
+  final _cellPhoneController = TextEditingController();
+  final _roleController = TextEditingController();
+  final _accessCodeController = TextEditingController();
+  final Set<WorkflowStage> _selectedStages = {
+    WorkflowStage.customerRegistration,
+  };
+
+  bool _isAdministrator = false;
+  bool _obscureAccessCode = true;
+  String _photoFileName = '';
+  String? _photoFilePath;
+
+  bool get _isEditing => widget.initialProfile != null;
+
+  @override
+  void initState() {
+    super.initState();
+    final profile = widget.initialProfile;
+    if (profile == null) {
+      return;
+    }
+
+    _nameController.text = profile.name;
+    _loginController.text = profile.login;
+    _cellPhoneController.text = profile.cellPhone;
+    _roleController.text = profile.role;
+    _isAdministrator = profile.isAdministrator;
+    _selectedStages
+      ..clear()
+      ..addAll(profile.allowedStages);
+    _photoFileName = profile.photoFileName;
+    _photoFilePath = profile.photoFilePath;
+  }
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _loginController.dispose();
+    _cellPhoneController.dispose();
+    _roleController.dispose();
+    _accessCodeController.dispose();
+    super.dispose();
+  }
+
+  void _toggleStage(WorkflowStage stage) {
+    setState(() {
+      if (_selectedStages.contains(stage)) {
+        if (_selectedStages.length > 1) {
+          _selectedStages.remove(stage);
+        }
+      } else {
+        _selectedStages.add(stage);
+      }
+    });
+  }
+
+  Future<void> _pickPhoto() async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: const ['png', 'jpg', 'jpeg', 'webp'],
+      withData: false,
+    );
+
+    if (result == null) {
+      return;
+    }
+
+    final file = result.files.single;
+    if (file.path == null || file.path!.trim().isEmpty) {
+      return;
+    }
+
+    setState(() {
+      _photoFileName = file.name;
+      _photoFilePath = file.path;
+    });
+  }
+
+  String? _validateFullName(String? value) {
+    final normalized = (value ?? '').trim();
+    if (normalized.isEmpty) {
+      return 'Informe o nome.';
+    }
+
+    final parts = normalized
+        .split(RegExp(r'\s+'))
+        .where((part) => part.trim().isNotEmpty)
+        .toList(growable: false);
+    if (parts.length < 2) {
+      return 'Informe nome e sobrenome.';
+    }
+
+    return null;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(_isEditing ? 'Editar usuário' : 'Novo usuário interno'),
+      content: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 560),
+        child: SingleChildScrollView(
+          child: Form(
+            key: _formKey,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _DialogField(
+                  controller: _nameController,
+                  label: 'Nome do usuário',
+                  validator: _validateFullName,
+                ),
+                const SizedBox(height: 14),
+                _DialogField(
+                  controller: _loginController,
+                  label: 'Login interno',
+                  enabled: !_isEditing,
+                  validator: (value) {
+                    final login = (value ?? '').trim().toLowerCase();
+                    if (login.isEmpty) {
+                      return 'Informe o login.';
+                    }
+                    if (!RegExp(r'^[a-z0-9._-]+$').hasMatch(login)) {
+                      return 'Use apenas letras minúsculas, números, ponto, hífen ou underline.';
+                    }
+                    return null;
+                  },
+                ),
+                const SizedBox(height: 14),
+                _DialogField(
+                  controller: _cellPhoneController,
+                  label: 'Celular',
+                  keyboardType: TextInputType.phone,
+                  inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                  validator: (value) {
+                    final normalized = (value ?? '').trim();
+                    if (normalized.isEmpty) {
+                      return 'Informe o celular.';
+                    }
+                    if (!RegExp(r'^[0-9]+$').hasMatch(normalized)) {
+                      return 'Digite apenas números.';
+                    }
+                    return null;
+                  },
+                ),
+                const SizedBox(height: 14),
+                _DialogField(
+                  controller: _roleController,
+                  label: 'Função',
+                  validator: (value) {
+                    if ((value ?? '').trim().isEmpty) {
+                      return 'Informe a função.';
+                    }
+                    return null;
+                  },
+                ),
+                const SizedBox(height: 14),
+                TextFormField(
+                  controller: _accessCodeController,
+                  obscureText: _obscureAccessCode,
+                  decoration: InputDecoration(
+                    labelText: _isEditing
+                        ? 'Novo código de acesso'
+                        : 'Código de acesso',
+                    hintText: _isEditing
+                        ? 'Deixe em branco para manter o atual'
+                        : null,
+                    border: const OutlineInputBorder(),
+                    suffixIcon: IconButton(
+                      onPressed: () {
+                        setState(() {
+                          _obscureAccessCode = !_obscureAccessCode;
+                        });
+                      },
+                      icon: Icon(
+                        _obscureAccessCode
+                            ? Icons.visibility_outlined
+                            : Icons.visibility_off_outlined,
+                      ),
+                    ),
+                  ),
+                  validator: (value) {
+                    final normalized = (value ?? '').trim();
+                    if (_isEditing && normalized.isEmpty) {
+                      return null;
+                    }
+                    if (normalized.length < 4) {
+                      return 'Use pelo menos 4 caracteres.';
+                    }
+                    return null;
+                  },
+                ),
+                const SizedBox(height: 14),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(16),
+                  decoration: _panelDecoration(context),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          _WorkspaceProfileAvatarPreview(
+                            name: _nameController.text,
+                            photoFilePath: _photoFilePath,
+                            size: 62,
+                          ),
+                          const SizedBox(width: 14),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text(
+                                  'Foto do usuário',
+                                  style: TextStyle(
+                                    fontSize: 16,
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  _photoFileName.isEmpty
+                                      ? 'Opcional. Você pode carregar uma foto para exibir no sistema.'
+                                      : _photoFileName,
+                                  style: const TextStyle(
+                                    color: Color(0xFF52605C),
+                                    height: 1.4,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 14),
+                      Wrap(
+                        spacing: 10,
+                        runSpacing: 10,
+                        children: [
+                          OutlinedButton.icon(
+                            onPressed: _pickPhoto,
+                            icon: const Icon(Icons.photo_camera_back_outlined),
+                            label: Text(
+                              _photoFilePath == null
+                                  ? 'Adicionar foto'
+                                  : 'Trocar foto',
+                            ),
+                          ),
+                          if (_photoFilePath != null)
+                            TextButton.icon(
+                              onPressed: () {
+                                setState(() {
+                                  _photoFileName = '';
+                                  _photoFilePath = null;
+                                });
+                              },
+                              icon: const Icon(Icons.delete_outline),
+                              label: const Text('Remover foto'),
+                            ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 14),
+                SwitchListTile.adaptive(
+                  value: _isAdministrator,
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Conta administradora'),
+                  subtitle: const Text(
+                    'Administradores recebem visão completa do fluxo e acesso ao painel de gestão.',
+                  ),
+                  onChanged: (value) {
+                    setState(() {
+                      _isAdministrator = value;
+                    });
+                  },
+                ),
+                const SizedBox(height: 14),
+                Text(
+                  'Quadros liberados',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  _isAdministrator
+                      ? 'Como esta conta é administradora, todos os quadros serão liberados automaticamente.'
+                      : 'Selecione os quadros que este usuário poderá acessar.',
+                  style: const TextStyle(color: Color(0xFF52605C), height: 1.4),
+                ),
+                const SizedBox(height: 14),
+                if (_isAdministrator)
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: workflowStages
+                        .map(
+                          (stage) => _StatusBadge(
+                            label: stage.title,
+                            color: stage.color,
+                          ),
+                        )
+                        .toList(growable: false),
+                  )
+                else
+                  Wrap(
+                    spacing: 10,
+                    runSpacing: 10,
+                    children: workflowStages
+                        .map(
+                          (stage) => FilterChip(
+                            selected: _selectedStages.contains(stage),
+                            onSelected: (_) => _toggleStage(stage),
+                            label: Text(stage.title),
+                            avatar: Icon(
+                              stage.icon,
+                              size: 18,
+                              color: stage.color,
+                            ),
+                            selectedColor: stage.color.withValues(alpha: 0.14),
+                            checkmarkColor: stage.color,
+                            side: BorderSide(
+                              color: _selectedStages.contains(stage)
+                                  ? stage.color
+                                  : const Color(0xFFD7E1DD),
+                            ),
+                          ),
+                        )
+                        .toList(growable: false),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancelar'),
+        ),
+        FilledButton(
+          onPressed: () {
+            if (!_formKey.currentState!.validate()) {
+              return;
+            }
+
+            if (!_isAdministrator && _selectedStages.isEmpty) {
+              return;
+            }
+
+            Navigator.of(context).pop(
+              _WorkspaceUserDraft(
+                name: _nameController.text.trim(),
+                login: _loginController.text.trim().toLowerCase(),
+                cellPhone: _cellPhoneController.text.trim(),
+                role: _roleController.text.trim(),
+                accessCode: _accessCodeController.text.trim(),
+                isAdministrator: _isAdministrator,
+                allowedStages: _selectedStages.toList(growable: false),
+                photoFileName: _photoFileName,
+                photoFilePath: _photoFilePath,
+              ),
+            );
+          },
+          child: Text(_isEditing ? 'Salvar alterações' : 'Criar usuário'),
+        ),
+      ],
+    );
+  }
+}
+
+class _WorkspaceProfileAvatarPreview extends StatelessWidget {
+  const _WorkspaceProfileAvatarPreview({
+    required this.name,
+    required this.photoFilePath,
+    required this.size,
+  });
+
+  final String name;
+  final String? photoFilePath;
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    final imageProvider = _resolveProfileImageProvider(photoFilePath);
+
+    return Container(
+      width: size,
+      height: size,
+      clipBehavior: Clip.antiAlias,
+      decoration: BoxDecoration(
+        color: const Color(0xFF12372A).withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: imageProvider != null
+          ? Image(
+              image: imageProvider,
+              fit: BoxFit.cover,
+              errorBuilder: (_, _, _) => _buildFallback(),
+            )
+          : _buildFallback(),
+    );
+  }
+
+  Widget _buildFallback() {
+    final text = name.trim().isEmpty
+        ? '?'
+        : name.trim().substring(0, 1).toUpperCase();
+
+    return Center(
+      child: Text(
+        text,
+        style: const TextStyle(
+          color: Color(0xFF12372A),
+          fontSize: 22,
+          fontWeight: FontWeight.w800,
+        ),
+      ),
+    );
+  }
+}
+
+class _AdminAccessSection extends StatelessWidget {
+  const _AdminAccessSection({
+    required this.currentProfile,
+    required this.profiles,
+    required this.selectedProfile,
+    required this.onSelectProfile,
+    required this.onCreateProfile,
+    required this.onEditProfile,
+    required this.currentUserEmail,
+    required this.onDeleteProfile,
+    required this.onToggleStage,
+  });
+
+  final EmployeeWorkspaceProfile currentProfile;
+  final List<EmployeeWorkspaceProfile> profiles;
+  final EmployeeWorkspaceProfile? selectedProfile;
+  final ValueChanged<String> onSelectProfile;
+  final Future<void> Function() onCreateProfile;
+  final Future<void> Function(EmployeeWorkspaceProfile profile) onEditProfile;
+  final String currentUserEmail;
+  final Future<void> Function(EmployeeWorkspaceProfile profile) onDeleteProfile;
+  final Future<void> Function(String email, WorkflowStage stage) onToggleStage;
+
+  @override
+  Widget build(BuildContext context) {
+    final isWide = MediaQuery.sizeOf(context).width >= 980;
+    final managedProfile = selectedProfile;
+    final administratorCount = profiles
+        .where((profile) => profile.isAdministrator)
+        .length;
+    final operationalCount = profiles.length - administratorCount;
+    final totalGrantedStages = profiles.fold<int>(
+      0,
+      (total, profile) => total + profile.allowedStages.length,
+    );
+    final fullyReleasedCount = profiles
+        .where(
+          (profile) => profile.allowedStages.length == workflowStages.length,
+        )
+        .length;
+
+    return ListView(
+      padding: const EdgeInsets.all(24),
+      children: [
+        Container(
+          padding: const EdgeInsets.all(24),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(28),
+            gradient: const LinearGradient(
+              colors: [Color(0xFF0B1220), Color(0xFF12372A), Color(0xFF0F766E)],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            boxShadow: const [
+              BoxShadow(
+                color: Color(0x3306120F),
+                blurRadius: 32,
+                offset: Offset(0, 18),
+              ),
+            ],
+          ),
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final showSideCard = constraints.maxWidth >= 840;
+
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (showSideCard)
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          flex: 7,
+                          child: _AdminHeroContent(
+                            currentProfile: currentProfile,
+                            profiles: profiles,
+                            selectedProfile: managedProfile,
+                          ),
+                        ),
+                        const SizedBox(width: 20),
+                        Expanded(
+                          flex: 4,
+                          child: _AdminHeroHighlightCard(
+                            selectedProfile: managedProfile,
+                            fullyReleasedCount: fullyReleasedCount,
+                            operationalCount: operationalCount,
+                          ),
+                        ),
+                      ],
+                    )
+                  else ...[
+                    _AdminHeroContent(
+                      currentProfile: currentProfile,
+                      profiles: profiles,
+                      selectedProfile: managedProfile,
+                    ),
+                    const SizedBox(height: 18),
+                    _AdminHeroHighlightCard(
+                      selectedProfile: managedProfile,
+                      fullyReleasedCount: fullyReleasedCount,
+                      operationalCount: operationalCount,
+                    ),
+                  ],
+                  const SizedBox(height: 20),
+                  Wrap(
+                    spacing: 14,
+                    runSpacing: 14,
+                    children: [
+                      _AdminSummaryPill(
+                        label: 'Usuários gerenciados',
+                        value: profiles.length.toString(),
+                        icon: Icons.groups_2_outlined,
+                      ),
+                      _AdminSummaryPill(
+                        label: 'Administradores',
+                        value: administratorCount.toString(),
+                        icon: Icons.admin_panel_settings_outlined,
+                      ),
+                      _AdminSummaryPill(
+                        label: 'Liberações ativas',
+                        value: totalGrantedStages.toString(),
+                        icon: Icons.visibility_outlined,
+                      ),
+                    ],
+                  ),
+                ],
+              );
+            },
+          ),
+        ),
+        const SizedBox(height: 24),
+        if (isWide)
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                flex: 4,
+                child: _AdminUserListPanel(
+                  profiles: profiles,
+                  selectedEmail: managedProfile?.email,
+                  onSelectProfile: onSelectProfile,
+                  onCreateProfile: onCreateProfile,
+                ),
+              ),
+              const SizedBox(width: 20),
+              Expanded(
+                flex: 6,
+                child: _AdminPermissionsPanel(
+                  profile: managedProfile,
+                  canDeleteProfile:
+                      managedProfile != null &&
+                      managedProfile.email != currentUserEmail,
+                  onEditProfile: onEditProfile,
+                  onDeleteProfile: onDeleteProfile,
+                  onToggleStage: onToggleStage,
+                ),
+              ),
+            ],
+          )
+        else ...[
+          _AdminUserListPanel(
+            profiles: profiles,
+            selectedEmail: managedProfile?.email,
+            onSelectProfile: onSelectProfile,
+            onCreateProfile: onCreateProfile,
+          ),
+          const SizedBox(height: 18),
+          _AdminPermissionsPanel(
+            profile: managedProfile,
+            canDeleteProfile:
+                managedProfile != null &&
+                managedProfile.email != currentUserEmail,
+            onEditProfile: onEditProfile,
+            onDeleteProfile: onDeleteProfile,
+            onToggleStage: onToggleStage,
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+class _AdminHeroContent extends StatelessWidget {
+  const _AdminHeroContent({
+    required this.currentProfile,
+    required this.profiles,
+    required this.selectedProfile,
+  });
+
+  final EmployeeWorkspaceProfile currentProfile;
+  final List<EmployeeWorkspaceProfile> profiles;
+  final EmployeeWorkspaceProfile? selectedProfile;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            _AdminProfileAvatar(profile: currentProfile, large: true),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 8,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.10),
+                      borderRadius: BorderRadius.circular(999),
+                      border: Border.all(
+                        color: Colors.white.withValues(alpha: 0.16),
+                      ),
+                    ),
+                    child: const Text(
+                      'Administração de usuários',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  Text(
+                    currentProfile.name,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 30,
+                      fontWeight: FontWeight.w800,
+                      height: 1.05,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        const Text(
+          'Organize o acesso de cada colaborador por setor e publique a liberação em tempo real no Firebase.',
+          style: TextStyle(
+            color: Color(0xFFE2E8F0),
+            fontSize: 16,
+            height: 1.45,
+          ),
+        ),
+        const SizedBox(height: 18),
+        Wrap(
+          spacing: 10,
+          runSpacing: 10,
+          children: [
+            _StatusBadge(
+              label: '${profiles.length} perfis conectados',
+              color: Colors.white,
+            ),
+            _StatusBadge(
+              label: selectedProfile == null
+                  ? 'Selecione um usuário para editar'
+                  : 'Editando ${selectedProfile!.name}',
+              color: const Color(0xFF93C5FD),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _AdminHeroHighlightCard extends StatelessWidget {
+  const _AdminHeroHighlightCard({
+    required this.selectedProfile,
+    required this.fullyReleasedCount,
+    required this.operationalCount,
+  });
+
+  final EmployeeWorkspaceProfile? selectedProfile;
+  final int fullyReleasedCount;
+  final int operationalCount;
+
+  @override
+  Widget build(BuildContext context) {
+    final profile = selectedProfile;
+
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.14)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(
+            children: [
+              Icon(Icons.flash_on_outlined, color: Colors.white),
+              SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'Painel instantâneo',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w800,
+                    fontSize: 16,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Text(
+            profile == null
+                ? 'As permissões de visualização são publicadas assim que você altera os setores.'
+                : '${profile.name} está com ${profile.allowedStages.length} de ${workflowStages.length} setores liberados.',
+            style: const TextStyle(color: Color(0xFFE2E8F0), height: 1.45),
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Expanded(
+                child: _AdminHighlightMetric(
+                  label: 'Perfis completos',
+                  value: fullyReleasedCount.toString(),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _AdminHighlightMetric(
+                  label: 'Operacionais',
+                  value: operationalCount.toString(),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AdminHighlightMetric extends StatelessWidget {
+  const _AdminHighlightMetric({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(18),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            value,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 22,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(label, style: const TextStyle(color: Color(0xFFE2E8F0))),
+        ],
+      ),
+    );
+  }
+}
+
+class _AdminUserListPanel extends StatelessWidget {
+  const _AdminUserListPanel({
+    required this.profiles,
+    required this.selectedEmail,
+    required this.onSelectProfile,
+    required this.onCreateProfile,
+  });
+
+  final List<EmployeeWorkspaceProfile> profiles;
+  final String? selectedEmail;
+  final ValueChanged<String> onSelectProfile;
+  final Future<void> Function() onCreateProfile;
+
+  @override
+  Widget build(BuildContext context) {
+    final sortedProfiles = [...profiles]
+      ..sort((left, right) {
+        final adminPriority =
+            (right.isAdministrator ? 1 : 0) - (left.isAdministrator ? 1 : 0);
+        if (adminPriority != 0) {
+          return adminPriority;
+        }
+
+        return left.name.toLowerCase().compareTo(right.name.toLowerCase());
+      });
+    final selectedProfile = profiles
+        .where((profile) => profile.email == selectedEmail)
+        .firstOrNull;
+    final administrators = profiles
+        .where((profile) => profile.isAdministrator)
+        .length;
+    final operators = profiles.length - administrators;
+
+    return Container(
+      padding: const EdgeInsets.all(22),
+      decoration: _panelDecoration(context),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF0F172A).withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: const Icon(
+                  Icons.manage_accounts_outlined,
+                  color: Color(0xFF0F172A),
+                ),
+              ),
+              const SizedBox(width: 12),
+              const Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Equipe e acessos',
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    Text(
+                      'Selecione um perfil para revisar o escopo liberado por setor.',
+                      style: TextStyle(color: Color(0xFF52605C)),
+                    ),
+                  ],
+                ),
+              ),
+              FilledButton.icon(
+                onPressed: onCreateProfile,
+                icon: const Icon(Icons.person_add_alt_1_outlined),
+                label: const Text('Novo usuário'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 18),
+          Row(
+            children: [
+              Expanded(
+                child: _AdminCompactInfoCard(
+                  label: 'Administradores',
+                  value: administrators.toString(),
+                  accent: const Color(0xFF0F172A),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _AdminCompactInfoCard(
+                  label: 'Operacionais',
+                  value: operators.toString(),
+                  accent: const Color(0xFF0F766E),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 18),
+          if (selectedProfile != null)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(18),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [
+                    selectedProfile.accent.withValues(alpha: 0.16),
+                    selectedProfile.accent.withValues(alpha: 0.06),
+                  ],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+                borderRadius: BorderRadius.circular(18),
+                border: Border.all(
+                  color: selectedProfile.accent.withValues(alpha: 0.35),
+                ),
+              ),
+              child: Row(
+                children: [
+                  _AdminProfileAvatar(profile: selectedProfile, large: true),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          selectedProfile.name,
+                          style: const TextStyle(
+                            fontSize: 17,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        if (selectedProfile.cellPhone.trim().isNotEmpty)
+                          Text(
+                            selectedProfile.cellPhone,
+                            style: const TextStyle(color: Color(0xFF52605C)),
+                          ),
+                        if (selectedProfile.cellPhone.trim().isNotEmpty)
+                          const SizedBox(height: 4),
+                        Text(
+                          '${selectedProfile.allowedStages.length} setores liberados no momento',
+                          style: const TextStyle(color: Color(0xFF52605C)),
+                        ),
+                        const SizedBox(height: 10),
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(999),
+                          child: LinearProgressIndicator(
+                            minHeight: 8,
+                            value:
+                                selectedProfile.allowedStages.length /
+                                workflowStages.length,
+                            backgroundColor: Colors.white.withValues(
+                              alpha: 0.55,
+                            ),
+                            valueColor: AlwaysStoppedAnimation<Color>(
+                              selectedProfile.accent,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          if (selectedProfile != null) const SizedBox(height: 16),
+          ...sortedProfiles.map(
+            (profile) => Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: InkWell(
+                onTap: () => onSelectProfile(profile.email),
+                borderRadius: BorderRadius.circular(18),
+                child: Container(
+                  padding: const EdgeInsets.all(18),
+                  decoration: BoxDecoration(
+                    gradient: selectedEmail == profile.email
+                        ? LinearGradient(
+                            colors: [
+                              profile.accent.withValues(alpha: 0.14),
+                              profile.accent.withValues(alpha: 0.04),
+                            ],
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                          )
+                        : null,
+                    color: selectedEmail == profile.email
+                        ? null
+                        : Theme.of(context).brightness == Brightness.dark
+                        ? const Color(0xFF121E1B)
+                        : Colors.white,
+                    borderRadius: BorderRadius.circular(18),
+                    border: Border.all(
+                      color: selectedEmail == profile.email
+                          ? profile.accent
+                          : const Color(0xFFE2E8F0),
+                    ),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          _AdminProfileAvatar(profile: profile),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  profile.name,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w700,
+                                    fontSize: 15,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  '@${profile.login}',
+                                  style: const TextStyle(
+                                    color: Color(0xFF52605C),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          if (selectedEmail == profile.email)
+                            Icon(
+                              Icons.check_circle_rounded,
+                              color: profile.accent,
+                            )
+                          else
+                            const Icon(
+                              Icons.chevron_right_rounded,
+                              color: Color(0xFF94A3B8),
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(999),
+                        child: LinearProgressIndicator(
+                          minHeight: 7,
+                          value:
+                              profile.allowedStages.length /
+                              workflowStages.length,
+                          backgroundColor:
+                              Theme.of(context).brightness == Brightness.dark
+                              ? const Color(0xFF20312C)
+                              : const Color(0xFFE2E8F0),
+                          valueColor: AlwaysStoppedAnimation<Color>(
+                            profile.accent,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          _StatusBadge(
+                            label: profile.isAdministrator
+                                ? 'Administrador'
+                                : 'Usuário',
+                            color: profile.isAdministrator
+                                ? const Color(0xFF0F172A)
+                                : profile.accent,
+                          ),
+                          _StatusBadge(
+                            label:
+                                '${profile.allowedStages.length}/${workflowStages.length} setores',
+                            color: profile.accent,
+                          ),
+                          _StatusBadge(
+                            label: profile.role,
+                            color: const Color(0xFF475569),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AdminPermissionsPanel extends StatelessWidget {
+  const _AdminPermissionsPanel({
+    required this.profile,
+    required this.canDeleteProfile,
+    required this.onEditProfile,
+    required this.onDeleteProfile,
+    required this.onToggleStage,
+  });
+
+  final EmployeeWorkspaceProfile? profile;
+  final bool canDeleteProfile;
+  final Future<void> Function(EmployeeWorkspaceProfile profile) onEditProfile;
+  final Future<void> Function(EmployeeWorkspaceProfile profile) onDeleteProfile;
+  final Future<void> Function(String email, WorkflowStage stage) onToggleStage;
+
+  @override
+  Widget build(BuildContext context) {
+    if (profile == null) {
+      return Container(
+        padding: const EdgeInsets.all(24),
+        decoration: _panelDecoration(context),
+        child: const Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Permissões por setor',
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
+            ),
+            SizedBox(height: 10),
+            Text(
+              'Selecione um usuário para editar as permissões e publicar a liberação imediatamente no Firebase.',
+              style: TextStyle(color: Color(0xFF52605C), height: 1.45),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final managedProfile = profile!;
+    final releasedStageCount = managedProfile.allowedStages.length;
+    final blockedStageCount = workflowStages.length - releasedStageCount;
+
+    return Container(
+      padding: const EdgeInsets.all(24),
+      decoration: _panelDecoration(context),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _AdminProfileAvatar(profile: managedProfile, large: true),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      managedProfile.name,
+                      style: const TextStyle(
+                        fontSize: 24,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      managedProfile.cellPhone.trim().isEmpty
+                          ? '${managedProfile.role}  •  @${managedProfile.login}'
+                          : '${managedProfile.role}  •  ${managedProfile.cellPhone}  •  @${managedProfile.login}',
+                      style: const TextStyle(color: Color(0xFF52605C)),
+                    ),
+                    const SizedBox(height: 10),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        _StatusBadge(
+                          label: managedProfile.isAdministrator
+                              ? 'Conta administradora'
+                              : 'Perfil operacional',
+                          color: managedProfile.isAdministrator
+                              ? const Color(0xFF0F172A)
+                              : managedProfile.accent,
+                        ),
+                        _StatusBadge(
+                          label: '@${managedProfile.login}',
+                          color: const Color(0xFF475569),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              IconButton.filledTonal(
+                onPressed: () async {
+                  await onEditProfile(managedProfile);
+                },
+                tooltip: 'Editar usuário',
+                icon: const Icon(Icons.edit_outlined),
+              ),
+              const SizedBox(width: 8),
+              if (canDeleteProfile)
+                IconButton.filledTonal(
+                  onPressed: () async {
+                    await onDeleteProfile(managedProfile);
+                  },
+                  tooltip: 'Excluir usuário',
+                  style: IconButton.styleFrom(
+                    foregroundColor: const Color(0xFFB91C1C),
+                  ),
+                  icon: const Icon(Icons.delete_outline),
+                ),
+            ],
+          ),
+          const SizedBox(height: 18),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(18),
+            decoration: BoxDecoration(
+              color: Theme.of(context).brightness == Brightness.dark
+                  ? const Color(0xFF121E1B)
+                  : const Color(0xFFF8FAFC),
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(
+                color: Theme.of(context).brightness == Brightness.dark
+                    ? const Color(0xFF29403A)
+                    : const Color(0xFFE2E8F0),
+              ),
+            ),
+            child: const Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(Icons.info_outline_rounded, color: Color(0xFF0F766E)),
+                SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    'A conta administradora centraliza a gestão do sistema. Nesta tela você define apenas o que cada usuário pode visualizar e a alteração entra em vigor imediatamente.',
+                    style: TextStyle(color: Color(0xFF52605C), height: 1.45),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 18),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final isCompact = constraints.maxWidth < 760;
+              final cardWidth = isCompact
+                  ? constraints.maxWidth
+                  : (constraints.maxWidth - 28) / 3;
+
+              return Wrap(
+                spacing: 14,
+                runSpacing: 14,
+                children: [
+                  SizedBox(
+                    width: cardWidth,
+                    child: _AdminStatCard(
+                      label: 'Setores liberados',
+                      value: releasedStageCount.toString(),
+                      accent: managedProfile.accent,
+                      icon: Icons.visibility_outlined,
+                    ),
+                  ),
+                  SizedBox(
+                    width: cardWidth,
+                    child: _AdminStatCard(
+                      label: 'Setores bloqueados',
+                      value: blockedStageCount.toString(),
+                      accent: const Color(0xFFB45309),
+                      icon: Icons.visibility_off_outlined,
+                    ),
+                  ),
+                  SizedBox(
+                    width: cardWidth,
+                    child: _AdminStatCard(
+                      label: 'Perfil',
+                      value: managedProfile.isAdministrator ? 'ADM' : 'USER',
+                      accent: const Color(0xFF0F766E),
+                      icon: Icons.badge_outlined,
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
+          const SizedBox(height: 22),
+          const Text(
+            'Setores e quadros visíveis',
+            style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Ative ou desative cada setor para publicar a liberação imediatamente no Firebase.',
+            style: TextStyle(color: Color(0xFF52605C)),
+          ),
+          const SizedBox(height: 16),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final useGrid = constraints.maxWidth >= 860;
+              final cardWidth = useGrid
+                  ? (constraints.maxWidth - 14) / 2
+                  : constraints.maxWidth;
+
+              return Wrap(
+                spacing: 14,
+                runSpacing: 14,
+                children: workflowStages
+                    .map(
+                      (stage) => SizedBox(
+                        width: cardWidth,
+                        child: _AdminStagePermissionCard(
+                          stage: stage,
+                          selected: managedProfile.allowedStages.contains(
+                            stage,
+                          ),
+                          onToggle: () async {
+                            await onToggleStage(managedProfile.email, stage);
+                          },
+                        ),
+                      ),
+                    )
+                    .toList(growable: false),
+              );
+            },
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AdminSummaryPill extends StatelessWidget {
+  const _AdminSummaryPill({
+    required this.label,
+    required this.value,
+    required this.icon,
+  });
+
+  final String label;
+  final String value;
+  final IconData icon;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.16)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(icon, color: Colors.white, size: 18),
+          ),
+          const SizedBox(width: 10),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                value,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              Text(
+                label,
+                style: TextStyle(color: Colors.white.withValues(alpha: 0.78)),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AdminProfileAvatar extends StatelessWidget {
+  const _AdminProfileAvatar({required this.profile, this.large = false});
+
+  final EmployeeWorkspaceProfile profile;
+  final bool large;
+
+  @override
+  Widget build(BuildContext context) {
+    final size = large ? 54.0 : 42.0;
+    final text = profile.name.trim().isEmpty
+        ? '?'
+        : profile.name.trim().substring(0, 1).toUpperCase();
+    final imageProvider = _resolveProfileImageProvider(profile.photoFilePath);
+
+    return Container(
+      width: size,
+      height: size,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: profile.accent.withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(large ? 18 : 14),
+        border: Border.all(color: profile.accent.withValues(alpha: 0.35)),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: imageProvider != null
+          ? Image(
+              image: imageProvider,
+              fit: BoxFit.cover,
+              errorBuilder: (_, _, _) => _buildFallback(text),
+            )
+          : _buildFallback(text),
+    );
+  }
+
+  Widget _buildFallback(String text) {
+    return Center(
+      child: Text(
+        text,
+        style: TextStyle(
+          color: profile.accent,
+          fontSize: large ? 22 : 18,
+          fontWeight: FontWeight.w800,
+        ),
+      ),
+    );
+  }
+}
+
+class _AdminStatCard extends StatelessWidget {
+  const _AdminStatCard({
+    required this.label,
+    required this.value,
+    required this.accent,
+    required this.icon,
+  });
+
+  final String label;
+  final String value;
+  final Color accent;
+  final IconData icon;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: accent.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: accent.withValues(alpha: 0.24)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, color: accent),
+          const SizedBox(height: 12),
+          Text(
+            value,
+            style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            label,
+            style: const TextStyle(color: Color(0xFF52605C), height: 1.35),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AdminStagePermissionCard extends StatelessWidget {
+  const _AdminStagePermissionCard({
+    required this.stage,
+    required this.selected,
+    required this.onToggle,
+  });
+
+  final WorkflowStage stage;
+  final bool selected;
+  final Future<void> Function() onToggle;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    final borderColor = selected
+        ? stage.color.withValues(alpha: 0.35)
+        : isDarkMode
+        ? const Color(0xFF29403A)
+        : const Color(0xFFD7E1DD);
+
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 180),
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: selected
+            ? stage.color.withValues(alpha: 0.10)
+            : isDarkMode
+            ? const Color(0xFF121E1B)
+            : const Color(0xFFF8FAFC),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: borderColor),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: stage.color.withValues(alpha: 0.14),
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                child: Icon(stage.icon, color: stage.color),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            stage.title,
+                            style: const TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                        ),
+                        _StatusBadge(
+                          label: selected ? 'Liberado' : 'Bloqueado',
+                          color: selected
+                              ? stage.color
+                              : const Color(0xFF64748B),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      stage.subtitle,
+                      style: const TextStyle(
+                        color: Color(0xFF52605C),
+                        height: 1.45,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: BoxDecoration(
+              color: isDarkMode
+                  ? Colors.black.withValues(alpha: 0.18)
+                  : Colors.white.withValues(alpha: 0.72),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(
+                color: selected
+                    ? stage.color.withValues(alpha: 0.24)
+                    : isDarkMode
+                    ? const Color(0xFF29403A)
+                    : const Color(0xFFE2E8F0),
+              ),
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        selected
+                            ? 'Visualização liberada'
+                            : 'Visualização bloqueada',
+                        style: const TextStyle(fontWeight: FontWeight.w700),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        selected
+                            ? 'Este setor já está disponível para o usuário.'
+                            : 'Ative para publicar a liberação imediatamente.',
+                        style: const TextStyle(
+                          color: Color(0xFF52605C),
+                          height: 1.35,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Switch.adaptive(
+                  value: selected,
+                  activeThumbColor: stage.color,
+                  activeTrackColor: stage.color.withValues(alpha: 0.35),
+                  onChanged: (_) async {
+                    await onToggle();
+                  },
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AdminCompactInfoCard extends StatelessWidget {
+  const _AdminCompactInfoCard({
+    required this.label,
+    required this.value,
+    required this.accent,
+  });
+
+  final String label;
+  final String value;
+  final Color accent;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: accent.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: accent.withValues(alpha: 0.18)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            value,
+            style: TextStyle(
+              color: accent,
+              fontWeight: FontWeight.w800,
+              fontSize: 22,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(label, style: const TextStyle(color: Color(0xFF52605C))),
+        ],
+      ),
+    );
+  }
+}
+
+class _StageWorkspaceSection extends StatelessWidget {
+  const _StageWorkspaceSection({
+    required this.stage,
+    required this.currentProfile,
+    required this.canDeleteOrder,
+    required this.orders,
+    required this.selectedOrder,
+    required this.onOrderSelected,
+    required this.onOpenOrderDetails,
+    required this.onOpenOrderConversation,
+    required this.onAdvanceOrder,
+    required this.onReturnOrder,
+    required this.onSendToEngineering,
+    required this.onSendToInstallation,
+    this.onAttachMaterials,
+    this.onAttachElectricalProject,
+    this.onAttachPanelLayout,
+    this.onAttachPushButtonTable,
+    this.onAttachEngineeringData,
+    this.onAttachConsolidatedProposal,
+    this.onAttachContract,
+    this.onAttachServiceOrderPdf,
+    this.onToggleFinanceClientApproval,
+    this.onScheduleInstallation,
+    this.onToggleInstallationExecutionItem,
+    this.onScheduleEngineeringActivity,
+    this.onUpdateEngineeringChecklistStatus,
+    this.onCreateServiceOrder,
+    this.onCreateAdditionalProposal,
+    this.onCreateOrder,
+    this.onEditOrder,
+    this.onDeleteOrder,
+    this.customerRegistrationSubtab,
+    this.onCustomerRegistrationSubtabChanged,
+    this.stageWorkspaceSubtab,
+    this.onStageWorkspaceSubtabChanged,
+    required this.selectedOrdersView,
+    required this.onOrdersViewChanged,
+    required this.selectedInstallationCalendarDate,
+    this.onInstallationCalendarDateChanged,
+    this.customerSearchQuery = '',
+    this.customerSearchController,
+    this.onCustomerSearchChanged,
+    this.onClearCustomerSearch,
+    required this.workspaceProfiles,
+  });
+
+  final WorkflowStage stage;
+  final EmployeeWorkspaceProfile currentProfile;
+  final bool canDeleteOrder;
+  final List<WorkflowOrder> orders;
+  final WorkflowOrder? selectedOrder;
+  final ValueChanged<WorkflowOrder> onOrderSelected;
+  final Future<void> Function(WorkflowOrder order) onOpenOrderDetails;
+  final Future<void> Function(WorkflowOrder order) onOpenOrderConversation;
+  final Future<void> Function() onAdvanceOrder;
+  final Future<void> Function() onReturnOrder;
+  final Future<void> Function() onSendToEngineering;
+  final Future<void> Function() onSendToInstallation;
+  final Future<void> Function()? onAttachMaterials;
+  final Future<void> Function()? onAttachElectricalProject;
+  final Future<void> Function()? onAttachPanelLayout;
+  final Future<void> Function()? onAttachPushButtonTable;
+  final Future<void> Function()? onAttachEngineeringData;
+  final Future<void> Function()? onAttachConsolidatedProposal;
+  final Future<void> Function()? onAttachContract;
+  final Future<void> Function()? onAttachServiceOrderPdf;
+  final Future<void> Function()? onToggleFinanceClientApproval;
+  final Future<void> Function()? onScheduleInstallation;
+  final Future<void> Function(int visitIndex, String item)?
+  onToggleInstallationExecutionItem;
+  final Future<void> Function(String taskKey)? onScheduleEngineeringActivity;
+  final Future<void> Function(
+    String taskKey,
+    EngineeringChecklistStatus status,
+  )?
+  onUpdateEngineeringChecklistStatus;
+  final Future<void> Function()? onCreateServiceOrder;
+  final Future<void> Function()? onCreateAdditionalProposal;
+  final Future<void> Function()? onCreateOrder;
+  final Future<void> Function()? onEditOrder;
+  final Future<void> Function()? onDeleteOrder;
+  final int? customerRegistrationSubtab;
+  final ValueChanged<int>? onCustomerRegistrationSubtabChanged;
+  final int? stageWorkspaceSubtab;
+  final ValueChanged<int>? onStageWorkspaceSubtabChanged;
+  final _StageOrdersView selectedOrdersView;
+  final ValueChanged<_StageOrdersView> onOrdersViewChanged;
+  final DateTime selectedInstallationCalendarDate;
+  final ValueChanged<DateTime>? onInstallationCalendarDateChanged;
+  final String customerSearchQuery;
+  final TextEditingController? customerSearchController;
+  final ValueChanged<String>? onCustomerSearchChanged;
+  final VoidCallback? onClearCustomerSearch;
+  final List<EmployeeWorkspaceProfile> workspaceProfiles;
+
+  @override
+  Widget build(BuildContext context) {
+    final isMedium = MediaQuery.sizeOf(context).width >= 680;
+    final registrationStage = WorkflowStage.customerRegistration;
+    final hasWorkAndCatalogSubtabs =
+        _workAndCatalogStages.contains(stage) &&
+        stageWorkspaceSubtab != null &&
+        onStageWorkspaceSubtabChanged != null;
+    final isCustomerRegistration =
+        stage == WorkflowStage.customerRegistration &&
+        customerRegistrationSubtab != null &&
+        onCustomerRegistrationSubtabChanged != null;
+    final showingSharedCatalog =
+        !isCustomerRegistration && !hasWorkAndCatalogSubtabs;
+    final showingRegistrationInProgress =
+        isCustomerRegistration && customerRegistrationSubtab == 0;
+    final showingRegisteredClients =
+        isCustomerRegistration && customerRegistrationSubtab == 1;
+    final hasCalendarTab =
+        stage == WorkflowStage.installation ||
+        stage == WorkflowStage.engineering;
+    final registeredCatalogTabIndex = hasCalendarTab ? 2 : 1;
+    final showingWorkQueue =
+        hasWorkAndCatalogSubtabs && stageWorkspaceSubtab == 0;
+    final showingInstallationCalendar =
+        stage == WorkflowStage.installation &&
+        hasWorkAndCatalogSubtabs &&
+        stageWorkspaceSubtab == 1;
+    final showingEngineeringCalendar =
+        stage == WorkflowStage.engineering &&
+        hasWorkAndCatalogSubtabs &&
+        stageWorkspaceSubtab == 1;
+    final showingStageRegisteredClients =
+        hasWorkAndCatalogSubtabs &&
+        stageWorkspaceSubtab == registeredCatalogTabIndex;
+    final showingRegisteredCatalog =
+        showingSharedCatalog ||
+        showingRegisteredClients ||
+        showingStageRegisteredClients;
+    final registeredCatalogAccentStage = showingRegisteredCatalog
+        ? registrationStage
+        : stage;
+    final visibleOrders = showingRegisteredCatalog
+        ? orders
+              .where((item) {
+                if (item.currentStage == WorkflowStage.customerRegistration) {
+                  return false;
+                }
+
+                final query = customerSearchQuery.trim().toLowerCase();
+                if (query.isEmpty) {
+                  return true;
+                }
+
+                return item.client.id.toLowerCase().contains(query) ||
+                    item.client.name.toLowerCase().contains(query) ||
+                    item.workName.toLowerCase().contains(query) ||
+                    item.client.phone.toLowerCase().contains(query) ||
+                    item.address.toLowerCase().contains(query);
+              })
+              .toList(growable: false)
+        : showingInstallationCalendar
+        ? orders
+              .where((item) => item.currentStage == stage)
+              .toList(growable: false)
+        : showingEngineeringCalendar
+        ? orders
+              .where((item) => item.currentStage == stage)
+              .toList(growable: false)
+        : showingWorkQueue
+        ? orders
+              .where((item) => item.currentStage == stage)
+              .toList(growable: false)
+        : isCustomerRegistration
+        ? orders
+              .where(
+                (item) =>
+                    item.currentStage == WorkflowStage.customerRegistration,
+              )
+              .toList(growable: false)
+        : orders;
+    final currentProfileOwnerLabel = _workspaceProfileOwnerLabel(
+      currentProfile,
+    );
+    final stageIndex = workflowStages.indexOf(stage);
+    final currentKanbanOrders =
+        showingRegistrationInProgress || showingWorkQueue
+        ? visibleOrders
+        : const <WorkflowOrder>[];
+    final completedOrdersSource = showingRegisteredCatalog
+        ? visibleOrders
+        : orders;
+    final completedOrdersForStage = completedOrdersSource
+        .where((order) {
+          final orderStageIndex = workflowStages.indexOf(order.currentStage);
+          return orderStageIndex > stageIndex &&
+              order.ownerForStage(stage).trim().isNotEmpty;
+        })
+        .toList(growable: false);
+    final completedOrdersByOwner = <String, List<WorkflowOrder>>{};
+    for (final order in completedOrdersForStage) {
+      final owner = order.ownerForStage(stage).trim();
+      final ownerKey = owner.isEmpty ? 'Sem responsável' : owner;
+      completedOrdersByOwner
+          .putIfAbsent(ownerKey, () => <WorkflowOrder>[])
+          .add(order);
+    }
+    final completedOwnerEntries = completedOrdersByOwner.entries.toList(
+      growable: false,
+    );
+    final visibleCompletedOwnerEntries =
+        currentProfile.isAdministrator || currentProfileOwnerLabel.isEmpty
+        ? completedOwnerEntries
+        : completedOwnerEntries
+              .where((entry) => entry.key == currentProfileOwnerLabel)
+              .toList(growable: false);
+    final assemblyCompletedHistoryOrders = <WorkflowOrder>[];
+    if (stage == WorkflowStage.assembly) {
+      final seenCodes = <String>{};
+      for (final order in currentKanbanOrders) {
+        if (order.assemblyWorkflowStatus != AssemblyWorkflowStatus.done) {
+          continue;
+        }
+        if (seenCodes.add(order.code)) {
+          assemblyCompletedHistoryOrders.add(order);
+        }
+      }
+      for (final entry in visibleCompletedOwnerEntries) {
+        for (final order in entry.value) {
+          if (seenCodes.add(order.code)) {
+            assemblyCompletedHistoryOrders.add(order);
+          }
+        }
+      }
+    }
+    final kanbanColumns = stage == WorkflowStage.assembly && showingWorkQueue
+        ? <_OrdersKanbanColumnData>[
+            _OrdersKanbanColumnData(
+              title: 'Aguardando',
+              subtitle:
+                  '${currentKanbanOrders.where((order) => order.assemblyWorkflowStatus == AssemblyWorkflowStatus.waiting).length} aguardando',
+              accent: AssemblyWorkflowStatus.waiting.color,
+              icon: Icons.hourglass_bottom_rounded,
+              emptyMessage: 'Nenhum pedido aguardando início na montagem.',
+              orders: currentKanbanOrders
+                  .where(
+                    (order) =>
+                        order.assemblyWorkflowStatus ==
+                        AssemblyWorkflowStatus.waiting,
+                  )
+                  .toList(growable: false),
+            ),
+            _OrdersKanbanColumnData(
+              title: 'Em andamento',
+              subtitle:
+                  '${currentKanbanOrders.where((order) => order.assemblyWorkflowStatus == AssemblyWorkflowStatus.doing).length} em andamento',
+              accent: AssemblyWorkflowStatus.doing.color,
+              icon: Icons.precision_manufacturing_outlined,
+              emptyMessage: 'Nenhum pedido em produção na montagem.',
+              orders: currentKanbanOrders
+                  .where(
+                    (order) =>
+                        order.assemblyWorkflowStatus ==
+                        AssemblyWorkflowStatus.doing,
+                  )
+                  .toList(growable: false),
+            ),
+            _OrdersKanbanColumnData(
+              title: 'Concluído',
+              subtitle: '${assemblyCompletedHistoryOrders.length} no histórico',
+              accent: AssemblyWorkflowStatus.done.color,
+              icon: Icons.task_alt_rounded,
+              emptyMessage: 'Nenhuma conclusão registrada na montagem.',
+              orders: assemblyCompletedHistoryOrders,
+            ),
+          ]
+        : stage == WorkflowStage.installation && showingWorkQueue
+        ? <_OrdersKanbanColumnData>[
+            for (final status in InstallationWorkflowStatus.values)
+              _OrdersKanbanColumnData(
+                title: status.title,
+                subtitle:
+                    '${currentKanbanOrders.where((order) => order.installationWorkflowStatus == status).length} ${status.title.toLowerCase()}',
+                accent: status.color,
+                icon: switch (status) {
+                  InstallationWorkflowStatus.waiting =>
+                    Icons.hourglass_bottom_rounded,
+                  InstallationWorkflowStatus.scheduled =>
+                    Icons.event_available_outlined,
+                  InstallationWorkflowStatus.doing =>
+                    Icons.home_repair_service_outlined,
+                  InstallationWorkflowStatus.done => Icons.task_alt_rounded,
+                },
+                emptyMessage:
+                    'Nenhum pedido com instalação ${status.title.toLowerCase()}.',
+                orders: currentKanbanOrders
+                    .where(
+                      (order) => order.installationWorkflowStatus == status,
+                    )
+                    .toList(growable: false),
+              ),
+          ]
+        : <_OrdersKanbanColumnData>[
+            if (currentKanbanOrders.isNotEmpty || !showingRegisteredCatalog)
+              _OrdersKanbanColumnData(
+                title: stage.title,
+                subtitle: '${currentKanbanOrders.length} em andamento',
+                accent: stage.color,
+                icon: stage.icon,
+                emptyMessage: 'Nenhum pedido em andamento nesta etapa.',
+                orders: currentKanbanOrders,
+              ),
+            ...visibleCompletedOwnerEntries.map(
+              (entry) => _OrdersKanbanColumnData(
+                title: currentProfile.isAdministrator
+                    ? entry.key
+                    : 'Concluídos',
+                subtitle: currentProfile.isAdministrator
+                    ? '${entry.value.length} concluídos'
+                    : '${entry.value.length} concluídos por você',
+                accent: stage.color,
+                icon: Icons.task_alt_rounded,
+                emptyMessage: 'Nenhum pedido concluído.',
+                orders: entry.value,
+              ),
+            ),
+          ];
+    if (kanbanColumns.isEmpty) {
+      kanbanColumns.add(
+        _OrdersKanbanColumnData(
+          title: 'Concluídos',
+          subtitle: '0 concluídos',
+          accent: stage.color,
+          icon: Icons.task_alt_rounded,
+          emptyMessage: 'Nenhum pedido concluído.',
+          orders: const <WorkflowOrder>[],
+        ),
+      );
+    }
+    final topMetricCards = [
+      _MetricCard(
+        title: showingRegisteredCatalog
+            ? 'Clientes cadastrados'
+            : showingWorkQueue
+            ? 'Trabalhos'
+            : isCustomerRegistration
+            ? 'Em andamento'
+            : 'Pedidos na etapa',
+        value: visibleOrders.length.toString(),
+        icon: registeredCatalogAccentStage.icon,
+        accent: registeredCatalogAccentStage.color,
+      ),
+      if (!isCustomerRegistration)
+        _MetricCard(
+          title: showingRegisteredCatalog
+              ? 'No fluxo'
+              : showingWorkQueue
+              ? 'Em espera'
+              : 'Com bloqueio',
+          value: showingRegisteredCatalog
+              ? visibleOrders.length.toString()
+              : showingWorkQueue
+              ? visibleOrders.length.toString()
+              : visibleOrders
+                    .where(
+                      (item) => !item.blocker.startsWith('Nenhum bloqueio'),
+                    )
+                    .length
+                    .toString(),
+          icon: showingRegisteredCatalog
+              ? Icons.sync_alt_outlined
+              : showingWorkQueue
+              ? Icons.pending_actions_outlined
+              : Icons.report_problem_outlined,
+          accent: showingWorkQueue
+              ? stage.color
+              : registeredCatalogAccentStage.color,
+        ),
+    ];
+    void handleOrderTap(WorkflowOrder order) {
+      unawaited(onOpenOrderDetails(order));
+    }
+
+    void handleOpenConversation(WorkflowOrder order) {
+      unawaited(onOpenOrderConversation(order));
+    }
+
+    return ListView(
+      padding: const EdgeInsets.all(20),
+      children: [
+        if (isCustomerRegistration) ...[
+          _CustomerRegistrationSubtabs(
+            selectedIndex: customerRegistrationSubtab!,
+            onSelected: onCustomerRegistrationSubtabChanged!,
+          ),
+          const SizedBox(height: 16),
+        ] else if (hasWorkAndCatalogSubtabs) ...[
+          _StageWorkspaceSubtabs(
+            selectedIndex: stageWorkspaceSubtab!,
+            accentColor: stage.color,
+            showCalendarTab: hasCalendarTab,
+            onSelected: onStageWorkspaceSubtabChanged!,
+          ),
+          const SizedBox(height: 16),
+        ] else if (showingSharedCatalog) ...[
+          const _RegisteredClientsPreviewSubtabs(),
+          const SizedBox(height: 16),
+        ],
+        if (stage == WorkflowStage.installation &&
+            showingInstallationCalendar &&
+            onInstallationCalendarDateChanged != null) ...[
+          _InstallationCalendarBoard(
+            orders: visibleOrders,
+            selectedDate: selectedInstallationCalendarDate,
+            selectedOrder: selectedOrder,
+            onDateSelected: onInstallationCalendarDateChanged!,
+            onOrderSelected: onOrderSelected,
+            onScheduleSelectedOrder: onScheduleInstallation,
+          ),
+          const SizedBox(height: 20),
+        ],
+        if (stage == WorkflowStage.engineering &&
+            showingEngineeringCalendar) ...[
+          _EngineeringStageCalendarBoard(
+            orders: visibleOrders,
+            selectedOrder: selectedOrder,
+            onOrderSelected: onOrderSelected,
+          ),
+          const SizedBox(height: 20),
+        ],
+        if (showingRegisteredCatalog) ...[
+          _CustomerRegistrationUtilityCard(
+            icon: Icons.manage_search_outlined,
+            accent: registrationStage.color,
+            title: 'Pesquisa de clientes',
+            description:
+                'Busque por ID do cliente, nome, obra, telefone ou endereço.',
+            child: TextField(
+              controller: customerSearchController,
+              onChanged: onCustomerSearchChanged,
+              decoration: InputDecoration(
+                labelText: 'Pesquisar cliente',
+                hintText: 'Ex.: 1001 ou nome do cliente',
+                filled: true,
+                fillColor: const Color(0xFFF8FBFA),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(16),
+                  borderSide: const BorderSide(color: Color(0xFFD7E1DD)),
+                ),
+                prefixIcon: const Icon(Icons.search),
+                suffixIcon: customerSearchQuery.trim().isEmpty
+                    ? null
+                    : IconButton(
+                        onPressed: onClearCustomerSearch,
+                        icon: const Icon(Icons.close),
+                      ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 20),
+        ],
+        if (stage == WorkflowStage.customerRegistration &&
+            showingRegisteredCatalog) ...[
+          _CustomerRegistrationUtilityCard(
+            icon: Icons.post_add_outlined,
+            accent: registrationStage.color,
+            title: 'Nova proposta',
+            description:
+                'Abra a tela de nova proposta, escolha o cliente e gere uma proposta vinculada ao card principal.',
+            headerTrailing: isMedium
+                ? FilledButton.icon(
+                    onPressed: onCreateAdditionalProposal == null
+                        ? null
+                        : () async {
+                            await onCreateAdditionalProposal!();
+                          },
+                    style: FilledButton.styleFrom(
+                      backgroundColor: registrationStage.color,
+                      foregroundColor: Colors.white,
+                      minimumSize: const Size(0, 42),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 10,
+                      ),
+                    ),
+                    icon: const Icon(Icons.note_add_outlined),
+                    label: const Text('Nova proposta'),
+                  )
+                : null,
+            child: isMedium
+                ? null
+                : FilledButton.icon(
+                    onPressed: onCreateAdditionalProposal == null
+                        ? null
+                        : () async {
+                            await onCreateAdditionalProposal!();
+                          },
+                    style: FilledButton.styleFrom(
+                      backgroundColor: registrationStage.color,
+                      foregroundColor: Colors.white,
+                    ),
+                    icon: const Icon(Icons.note_add_outlined),
+                    label: const Text('Nova proposta'),
+                  ),
+          ),
+          const SizedBox(height: 20),
+        ],
+        if (showingRegistrationInProgress && onCreateOrder != null) ...[
+          _CustomerRegistrationUtilityCard(
+            icon: Icons.person_add_alt_1_outlined,
+            accent: stage.color,
+            title: 'Criar cadastro',
+            description:
+                'Cadastre a obra, telefone, endereço e os arquivos iniciais de proposta e detalhes.',
+            headerTrailing: isMedium
+                ? FilledButton.icon(
+                    onPressed: () async {
+                      await onCreateOrder!();
+                    },
+                    style: FilledButton.styleFrom(
+                      backgroundColor: stage.color,
+                      foregroundColor: Colors.white,
+                      minimumSize: const Size(0, 42),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 10,
+                      ),
+                    ),
+                    icon: const Icon(Icons.add_circle_outline),
+                    label: const Text('Criar cadastro'),
+                  )
+                : null,
+            child: isMedium
+                ? null
+                : FilledButton.icon(
+                    onPressed: () async {
+                      await onCreateOrder!();
+                    },
+                    style: FilledButton.styleFrom(
+                      backgroundColor: stage.color,
+                      foregroundColor: Colors.white,
+                    ),
+                    icon: const Icon(Icons.add_circle_outline),
+                    label: const Text('Criar cadastro'),
+                  ),
+          ),
+          const SizedBox(height: 20),
+        ],
+        if (stage == WorkflowStage.relationship &&
+            showingWorkQueue &&
+            onCreateServiceOrder != null) ...[
+          _CustomerRegistrationUtilityCard(
+            icon: Icons.assignment_outlined,
+            accent: stage.color,
+            title: 'Criar ordem de serviço',
+            description:
+                'Selecione um cliente, descreva o serviço e envie a OS direto para o Orçamentista.',
+            headerTrailing: isMedium
+                ? FilledButton.icon(
+                    onPressed: () async {
+                      await onCreateServiceOrder!();
+                    },
+                    style: FilledButton.styleFrom(
+                      backgroundColor: stage.color,
+                      foregroundColor: Colors.white,
+                      minimumSize: const Size(0, 42),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 10,
+                      ),
+                    ),
+                    icon: const Icon(Icons.add_task_outlined),
+                    label: const Text('Nova OS'),
+                  )
+                : null,
+            child: isMedium
+                ? null
+                : FilledButton.icon(
+                    onPressed: () async {
+                      await onCreateServiceOrder!();
+                    },
+                    style: FilledButton.styleFrom(
+                      backgroundColor: stage.color,
+                      foregroundColor: Colors.white,
+                    ),
+                    icon: const Icon(Icons.add_task_outlined),
+                    label: const Text('Nova OS'),
+                  ),
+          ),
+          const SizedBox(height: 20),
+        ],
+        if (showingRegistrationInProgress ||
+            showingRegisteredCatalog ||
+            showingWorkQueue) ...[
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final useTwoColumns = constraints.maxWidth >= 760;
+              final cardWidth = useTwoColumns
+                  ? (constraints.maxWidth - 16) / 2
+                  : constraints.maxWidth;
+
+              return Wrap(
+                spacing: 12,
+                runSpacing: 12,
+                children: topMetricCards
+                    .map((card) => SizedBox(width: cardWidth, child: card))
+                    .toList(growable: false),
+              );
+            },
+          ),
+          const SizedBox(height: 20),
+          _StageOrdersKanbanBoard(
+            columns: kanbanColumns,
+            allOrders: orders,
+            selectedOrderCode: selectedOrder?.code,
+            onOrderSelected: handleOrderTap,
+            onOpenOrderConversation: handleOpenConversation,
+            workspaceProfiles: workspaceProfiles,
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+class _CustomerRegistrationSubtabs extends StatelessWidget {
+  const _CustomerRegistrationSubtabs({
+    required this.selectedIndex,
+    required this.onSelected,
+  });
+
+  final int selectedIndex;
+  final ValueChanged<int> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF7FAF9),
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: const Color(0xFFDCE5E1)),
+      ),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final useColumn = constraints.maxWidth < 560;
+
+          if (useColumn) {
+            return Column(
+              children: [
+                _CustomerRegistrationSubtabButton(
+                  label: 'Cadastro em andamento',
+                  selected: selectedIndex == 0,
+                  onTap: () => onSelected(0),
+                ),
+                const SizedBox(height: 10),
+                _CustomerRegistrationSubtabButton(
+                  label: 'Clientes cadastrados',
+                  selected: selectedIndex == 1,
+                  onTap: () => onSelected(1),
+                ),
+              ],
+            );
+          }
+
+          return Row(
+            children: [
+              Expanded(
+                child: _CustomerRegistrationSubtabButton(
+                  label: 'Cadastro em andamento',
+                  selected: selectedIndex == 0,
+                  onTap: () => onSelected(0),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: _CustomerRegistrationSubtabButton(
+                  label: 'Clientes cadastrados',
+                  selected: selectedIndex == 1,
+                  onTap: () => onSelected(1),
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _StageWorkspaceSubtabs extends StatelessWidget {
+  const _StageWorkspaceSubtabs({
+    required this.selectedIndex,
+    required this.accentColor,
+    this.showCalendarTab = false,
+    required this.onSelected,
+  });
+
+  final int selectedIndex;
+  final Color accentColor;
+  final bool showCalendarTab;
+  final ValueChanged<int> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF4F7F6),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFE5EBE8)),
+      ),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final useColumn = constraints.maxWidth < 560;
+
+          if (useColumn) {
+            return Column(
+              children: [
+                _CustomerRegistrationSubtabButton(
+                  label: 'Trabalhos',
+                  selected: selectedIndex == 0,
+                  selectedColor: accentColor,
+                  onTap: () => onSelected(0),
+                ),
+                const SizedBox(height: 6),
+                if (showCalendarTab) ...[
+                  _CustomerRegistrationSubtabButton(
+                    label: 'Calendário',
+                    selected: selectedIndex == 1,
+                    selectedColor: accentColor,
+                    onTap: () => onSelected(1),
+                  ),
+                  const SizedBox(height: 6),
+                ],
+                _CustomerRegistrationSubtabButton(
+                  label: 'Clientes cadastrados',
+                  selected: selectedIndex == (showCalendarTab ? 2 : 1),
+                  selectedColor: accentColor,
+                  onTap: () => onSelected(showCalendarTab ? 2 : 1),
+                ),
+              ],
+            );
+          }
+
+          return Row(
+            children: [
+              Expanded(
+                child: _CustomerRegistrationSubtabButton(
+                  label: 'Trabalhos',
+                  selected: selectedIndex == 0,
+                  selectedColor: accentColor,
+                  onTap: () => onSelected(0),
+                ),
+              ),
+              const SizedBox(width: 6),
+              if (showCalendarTab) ...[
+                Expanded(
+                  child: _CustomerRegistrationSubtabButton(
+                    label: 'Calendário',
+                    selected: selectedIndex == 1,
+                    selectedColor: accentColor,
+                    onTap: () => onSelected(1),
+                  ),
+                ),
+                const SizedBox(width: 6),
+              ],
+              Expanded(
+                child: _CustomerRegistrationSubtabButton(
+                  label: 'Clientes cadastrados',
+                  selected: selectedIndex == (showCalendarTab ? 2 : 1),
+                  selectedColor: accentColor,
+                  onTap: () => onSelected(showCalendarTab ? 2 : 1),
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _RegisteredClientsPreviewSubtabs extends StatelessWidget {
+  const _RegisteredClientsPreviewSubtabs();
+
+  @override
+  Widget build(BuildContext context) {
+    return IgnorePointer(
+      child: Opacity(
+        opacity: 1,
+        child: Container(
+          padding: const EdgeInsets.all(4),
+          decoration: BoxDecoration(
+            color: const Color(0xFFF4F7F6),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: const Color(0xFFE5EBE8)),
+          ),
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final useColumn = constraints.maxWidth < 560;
+
+              if (useColumn) {
+                return Column(
+                  children: const [
+                    _CustomerRegistrationPreviewTabButton(
+                      label: 'Cadastro em andamento',
+                      selected: false,
+                    ),
+                    SizedBox(height: 6),
+                    _CustomerRegistrationPreviewTabButton(
+                      label: 'Clientes cadastrados',
+                      selected: true,
+                    ),
+                  ],
+                );
+              }
+
+              return const Row(
+                children: [
+                  Expanded(
+                    child: _CustomerRegistrationPreviewTabButton(
+                      label: 'Cadastro em andamento',
+                      selected: false,
+                    ),
+                  ),
+                  SizedBox(width: 6),
+                  Expanded(
+                    child: _CustomerRegistrationPreviewTabButton(
+                      label: 'Clientes cadastrados',
+                      selected: true,
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _CustomerRegistrationSubtabButton extends StatelessWidget {
+  const _CustomerRegistrationSubtabButton({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+    this.selectedColor = const Color(0xFF2563EB),
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+  final Color selectedColor;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 160),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        decoration: BoxDecoration(
+          color: selected ? Colors.white : Colors.transparent,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: selected
+                ? selectedColor.withValues(alpha: 0.24)
+                : Colors.transparent,
+          ),
+          boxShadow: selected
+              ? const [
+                  BoxShadow(
+                    color: Color(0x120F172A),
+                    blurRadius: 10,
+                    offset: Offset(0, 4),
+                  ),
+                ]
+              : null,
+        ),
+        child: Text(
+          label,
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            fontWeight: FontWeight.w700,
+            color: selected ? selectedColor : const Color(0xFF14211D),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _CustomerRegistrationPreviewTabButton extends StatelessWidget {
+  const _CustomerRegistrationPreviewTabButton({
+    required this.label,
+    required this.selected,
+  });
+
+  final String label;
+  final bool selected;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 160),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: selected ? Colors.white : Colors.transparent,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: selected
+              ? const Color(0xFF2563EB).withValues(alpha: 0.22)
+              : Colors.transparent,
+        ),
+        boxShadow: selected
+            ? const [
+                BoxShadow(
+                  color: Color(0x120F172A),
+                  blurRadius: 10,
+                  offset: Offset(0, 4),
+                ),
+              ]
+            : null,
+      ),
+      child: Text(
+        label,
+        textAlign: TextAlign.center,
+        style: TextStyle(
+          fontWeight: FontWeight.w700,
+          color: selected ? const Color(0xFF2563EB) : const Color(0xFF14211D),
+        ),
+      ),
+    );
+  }
+}
+
+class _CustomerRegistrationUtilityCard extends StatelessWidget {
+  const _CustomerRegistrationUtilityCard({
+    required this.icon,
+    required this.accent,
+    required this.title,
+    required this.description,
+    this.child,
+    this.headerTrailing,
+  });
+
+  final IconData icon;
+  final Color accent;
+  final String title;
+  final String description;
+  final Widget? child;
+  final Widget? headerTrailing;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: _panelDecoration(context),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 34,
+                height: 34,
+                decoration: BoxDecoration(
+                  color: isDarkMode
+                      ? accent.withValues(alpha: 0.14)
+                      : accent.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(9),
+                ),
+                child: Icon(icon, color: accent, size: 16),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: const TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      description,
+                      style: const TextStyle(
+                        color: Color(0xFF52605C),
+                        fontSize: 13,
+                        height: 1.35,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              if (headerTrailing != null) ...[
+                const SizedBox(width: 12),
+                headerTrailing!,
+              ],
+            ],
+          ),
+          if (child != null) ...[const SizedBox(height: 10), child!],
+        ],
+      ),
+    );
+  }
+}
+
+class _FlowNavbar extends StatelessWidget {
+  const _FlowNavbar({
+    required this.items,
+    required this.selectedIndex,
+    required this.onSelected,
+    required this.themeMode,
+    required this.onThemeModeChanged,
+    required this.notificationCount,
+    required this.notifications,
+    required this.onOpenNotification,
+  });
+
+  final List<_FlowNavItem> items;
+  final int selectedIndex;
+  final ValueChanged<int> onSelected;
+  final ThemeMode themeMode;
+  final ValueChanged<ThemeMode> onThemeModeChanged;
+  final int notificationCount;
+  final List<_OrderConversationNotification> notifications;
+  final ValueChanged<_OrderConversationNotification> onOpenNotification;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+
+    return Container(
+      decoration: _panelDecoration(context),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 18),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Container(
+            width: 48,
+            height: 48,
+            decoration: BoxDecoration(
+              color: isDarkMode
+                  ? const Color(0xFFE7F1EC)
+                  : const Color(0xFF17211E),
+              borderRadius: BorderRadius.circular(18),
+              boxShadow: isDarkMode
+                  ? null
+                  : const [
+                      BoxShadow(
+                        color: Color(0x120F172A),
+                        blurRadius: 18,
+                        offset: Offset(0, 10),
+                      ),
+                    ],
+            ),
+            child: Icon(
+              Icons.dashboard_customize_outlined,
+              color: isDarkMode ? const Color(0xFF17211E) : Colors.white,
+            ),
+          ),
+          const SizedBox(height: 18),
+          Expanded(
+            child: ListView.separated(
+              itemCount: items.length,
+              itemBuilder: (context, index) {
+                return _FlowNavbarTab(
+                  item: items[index],
+                  selected: selectedIndex == index,
+                  onTap: () => onSelected(index),
+                );
+              },
+              separatorBuilder: (context, index) => const SizedBox(height: 10),
+            ),
+          ),
+          const SizedBox(height: 12),
+          _ThemeModeSettingsButton(
+            themeMode: themeMode,
+            onThemeModeChanged: onThemeModeChanged,
+            compact: true,
+          ),
+          const SizedBox(height: 8),
+          _ConversationNotificationsButton(
+            notifications: notifications,
+            notificationCount: notificationCount,
+            onOpenNotification: onOpenNotification,
+            compact: true,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _FlowTopNavbar extends StatelessWidget {
+  const _FlowTopNavbar({
+    required this.items,
+    required this.selectedIndex,
+    required this.onSelected,
+    required this.themeMode,
+    required this.onThemeModeChanged,
+    required this.profile,
+    required this.notificationCount,
+    required this.notifications,
+    required this.onOpenNotification,
+    this.onSignOut,
+  });
+
+  final List<_FlowNavItem> items;
+  final int selectedIndex;
+  final ValueChanged<int> onSelected;
+  final ThemeMode themeMode;
+  final ValueChanged<ThemeMode> onThemeModeChanged;
+  final EmployeeWorkspaceProfile profile;
+  final int notificationCount;
+  final List<_OrderConversationNotification> notifications;
+  final ValueChanged<_OrderConversationNotification> onOpenNotification;
+  final VoidCallback? onSignOut;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: _panelDecoration(context),
+      padding: const EdgeInsets.all(14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Flexible(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      'ERP DANF',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontWeight: FontWeight.w800,
+                        fontSize: 18,
+                      ),
+                    ),
+                    Text(
+                      'Painel integrado',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontSize: 12, color: Color(0xFF52605C)),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 12),
+              _ThemeModeSettingsButton(
+                themeMode: themeMode,
+                onThemeModeChanged: onThemeModeChanged,
+              ),
+              const SizedBox(width: 8),
+              _ConversationNotificationsButton(
+                notifications: notifications,
+                notificationCount: notificationCount,
+                onOpenNotification: onOpenNotification,
+                compact: true,
+              ),
+              if (onSignOut != null) ...[
+                const SizedBox(width: 8),
+                _ShellProfileMenuButton(
+                  profile: profile,
+                  onSignOut: onSignOut!,
+                ),
+              ],
+            ],
+          ),
+          const SizedBox(height: 12),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                for (var index = 0; index < items.length; index++) ...[
+                  if (index > 0) const SizedBox(width: 10),
+                  _FlowTopNavbarTab(
+                    item: items[index],
+                    selected: selectedIndex == index,
+                    onTap: () => onSelected(index),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PlatformLogSection extends StatelessWidget {
+  const _PlatformLogSection({required this.entries, required this.onClearLogs});
+
+  final List<_PlatformLogEntry> entries;
+  final Future<void> Function() onClearLogs;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      padding: const EdgeInsets.all(24),
+      children: [
+        Container(
+          padding: const EdgeInsets.all(22),
+          decoration: _panelDecoration(context),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: const Color(0xFF0F172A).withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: const Icon(
+                  Icons.receipt_long_outlined,
+                  color: Color(0xFF0F172A),
+                ),
+              ),
+              const SizedBox(width: 14),
+              const Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Log da plataforma',
+                      style: TextStyle(
+                        fontSize: 24,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    SizedBox(height: 6),
+                    Text(
+                      'Histórico das ações operacionais registradas neste app.',
+                      style: TextStyle(color: Color(0xFF52605C), height: 1.35),
+                    ),
+                  ],
+                ),
+              ),
+              if (entries.isNotEmpty)
+                OutlinedButton.icon(
+                  onPressed: onClearLogs,
+                  icon: const Icon(Icons.delete_sweep_outlined),
+                  label: const Text('Limpar'),
+                ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 18),
+        if (entries.isEmpty)
+          Container(
+            padding: const EdgeInsets.all(24),
+            decoration: _panelDecoration(context),
+            child: const Text(
+              'Nenhuma ação registrada ainda.',
+              style: TextStyle(fontSize: 15),
+            ),
+          )
+        else
+          ...entries.map(
+            (entry) => Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Container(
+                padding: const EdgeInsets.all(18),
+                decoration: _panelDecoration(context),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                entry.action,
+                                style: const TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                              const SizedBox(height: 6),
+                              Text(
+                                '${entry.area} • ${entry.actor}',
+                                style: const TextStyle(
+                                  color: Color(0xFF52605C),
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Text(
+                          _formatDateTime(entry.createdAt),
+                          style: const TextStyle(
+                            color: Color(0xFF64748B),
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ],
+                    ),
+                    if (entry.details != null &&
+                        entry.details!.trim().isNotEmpty) ...[
+                      const SizedBox(height: 10),
+                      Text(
+                        entry.details!,
+                        style: const TextStyle(
+                          color: Color(0xFF334155),
+                          height: 1.35,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _FlowNavItem {
+  const _FlowNavItem({
+    required this.routeKey,
+    required this.label,
+    required this.icon,
+    required this.color,
+    this.stage,
+  });
+
+  final String routeKey;
+  final String label;
+  final IconData icon;
+  final Color color;
+  final WorkflowStage? stage;
+}
+
+class _ThemeModeSettingsButton extends StatelessWidget {
+  const _ThemeModeSettingsButton({
+    required this.themeMode,
+    required this.onThemeModeChanged,
+    this.compact = false,
+  });
+
+  final ThemeMode themeMode;
+  final ValueChanged<ThemeMode> onThemeModeChanged;
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) {
+    return PopupMenuButton<ThemeMode>(
+      tooltip: 'Configurações',
+      onSelected: onThemeModeChanged,
+      itemBuilder: (context) => [
+        PopupMenuItem<ThemeMode>(
+          value: ThemeMode.light,
+          child: Row(
+            children: [
+              Icon(
+                Icons.light_mode_outlined,
+                color: themeMode == ThemeMode.light
+                    ? Theme.of(context).colorScheme.primary
+                    : null,
+              ),
+              const SizedBox(width: 10),
+              const Expanded(child: Text('Modo claro')),
+              if (themeMode == ThemeMode.light)
+                Icon(
+                  Icons.check_rounded,
+                  color: Theme.of(context).colorScheme.primary,
+                ),
+            ],
+          ),
+        ),
+        PopupMenuItem<ThemeMode>(
+          value: ThemeMode.dark,
+          child: Row(
+            children: [
+              Icon(
+                Icons.dark_mode_outlined,
+                color: themeMode == ThemeMode.dark
+                    ? Theme.of(context).colorScheme.primary
+                    : null,
+              ),
+              const SizedBox(width: 10),
+              const Expanded(child: Text('Modo escuro')),
+              if (themeMode == ThemeMode.dark)
+                Icon(
+                  Icons.check_rounded,
+                  color: Theme.of(context).colorScheme.primary,
+                ),
+            ],
+          ),
+        ),
+      ],
+      child: Container(
+        width: compact ? 48 : null,
+        padding: EdgeInsets.all(compact ? 10 : 11),
+        decoration: BoxDecoration(
+          color: Theme.of(context).brightness == Brightness.dark
+              ? const Color(0xFF121C19)
+              : Colors.white.withValues(alpha: 0.94),
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(
+            color: Theme.of(context).brightness == Brightness.dark
+                ? const Color(0xFF23322E)
+                : const Color(0xFFE4EAE5),
+          ),
+        ),
+        child: Icon(
+          Icons.tune_rounded,
+          color: Theme.of(context).brightness == Brightness.dark
+              ? const Color(0xFFE7F1EC)
+              : const Color(0xFF17211E),
+        ),
+      ),
+    );
+  }
+}
+
+class _PlatformLogEntry {
+  const _PlatformLogEntry({
+    required this.actor,
+    required this.action,
+    required this.area,
+    required this.createdAt,
+    this.details,
+  });
+
+  final String actor;
+  final String action;
+  final String area;
+  final DateTime createdAt;
+  final String? details;
+
+  Map<String, dynamic> toMap() {
+    return {
+      'actor': actor,
+      'action': action,
+      'area': area,
+      'createdAt': createdAt.toIso8601String(),
+      'details': details,
+    };
+  }
+
+  factory _PlatformLogEntry.fromMap(Map<String, dynamic> map) {
+    return _PlatformLogEntry(
+      actor: map['actor']?.toString() ?? 'Sistema',
+      action: map['action']?.toString() ?? 'Ação',
+      area: map['area']?.toString() ?? 'Geral',
+      createdAt:
+          DateTime.tryParse(map['createdAt']?.toString() ?? '') ??
+          DateTime.now(),
+      details: map['details']?.toString(),
+    );
+  }
+}
+
+class _FlowNavbarTab extends StatelessWidget {
+  const _FlowNavbarTab({
+    required this.item,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final _FlowNavItem item;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final foregroundColor = _resolveNavItemForegroundColor(
+      context: context,
+      itemColor: item.color,
+      selected: selected,
+    );
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    final borderColor = selected
+        ? Colors.transparent
+        : isDarkMode
+        ? const Color(0xFF23322E)
+        : const Color(0xFFE4EAE5);
+
+    return Tooltip(
+      message: item.label,
+      waitDuration: const Duration(milliseconds: 250),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(20),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          width: 56,
+          height: 56,
+          decoration: BoxDecoration(
+            color: selected
+                ? (isDarkMode
+                      ? const Color(0xFFE7F1EC)
+                      : const Color(0xFF17211E))
+                : (isDarkMode
+                      ? const Color(0xFF121C19)
+                      : Colors.white.withValues(alpha: 0.92)),
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: borderColor),
+            boxShadow: selected && !isDarkMode
+                ? const [
+                    BoxShadow(
+                      color: Color(0x140F172A),
+                      blurRadius: 18,
+                      offset: Offset(0, 10),
+                    ),
+                  ]
+                : null,
+          ),
+          child: Center(
+            child: Icon(
+              item.icon,
+              size: 22,
+              color: selected
+                  ? (isDarkMode ? const Color(0xFF17211E) : Colors.white)
+                  : foregroundColor,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _FlowTopNavbarTab extends StatelessWidget {
+  const _FlowTopNavbarTab({
+    required this.item,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final _FlowNavItem item;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final foregroundColor = _resolveNavItemForegroundColor(
+      context: context,
+      itemColor: item.color,
+      selected: selected,
+    );
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    final borderColor = selected
+        ? Colors.transparent
+        : isDarkMode
+        ? const Color(0xFF23322E)
+        : const Color(0xFFE4EAE5);
+
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(999),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 11),
+        decoration: BoxDecoration(
+          color: selected
+              ? (isDarkMode ? const Color(0xFFE7F1EC) : const Color(0xFF17211E))
+              : (isDarkMode
+                    ? const Color(0xFF121C19)
+                    : Colors.white.withValues(alpha: 0.92)),
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(color: borderColor),
+          boxShadow: selected && !isDarkMode
+              ? const [
+                  BoxShadow(
+                    color: Color(0x120F172A),
+                    blurRadius: 16,
+                    offset: Offset(0, 8),
+                  ),
+                ]
+              : null,
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              item.icon,
+              size: 18,
+              color: selected
+                  ? (isDarkMode ? const Color(0xFF17211E) : Colors.white)
+                  : foregroundColor,
+            ),
+            const SizedBox(width: 8),
+            Text(
+              item.label,
+              style: TextStyle(
+                color: selected
+                    ? (isDarkMode ? const Color(0xFF17211E) : Colors.white)
+                    : isDarkMode
+                    ? const Color(0xFFE7F1EC)
+                    : const Color(0xFF14211D),
+                fontWeight: FontWeight.w600,
+                fontSize: 13,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+Color _resolveNavItemForegroundColor({
+  required BuildContext context,
+  required Color itemColor,
+  required bool selected,
+}) {
+  if (selected) {
+    return Colors.white;
+  }
+
+  final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+  if (!isDarkMode) {
+    return itemColor;
+  }
+
+  return itemColor.computeLuminance() < 0.2
+      ? const Color(0xFFE7F1EC)
+      : itemColor;
+}
+
+class _OrderDetailsScreen extends StatefulWidget {
+  const _OrderDetailsScreen({
+    required this.stage,
+    required this.orderCode,
+    required this.showEngineeringChecklist,
+    required this.showFlowActions,
+    required this.resolveOrderByCode,
+    required this.getAllOrders,
+    required this.currentProfile,
+    required this.workspaceProfiles,
+    required this.unreadMentionCount,
+    required this.onMarkConversationRead,
+    required this.onSendConversationMessage,
+    required this.onAdvanceOrder,
+    required this.onReturnOrder,
+    required this.onSendToEngineering,
+    required this.onSendToInstallation,
+    this.openConversationOnLoad = false,
+    this.onAttachMaterials,
+    this.onAttachElectricalProject,
+    this.onAttachPanelLayout,
+    this.onAttachPushButtonTable,
+    this.onAttachEngineeringData,
+    this.onAttachConsolidatedProposal,
+    this.onAttachContract,
+    this.onAttachServiceOrderPdf,
+    this.onToggleFinanceClientApproval,
+    this.onScheduleInstallation,
+    this.onToggleInstallationExecutionItem,
+    this.onScheduleEngineeringActivity,
+    this.onUpdateEngineeringChecklistStatus,
+    this.onEditOrder,
+    this.onDeleteOrder,
+  });
+
+  final WorkflowStage stage;
+  final String orderCode;
+  final bool showEngineeringChecklist;
+  final bool showFlowActions;
+  final WorkflowOrder? Function(String code) resolveOrderByCode;
+  final List<WorkflowOrder> Function() getAllOrders;
+  final EmployeeWorkspaceProfile currentProfile;
+  final List<EmployeeWorkspaceProfile> workspaceProfiles;
+  final int unreadMentionCount;
+  final Future<void> Function(String orderCode) onMarkConversationRead;
+  final Future<bool> Function(String orderCode, String message)
+  onSendConversationMessage;
+  final Future<void> Function() onAdvanceOrder;
+  final Future<void> Function() onReturnOrder;
+  final Future<void> Function() onSendToEngineering;
+  final Future<void> Function() onSendToInstallation;
+  final bool openConversationOnLoad;
+  final Future<void> Function()? onAttachMaterials;
+  final Future<void> Function()? onAttachElectricalProject;
+  final Future<void> Function()? onAttachPanelLayout;
+  final Future<void> Function()? onAttachPushButtonTable;
+  final Future<void> Function()? onAttachEngineeringData;
+  final Future<void> Function()? onAttachConsolidatedProposal;
+  final Future<void> Function()? onAttachContract;
+  final Future<void> Function()? onAttachServiceOrderPdf;
+  final Future<void> Function()? onToggleFinanceClientApproval;
+  final Future<void> Function()? onScheduleInstallation;
+  final Future<void> Function(int visitIndex, String item)?
+  onToggleInstallationExecutionItem;
+  final Future<void> Function(String taskKey)? onScheduleEngineeringActivity;
+  final Future<void> Function(
+    String taskKey,
+    EngineeringChecklistStatus status,
+  )?
+  onUpdateEngineeringChecklistStatus;
+  final Future<void> Function()? onEditOrder;
+  final Future<void> Function()? onDeleteOrder;
+
+  @override
+  State<_OrderDetailsScreen> createState() => _OrderDetailsScreenState();
+}
+
+class _OrderDetailsScreenState extends State<_OrderDetailsScreen> {
+  late int _unreadConversationCount;
+
+  WorkflowOrder? get _currentOrder =>
+      widget.resolveOrderByCode(widget.orderCode);
+
+  void _setStateSafely(VoidCallback fn) {
+    if (!mounted) {
+      return;
+    }
+
+    final phase = SchedulerBinding.instance.schedulerPhase;
+    if (phase == SchedulerPhase.idle ||
+        phase == SchedulerPhase.postFrameCallbacks) {
+      setState(fn);
+      return;
+    }
+
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      setState(fn);
+    });
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _unreadConversationCount = widget.unreadMentionCount;
+    if (widget.openConversationOnLoad) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) {
+          return;
+        }
+        unawaited(_openConversationDialog());
+      });
+    }
+  }
+
+  Future<void> _runAndRefresh(Future<void> Function()? action) async {
+    if (action == null) {
+      return;
+    }
+
+    await action();
+    if (!mounted) {
+      return;
+    }
+    _setStateSafely(() {});
+  }
+
+  Future<void> _openConversationDialog() async {
+    final order = _currentOrder;
+    if (order == null) {
+      return;
+    }
+
+    await widget.onMarkConversationRead(order.code);
+    if (!mounted) {
+      return;
+    }
+    _setStateSafely(() {
+      _unreadConversationCount = 0;
+    });
+
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => _OrderConversationDialog(
+        order: widget.resolveOrderByCode(order.code) ?? order,
+        currentProfile: widget.currentProfile,
+        profiles: widget.workspaceProfiles,
+        onSendMessage: (message) =>
+            widget.onSendConversationMessage(order.code, message),
+      ),
+    );
+
+    if (!mounted) {
+      return;
+    }
+    _setStateSafely(() {});
+  }
+
+  Future<void> _runStageTransition(Future<void> Function() action) async {
+    await action();
+    if (!mounted) {
+      return;
+    }
+    Navigator.of(context).pop();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final order = _currentOrder;
+    final allOrders = widget.getAllOrders();
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    final backgroundColor = isDarkMode
+        ? const Color(0xFF0B1311)
+        : const Color(0xFFF4F7F6);
+
+    return Scaffold(
+      backgroundColor: backgroundColor,
+      appBar: AppBar(
+        backgroundColor: backgroundColor,
+        elevation: 0,
+        scrolledUnderElevation: 0,
+        titleSpacing: 0,
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              order == null ? 'Pedido' : _displayOrderCode(order, allOrders),
+            ),
+            if (order != null)
+              Text(
+                order.workName,
+                style: TextStyle(
+                  color: Theme.of(context).textTheme.bodySmall?.color,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+          ],
+        ),
+      ),
+      body: SafeArea(
+        top: false,
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 1180),
+              child: _OrderDetailsPanel(
+                order: order,
+                allOrders: allOrders,
+                assemblyAssignedProfiles: order == null
+                    ? []
+                    : _assemblyAssignedProfilesForOrder(
+                        order,
+                        widget.workspaceProfiles,
+                      ),
+                workspaceProfiles: widget.workspaceProfiles,
+                onAdvanceOrder: () =>
+                    _runStageTransition(widget.onAdvanceOrder),
+                onReturnOrder: () => _runStageTransition(widget.onReturnOrder),
+                onSendToEngineering: () =>
+                    _runStageTransition(widget.onSendToEngineering),
+                onSendToInstallation: () =>
+                    _runStageTransition(widget.onSendToInstallation),
+                onOpenConversation: _openConversationDialog,
+                conversationCount: order?.conversationMessages.length ?? 0,
+                unreadConversationCount: _unreadConversationCount,
+                showEngineeringChecklist: widget.showEngineeringChecklist,
+                onAttachMaterials: widget.onAttachMaterials == null
+                    ? null
+                    : () => _runAndRefresh(widget.onAttachMaterials),
+                onAttachElectricalProject:
+                    widget.onAttachElectricalProject == null
+                    ? null
+                    : () => _runAndRefresh(widget.onAttachElectricalProject),
+                onAttachPanelLayout: widget.onAttachPanelLayout == null
+                    ? null
+                    : () => _runAndRefresh(widget.onAttachPanelLayout),
+                onAttachPushButtonTable: widget.onAttachPushButtonTable == null
+                    ? null
+                    : () => _runAndRefresh(widget.onAttachPushButtonTable),
+                onAttachEngineeringData: widget.onAttachEngineeringData == null
+                    ? null
+                    : () => _runAndRefresh(widget.onAttachEngineeringData),
+                onAttachConsolidatedProposal:
+                    widget.onAttachConsolidatedProposal == null
+                    ? null
+                    : () => _runAndRefresh(widget.onAttachConsolidatedProposal),
+                onAttachContract: widget.onAttachContract == null
+                    ? null
+                    : () => _runAndRefresh(widget.onAttachContract),
+                onAttachServiceOrderPdf: widget.onAttachServiceOrderPdf == null
+                    ? null
+                    : () => _runAndRefresh(widget.onAttachServiceOrderPdf),
+                onToggleFinanceClientApproval:
+                    widget.onToggleFinanceClientApproval == null
+                    ? null
+                    : () =>
+                          _runAndRefresh(widget.onToggleFinanceClientApproval),
+                onScheduleInstallation: widget.onScheduleInstallation == null
+                    ? null
+                    : () => _runAndRefresh(widget.onScheduleInstallation),
+                onToggleInstallationExecutionItem:
+                    widget.onToggleInstallationExecutionItem == null
+                    ? null
+                    : (visitIndex, item) async {
+                        await widget.onToggleInstallationExecutionItem!(
+                          visitIndex,
+                          item,
+                        );
+                        if (!mounted) {
+                          return;
+                        }
+                        _setStateSafely(() {});
+                      },
+                onScheduleEngineeringActivity:
+                    widget.onScheduleEngineeringActivity == null
+                    ? null
+                    : (taskKey) async {
+                        await widget.onScheduleEngineeringActivity!(taskKey);
+                        if (!mounted) {
+                          return;
+                        }
+                        _setStateSafely(() {});
+                      },
+                onUpdateEngineeringChecklistStatus:
+                    widget.onUpdateEngineeringChecklistStatus == null
+                    ? null
+                    : (taskKey, status) async {
+                        await widget.onUpdateEngineeringChecklistStatus!(
+                          taskKey,
+                          status,
+                        );
+                        if (!mounted) {
+                          return;
+                        }
+                        _setStateSafely(() {});
+                      },
+                onEditOrder: widget.onEditOrder == null
+                    ? null
+                    : () => _runAndRefresh(widget.onEditOrder),
+                onDeleteOrder: widget.onDeleteOrder == null
+                    ? null
+                    : () async {
+                        final navigator = Navigator.of(context);
+                        await widget.onDeleteOrder!();
+                        if (!mounted) {
+                          return;
+                        }
+                        navigator.pop();
+                      },
+                showFlowActions:
+                    widget.showFlowActions &&
+                    order != null &&
+                    order.currentStage == widget.stage,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _OrderDetailsPanel extends StatelessWidget {
+  const _OrderDetailsPanel({
+    required this.order,
+    required this.allOrders,
+    required this.assemblyAssignedProfiles,
+    required this.workspaceProfiles,
+    required this.onAdvanceOrder,
+    required this.onReturnOrder,
+    required this.onSendToEngineering,
+    required this.onSendToInstallation,
+    this.onOpenConversation,
+    this.conversationCount = 0,
+    this.unreadConversationCount = 0,
+    this.showEngineeringChecklist = false,
+    this.onAttachMaterials,
+    this.onAttachElectricalProject,
+    this.onAttachPanelLayout,
+    this.onAttachPushButtonTable,
+    this.onAttachEngineeringData,
+    this.onAttachConsolidatedProposal,
+    this.onAttachContract,
+    this.onAttachServiceOrderPdf,
+    this.onToggleFinanceClientApproval,
+    this.onScheduleInstallation,
+    this.onToggleInstallationExecutionItem,
+    this.onScheduleEngineeringActivity,
+    this.onUpdateEngineeringChecklistStatus,
+    this.showFlowActions = true,
+    this.onEditOrder,
+    this.onDeleteOrder,
+  });
+
+  final WorkflowOrder? order;
+  final List<WorkflowOrder> allOrders;
+  final List<EmployeeWorkspaceProfile> assemblyAssignedProfiles;
+  final List<EmployeeWorkspaceProfile> workspaceProfiles;
+  final Future<void> Function() onAdvanceOrder;
+  final Future<void> Function() onReturnOrder;
+  final Future<void> Function() onSendToEngineering;
+  final Future<void> Function() onSendToInstallation;
+  final Future<void> Function()? onOpenConversation;
+  final int conversationCount;
+  final int unreadConversationCount;
+  final bool showEngineeringChecklist;
+  final Future<void> Function()? onAttachMaterials;
+  final Future<void> Function()? onAttachElectricalProject;
+  final Future<void> Function()? onAttachPanelLayout;
+  final Future<void> Function()? onAttachPushButtonTable;
+  final Future<void> Function()? onAttachEngineeringData;
+  final Future<void> Function()? onAttachConsolidatedProposal;
+  final Future<void> Function()? onAttachContract;
+  final Future<void> Function()? onAttachServiceOrderPdf;
+  final Future<void> Function()? onToggleFinanceClientApproval;
+  final Future<void> Function()? onScheduleInstallation;
+  final Future<void> Function(int visitIndex, String item)?
+  onToggleInstallationExecutionItem;
+  final Future<void> Function(String taskKey)? onScheduleEngineeringActivity;
+  final Future<void> Function(
+    String taskKey,
+    EngineeringChecklistStatus status,
+  )?
+  onUpdateEngineeringChecklistStatus;
+  final bool showFlowActions;
+  final Future<void> Function()? onEditOrder;
+  final Future<void> Function()? onDeleteOrder;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    final secondaryTextColor = isDarkMode
+        ? const Color(0xFF9FB2AC)
+        : const Color(0xFF52605C);
+    final subtleSurfaceColor = isDarkMode
+        ? const Color(0xFF121E1B)
+        : const Color(0xFFF7FAF9);
+    final subtleBorderColor = isDarkMode
+        ? const Color(0xFF29403A)
+        : const Color(0xFFDCE5E1);
+    final progressTrackColor = isDarkMode
+        ? const Color(0xFF29403A)
+        : const Color(0xFFE5E7EB);
+
+    if (order == null) {
+      return Container(
+        padding: const EdgeInsets.all(20),
+        decoration: _panelDecoration(context),
+        child: const Text('Selecione um pedido para ver os detalhes do fluxo.'),
+      );
+    }
+
+    final stageIndex = workflowStages.indexOf(order!.currentStage);
+    final isEstimatingStage = order!.currentStage == WorkflowStage.estimating;
+    final isRelationshipStage =
+        order!.currentStage == WorkflowStage.relationship;
+    final canViewDetails = !isEstimatingStage && !isRelationshipStage;
+    final isFinanceStage = order!.currentStage == WorkflowStage.finance;
+    final isEngineeringStage = order!.currentStage == WorkflowStage.engineering;
+    final isInstallationStage =
+        order!.currentStage == WorkflowStage.installation;
+    final isServiceOrder = order!.isServiceOrder;
+    final hasMaterialsFile = order!.materialFileName.trim().isNotEmpty;
+    final hasServiceOrderPdf = order!.serviceOrderFileName.trim().isNotEmpty;
+    final hasConsolidatedProposal = order!.consolidatedProposalFileName
+        .trim()
+        .isNotEmpty;
+    final hasContractFile = order!.contractFileName.trim().isNotEmpty;
+    final hasElectricalProject = order!.electricalProjectFileName
+        .trim()
+        .isNotEmpty;
+    final hasPanelLayout = order!.panelLayoutFileName.trim().isNotEmpty;
+    final hasPushButtonTable = order!.pushButtonTableFileName.trim().isNotEmpty;
+    final hasEngineeringData = order!.engineeringDataFileName.trim().isNotEmpty;
+    // Use assemblyAssignedProfiles directly for avatars
+    final relatedProposals = _proposalGroupOrders(allOrders, order!);
+    final stageOwners = order!.resolvedStageOwners().entries.toList(
+      growable: false,
+    );
+    final engineeringFlow = _engineeringFlowSnapshot(order!);
+    final hasPassedEngineering =
+        stageIndex > workflowStages.indexOf(WorkflowStage.engineering);
+    final showEngineeringFilesSection =
+        isEngineeringStage ||
+        order!.engineeringChecklistStatuses.isNotEmpty ||
+        hasElectricalProject ||
+        hasPanelLayout ||
+        hasPushButtonTable ||
+        hasEngineeringData;
+    final showEngineeringFilesInStageFiles =
+        hasPassedEngineering && showEngineeringFilesSection;
+    final showEngineeringFilesInEngineering =
+        showEngineeringFilesSection && !showEngineeringFilesInStageFiles;
+    final showEngineeringSection =
+        showEngineeringChecklist || showEngineeringFilesInEngineering;
+    final canEditEngineeringSection = showFlowActions && isEngineeringStage;
+    final canAdvance =
+        (stageIndex != workflowStages.length - 1 ||
+            (isInstallationStage &&
+                order!.installationWorkflowStatus !=
+                    InstallationWorkflowStatus.done)) &&
+        (!isEstimatingStage ||
+            (isServiceOrder ? hasServiceOrderPdf : hasMaterialsFile)) &&
+        (!isFinanceStage || !isServiceOrder || order!.financeClientApproved);
+    const headerActionSpacing = 6.0;
+    const headerActionPanelPadding = 4.0;
+    final headerActionMinWidth = isRelationshipStage ? 138.0 : 102.0;
+    final compactOutlinedHeaderButtonStyle = OutlinedButton.styleFrom(
+      minimumSize: const Size(0, 32),
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+      textStyle: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700),
+      iconSize: 15,
+    );
+    final compactFilledHeaderButtonStyle = FilledButton.styleFrom(
+      minimumSize: const Size(0, 32),
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+      textStyle: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700),
+      iconSize: 15,
+    );
+    final headerActions = <Widget>[
+      if (onOpenConversation != null)
+        OutlinedButton.icon(
+          onPressed: () async {
+            await onOpenConversation!();
+          },
+          style: compactOutlinedHeaderButtonStyle,
+          icon: unreadConversationCount > 0
+              ? _HeaderCountBadgeIcon(
+                  icon: Icons.chat_bubble_outline_rounded,
+                  count: unreadConversationCount,
+                  color: const Color(0xFF2563EB),
+                )
+              : const Icon(Icons.chat_bubble_outline_rounded),
+          label: Text(
+            conversationCount > 0
+                ? 'Conversa ($conversationCount)'
+                : 'Conversa',
+          ),
+        ),
+      if (onEditOrder != null)
+        OutlinedButton.icon(
+          onPressed: () async {
+            await onEditOrder!();
+          },
+          style: compactOutlinedHeaderButtonStyle,
+          icon: const Icon(Icons.edit_outlined),
+          label: const Text('Editar'),
+        ),
+      if (onDeleteOrder != null)
+        OutlinedButton.icon(
+          onPressed: () async {
+            await onDeleteOrder!();
+          },
+          style: compactOutlinedHeaderButtonStyle.copyWith(
+            foregroundColor: WidgetStatePropertyAll(const Color(0xFFB91C1C)),
+            side: WidgetStatePropertyAll(
+              const BorderSide(color: Color(0xFFFCA5A5)),
+            ),
+          ),
+          icon: const Icon(Icons.delete_outline),
+          label: const Text('Excluir'),
+        ),
+      if (showFlowActions)
+        OutlinedButton.icon(
+          onPressed: stageIndex == 0
+              ? null
+              : () async {
+                  await onReturnOrder();
+                },
+          style: compactOutlinedHeaderButtonStyle,
+          icon: const Icon(Icons.chevron_left),
+          label: const Text('Voltar'),
+        ),
+      if (showFlowActions && isRelationshipStage)
+        FilledButton.icon(
+          onPressed: () async {
+            await onSendToEngineering();
+          },
+          style: compactFilledHeaderButtonStyle,
+          icon: const Icon(Icons.architecture_outlined),
+          label: const Text('Enviar para Engenharia'),
+        ),
+      if (showFlowActions && isRelationshipStage)
+        FilledButton.icon(
+          onPressed: () async {
+            await onSendToInstallation();
+          },
+          style: compactFilledHeaderButtonStyle,
+          icon: const Icon(Icons.home_repair_service_outlined),
+          label: const Text('Enviar para Instalação'),
+        ),
+      if (showFlowActions && !isRelationshipStage)
+        FilledButton.icon(
+          onPressed: canAdvance
+              ? () async {
+                  await onAdvanceOrder();
+                }
+              : null,
+          style: compactFilledHeaderButtonStyle,
+          icon: const Icon(Icons.chevron_right),
+          label: Text(
+            isEngineeringStage
+                ? (engineeringFlow.isComplete
+                      ? 'Enviar para Montagem'
+                      : 'Avançar kanban')
+                : order!.currentStage == WorkflowStage.assembly
+                ? switch (order!.assemblyWorkflowStatus) {
+                    AssemblyWorkflowStatus.waiting => 'Iniciar montagem',
+                    AssemblyWorkflowStatus.doing => 'Concluir e enviar',
+                    AssemblyWorkflowStatus.done => 'Enviar para Instalação',
+                  }
+                : isInstallationStage
+                ? switch (order!.installationWorkflowStatus) {
+                    InstallationWorkflowStatus.waiting => 'Agendar instalação',
+                    InstallationWorkflowStatus.scheduled => 'Iniciar visita',
+                    InstallationWorkflowStatus.doing => 'Concluir/retorno',
+                    InstallationWorkflowStatus.done => 'Concluído',
+                  }
+                : 'Avançar',
+          ),
+        ),
+    ];
+    final uniformHeaderActions = <Widget>[
+      for (var index = 0; index < headerActions.length; index++) ...[
+        if (index > 0) const SizedBox(width: headerActionSpacing),
+        ConstrainedBox(
+          constraints: BoxConstraints(minWidth: headerActionMinWidth),
+          child: SizedBox(height: 32, child: headerActions[index]),
+        ),
+      ],
+    ];
+    final relationshipHeaderActionGrid =
+        isRelationshipStage && headerActions.isNotEmpty
+        ? SizedBox(
+            width: (headerActionMinWidth * 2) + headerActionSpacing,
+            child: Wrap(
+              spacing: headerActionSpacing,
+              runSpacing: headerActionSpacing,
+              children: [
+                for (final action in headerActions)
+                  SizedBox(
+                    width: headerActionMinWidth,
+                    height: 32,
+                    child: action,
+                  ),
+              ],
+            ),
+          )
+        : null;
+    final showStandaloneEditAction =
+        !showFlowActions && headerActions.length == 1 && onEditOrder != null;
+    final headerActionPanel = headerActions.isEmpty
+        ? null
+        : showStandaloneEditAction
+        ? SizedBox(width: 112, height: 32, child: headerActions.first)
+        : Container(
+            padding: const EdgeInsets.all(headerActionPanelPadding),
+            decoration: BoxDecoration(
+              color: subtleSurfaceColor,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: subtleBorderColor),
+            ),
+            child: isRelationshipStage && relationshipHeaderActionGrid != null
+                ? relationshipHeaderActionGrid
+                : Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: uniformHeaderActions,
+                  ),
+          );
+    final headerActionGroupWidth = isRelationshipStage
+        ? ((headerActionMinWidth * 2) +
+              headerActionSpacing +
+              (headerActionPanelPadding * 2))
+        : headerActions.isEmpty
+        ? 0.0
+        : showStandaloneEditAction
+        ? 120.0
+        : (headerActions.length * headerActionMinWidth) +
+              ((headerActions.length - 1) * headerActionSpacing) +
+              (headerActionPanelPadding * 2);
+    final inlineHeaderMinWidth =
+        320 + (headerActions.isEmpty ? 0.0 : 16 + headerActionGroupWidth);
+    final customerDataSection = _CollapsibleDetailSection(
+      title: 'Dados do cliente',
+      subtitle: 'Informações principais do cadastro e da obra.',
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final spacing = 14.0;
+          final useTwoColumns = constraints.maxWidth >= 700;
+          final itemWidth = useTwoColumns
+              ? (constraints.maxWidth - spacing) / 2
+              : constraints.maxWidth;
+
+          return Wrap(
+            spacing: spacing,
+            runSpacing: spacing,
+            children: [
+              SizedBox(
+                width: itemWidth,
+                child: _InfoRow(
+                  label: 'ID do cliente',
+                  value: order!.client.id,
+                  emphasizeValue: true,
+                ),
+              ),
+              SizedBox(
+                width: itemWidth,
+                child: _InfoRow(
+                  label: 'Obra',
+                  value: order!.workName,
+                  emphasizeValue: true,
+                ),
+              ),
+              SizedBox(
+                width: itemWidth,
+                child: _InfoRow(
+                  label: 'Cliente',
+                  value: order!.client.name,
+                  emphasizeValue: true,
+                ),
+              ),
+              SizedBox(
+                width: itemWidth,
+                child: _InfoRow(label: 'Telefone', value: order!.client.phone),
+              ),
+              SizedBox(
+                width: useTwoColumns ? constraints.maxWidth : itemWidth,
+                child: _InfoRow(label: 'Endereço', value: order!.address),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+    final stageFilesSection = _CollapsibleDetailSection(
+      title: 'Arquivos da etapa',
+      subtitle: 'Acesse anexos liberados e acompanhe o que ainda falta.',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final spacing = 14.0;
+              final useTwoColumns = constraints.maxWidth >= 700;
+              final itemWidth = useTwoColumns
+                  ? (constraints.maxWidth - spacing) / 2
+                  : constraints.maxWidth;
+
+              return Wrap(
+                spacing: spacing,
+                runSpacing: spacing,
+                children: [
+                  if (!isServiceOrder) ...[
+                    SizedBox(
+                      width: itemWidth,
+                      child: _FileInfoRow(
+                        label: 'Proposta',
+                        value: order!.proposalFileName.isEmpty
+                            ? 'Arquivo ainda não anexado'
+                            : order!.proposalFileName,
+                        filePath: order!.proposalFilePath,
+                        status: order!.proposalFileName.trim().isEmpty
+                            ? _FileInfoStatus.missing
+                            : _FileInfoStatus.available,
+                      ),
+                    ),
+                    SizedBox(
+                      width: itemWidth,
+                      child: canViewDetails
+                          ? _FileInfoRow(
+                              label: 'Detalhes',
+                              value: order!.detailFileName,
+                              filePath: order!.detailFilePath,
+                            )
+                          : const _FileInfoRow(
+                              label: 'Detalhes',
+                              value: 'Arquivo restrito nesta etapa',
+                              status: _FileInfoStatus.restricted,
+                            ),
+                    ),
+                  ],
+                  if (isServiceOrder)
+                    SizedBox(
+                      width: itemWidth,
+                      child: _FileInfoRow(
+                        label: 'Ordem de serviço (PDF)',
+                        value: hasServiceOrderPdf
+                            ? order!.serviceOrderFileName
+                            : 'Arquivo ainda não anexado',
+                        filePath: order!.serviceOrderFilePath,
+                        status: hasServiceOrderPdf
+                            ? _FileInfoStatus.available
+                            : _FileInfoStatus.missing,
+                      ),
+                    ),
+                  if (!isServiceOrder && !isFinanceStage)
+                    SizedBox(
+                      width: itemWidth,
+                      child: _FileInfoRow(
+                        label: 'Materiais',
+                        value: hasMaterialsFile
+                            ? order!.materialFileName
+                            : 'Arquivo ainda não anexado',
+                        filePath: order!.materialFilePath,
+                        status: hasMaterialsFile
+                            ? _FileInfoStatus.available
+                            : _FileInfoStatus.missing,
+                      ),
+                    ),
+                  if (isFinanceStage && !isServiceOrder) ...[
+                    SizedBox(
+                      width: itemWidth,
+                      child: _FileInfoRow(
+                        label: 'Proposta consolidada',
+                        value: hasConsolidatedProposal
+                            ? order!.consolidatedProposalFileName
+                            : 'Arquivo ainda não anexado',
+                        filePath: order!.consolidatedProposalFilePath,
+                        status: hasConsolidatedProposal
+                            ? _FileInfoStatus.available
+                            : _FileInfoStatus.missing,
+                      ),
+                    ),
+                    SizedBox(
+                      width: itemWidth,
+                      child: _FileInfoRow(
+                        label: 'Contrato',
+                        value: hasContractFile
+                            ? order!.contractFileName
+                            : 'Arquivo ainda não anexado',
+                        filePath: order!.contractFilePath,
+                        status: hasContractFile
+                            ? _FileInfoStatus.available
+                            : _FileInfoStatus.missing,
+                      ),
+                    ),
+                  ],
+                  if (showEngineeringFilesInStageFiles) ...[
+                    SizedBox(
+                      width: itemWidth,
+                      child: _FileInfoRow(
+                        label: 'Projeto elétrico',
+                        value: hasElectricalProject
+                            ? order!.electricalProjectFileName
+                            : 'Arquivo ainda não anexado',
+                        filePath: order!.electricalProjectFilePath,
+                        status: hasElectricalProject
+                            ? _FileInfoStatus.available
+                            : _FileInfoStatus.missing,
+                      ),
+                    ),
+                    SizedBox(
+                      width: itemWidth,
+                      child: _FileInfoRow(
+                        label: 'Layout do painel',
+                        value: hasPanelLayout
+                            ? order!.panelLayoutFileName
+                            : 'Arquivo ainda não anexado',
+                        filePath: order!.panelLayoutFilePath,
+                        status: hasPanelLayout
+                            ? _FileInfoStatus.available
+                            : _FileInfoStatus.missing,
+                      ),
+                    ),
+                    SizedBox(
+                      width: itemWidth,
+                      child: _FileInfoRow(
+                        label: 'Tabela de pulsadores',
+                        value: hasPushButtonTable
+                            ? order!.pushButtonTableFileName
+                            : 'Arquivo ainda não anexado',
+                        filePath: order!.pushButtonTableFilePath,
+                        status: hasPushButtonTable
+                            ? _FileInfoStatus.available
+                            : _FileInfoStatus.missing,
+                      ),
+                    ),
+                    SizedBox(
+                      width: itemWidth,
+                      child: _FileInfoRow(
+                        label: 'Dados',
+                        value: hasEngineeringData
+                            ? order!.engineeringDataFileName
+                            : 'Arquivo ainda não anexado',
+                        filePath: order!.engineeringDataFilePath,
+                        status: hasEngineeringData
+                            ? _FileInfoStatus.available
+                            : _FileInfoStatus.missing,
+                      ),
+                    ),
+                  ],
+                ],
+              );
+            },
+          ),
+          if (showFlowActions && isEstimatingStage && !isServiceOrder) ...[
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              onPressed: onAttachMaterials == null
+                  ? null
+                  : () async {
+                      await onAttachMaterials!();
+                    },
+              style: _attachmentReadyButtonStyle(hasMaterialsFile),
+              icon: Icon(
+                hasMaterialsFile
+                    ? Icons.upload_file_outlined
+                    : Icons.note_add_outlined,
+              ),
+              label: Text(
+                hasMaterialsFile
+                    ? 'Trocar arquivo Materiais'
+                    : 'Adicionar arquivo Materiais',
+              ),
+            ),
+          ],
+          if (showFlowActions && isFinanceStage && !isServiceOrder) ...[
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              children: [
+                OutlinedButton.icon(
+                  onPressed: onAttachConsolidatedProposal == null
+                      ? null
+                      : () async {
+                          await onAttachConsolidatedProposal!();
+                        },
+                  style: _attachmentReadyButtonStyle(hasConsolidatedProposal),
+                  icon: Icon(
+                    hasConsolidatedProposal
+                        ? Icons.upload_file_outlined
+                        : Icons.note_add_outlined,
+                  ),
+                  label: Text(
+                    hasConsolidatedProposal
+                        ? 'Trocar proposta consolidada'
+                        : 'Anexar proposta consolidada',
+                  ),
+                ),
+                OutlinedButton.icon(
+                  onPressed: onAttachContract == null
+                      ? null
+                      : () async {
+                          await onAttachContract!();
+                        },
+                  style: _attachmentReadyButtonStyle(hasContractFile),
+                  icon: Icon(
+                    hasContractFile
+                        ? Icons.upload_file_outlined
+                        : Icons.note_add_outlined,
+                  ),
+                  label: Text(
+                    hasContractFile ? 'Trocar contrato' : 'Anexar contrato',
+                  ),
+                ),
+              ],
+            ),
+          ],
+          if (showFlowActions &&
+              isEstimatingStage &&
+              !isServiceOrder &&
+              !hasMaterialsFile) ...[
+            const SizedBox(height: 8),
+            const Text(
+              'O arquivo Materiais e obrigatorio para avancar esta etapa.',
+              style: TextStyle(color: Color(0xFFB91C1C)),
+            ),
+          ],
+          if (showFlowActions &&
+              isEstimatingStage &&
+              isServiceOrder &&
+              !hasServiceOrderPdf) ...[
+            const SizedBox(height: 8),
+            const Text(
+              'O PDF da ordem de serviço é obrigatório para avançar esta etapa.',
+              style: TextStyle(color: Color(0xFFB91C1C)),
+            ),
+          ],
+        ],
+      ),
+    );
+    final serviceOrderSection = !isServiceOrder
+        ? null
+        : _CollapsibleDetailSection(
+            title: 'Ordem de serviço',
+            subtitle:
+                'Resumo operacional da OS, emissão do PDF e aprovação do cliente.',
+            initiallyExpanded: isFinanceStage,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _ServiceOrderSummaryCard(
+                  order: order!,
+                  canEdit: showFlowActions,
+                  onAttachServiceOrderPdf: onAttachServiceOrderPdf,
+                  onToggleFinanceClientApproval: onToggleFinanceClientApproval,
+                ),
+                if (showFlowActions &&
+                    isFinanceStage &&
+                    !order!.financeClientApproved) ...[
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Confirme a aprovação do cliente no Financeiro antes de avançar a OS.',
+                    style: TextStyle(color: Color(0xFFB91C1C)),
+                  ),
+                ],
+              ],
+            ),
+          );
+    final proposalExtensionsSection = relatedProposals.length <= 1
+        ? null
+        : _CollapsibleDetailSection(
+            title: 'Propostas vinculadas',
+            subtitle:
+                'As propostas deste cliente ficam conectadas ao card principal.',
+            initiallyExpanded: false,
+            child: _ProposalExtensionsCard(
+              currentOrder: order!,
+              proposals: relatedProposals,
+            ),
+          );
+    final engineeringSection = !showEngineeringSection
+        ? null
+        : _CollapsibleDetailSection(
+            title: 'Engenharia',
+            subtitle:
+                'Checklist técnico, arquivos e agendamentos vinculados à obra.',
+            initiallyExpanded: isEngineeringStage,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (showEngineeringChecklist)
+                  _EngineeringChecklistCard(
+                    order: order!,
+                    isEditable: canEditEngineeringSection,
+                    onScheduleActivity: onScheduleEngineeringActivity,
+                    onStatusChanged: onUpdateEngineeringChecklistStatus,
+                  ),
+                if (showEngineeringFilesInEngineering) ...[
+                  if (showEngineeringChecklist) const SizedBox(height: 12),
+                  _FileInfoRow(
+                    label: 'Projeto elétrico',
+                    value: hasElectricalProject
+                        ? order!.electricalProjectFileName
+                        : 'Arquivo ainda não anexado',
+                    filePath: order!.electricalProjectFilePath,
+                    status: hasElectricalProject
+                        ? _FileInfoStatus.available
+                        : _FileInfoStatus.missing,
+                  ),
+                  _FileInfoRow(
+                    label: 'Layout do painel',
+                    value: hasPanelLayout
+                        ? order!.panelLayoutFileName
+                        : 'Arquivo ainda não anexado',
+                    filePath: order!.panelLayoutFilePath,
+                    status: hasPanelLayout
+                        ? _FileInfoStatus.available
+                        : _FileInfoStatus.missing,
+                  ),
+                  _FileInfoRow(
+                    label: 'Tabela de pulsadores',
+                    value: hasPushButtonTable
+                        ? order!.pushButtonTableFileName
+                        : 'Arquivo ainda não anexado',
+                    filePath: order!.pushButtonTableFilePath,
+                    status: hasPushButtonTable
+                        ? _FileInfoStatus.available
+                        : _FileInfoStatus.missing,
+                  ),
+                  _FileInfoRow(
+                    label: 'Dados',
+                    value: hasEngineeringData
+                        ? order!.engineeringDataFileName
+                        : 'Arquivo ainda não anexado',
+                    filePath: order!.engineeringDataFilePath,
+                    status: hasEngineeringData
+                        ? _FileInfoStatus.available
+                        : _FileInfoStatus.missing,
+                  ),
+                ],
+                if (canEditEngineeringSection) ...[
+                  const SizedBox(height: 12),
+                  Wrap(
+                    spacing: 10,
+                    runSpacing: 10,
+                    children: [
+                      OutlinedButton.icon(
+                        onPressed: onAttachElectricalProject == null
+                            ? null
+                            : () async {
+                                await onAttachElectricalProject!();
+                              },
+                        style: _attachmentReadyButtonStyle(
+                          hasElectricalProject,
+                        ),
+                        icon: Icon(
+                          hasElectricalProject
+                              ? Icons.upload_file_outlined
+                              : Icons.note_add_outlined,
+                        ),
+                        label: Text(
+                          hasElectricalProject
+                              ? 'Trocar projeto elétrico'
+                              : 'Anexar projeto elétrico',
+                        ),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: onAttachPanelLayout == null
+                            ? null
+                            : () async {
+                                await onAttachPanelLayout!();
+                              },
+                        style: _attachmentReadyButtonStyle(hasPanelLayout),
+                        icon: Icon(
+                          hasPanelLayout
+                              ? Icons.upload_file_outlined
+                              : Icons.note_add_outlined,
+                        ),
+                        label: Text(
+                          hasPanelLayout
+                              ? 'Trocar layout do painel'
+                              : 'Anexar layout do painel',
+                        ),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: onAttachPushButtonTable == null
+                            ? null
+                            : () async {
+                                await onAttachPushButtonTable!();
+                              },
+                        style: _attachmentReadyButtonStyle(hasPushButtonTable),
+                        icon: Icon(
+                          hasPushButtonTable
+                              ? Icons.upload_file_outlined
+                              : Icons.note_add_outlined,
+                        ),
+                        label: Text(
+                          hasPushButtonTable
+                              ? 'Trocar tabela de pulsadores'
+                              : 'Anexar tabela de pulsadores',
+                        ),
+                      ),
+                      OutlinedButton.icon(
+                        onPressed: onAttachEngineeringData == null
+                            ? null
+                            : () async {
+                                await onAttachEngineeringData!();
+                              },
+                        style: _attachmentReadyButtonStyle(hasEngineeringData),
+                        icon: Icon(
+                          hasEngineeringData
+                              ? Icons.upload_file_outlined
+                              : Icons.note_add_outlined,
+                        ),
+                        label: Text(
+                          hasEngineeringData
+                              ? 'Trocar arquivo de dados'
+                              : 'Anexar arquivo de dados',
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ],
+            ),
+          );
+    final assemblyTeamSection =
+        order!.currentStage == WorkflowStage.installation ||
+            (order!.currentStage != WorkflowStage.assembly &&
+                assemblyAssignedProfiles.isEmpty)
+        ? null
+        : _CollapsibleDetailSection(
+            title: 'Equipe da montagem',
+            subtitle: 'Funcionários selecionados para executar esta montagem.',
+            initiallyExpanded: order!.currentStage == WorkflowStage.assembly,
+            child: assemblyAssignedProfiles.isEmpty
+                ? const Text(
+                    'Nenhum funcionário definido',
+                    style: TextStyle(fontSize: 14),
+                  )
+                : Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: assemblyAssignedProfiles
+                        .map(
+                          (profile) => Tooltip(
+                            message: profile.name.trim().isEmpty
+                                ? profile.login
+                                : profile.name,
+                            child: CircleAvatar(
+                              radius: 16,
+                              backgroundColor: profile.accent.withValues(
+                                alpha: 0.15,
+                              ),
+                              backgroundImage: _resolveProfileImageProvider(
+                                profile.photoFilePath,
+                              ),
+                              child:
+                                  profile.photoFilePath == null ||
+                                      profile.photoFilePath!.trim().isEmpty
+                                  ? Text(
+                                      profile.name.trim().isEmpty
+                                          ? profile.login
+                                                .trim()
+                                                .substring(0, 1)
+                                                .toUpperCase()
+                                          : profile.name
+                                                .trim()
+                                                .substring(0, 1)
+                                                .toUpperCase(),
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w600,
+                                        color: profile.accent,
+                                      ),
+                                    )
+                                  : null,
+                            ),
+                          ),
+                        )
+                        .toList(growable: false),
+                  ),
+          );
+    final installationSection = !isInstallationStage
+        ? null
+        : _CollapsibleDetailSection(
+            title: 'Calendário de instalação',
+            subtitle:
+                'Defina a data da visita, equipe responsável e observações.',
+            initiallyExpanded: true,
+            child: _InstallationScheduleCard(
+              order: order!,
+              workspaceProfiles: workspaceProfiles,
+              canEdit: showFlowActions,
+              onScheduleInstallation: onScheduleInstallation,
+              onToggleExecutionItem: onToggleInstallationExecutionItem,
+            ),
+          );
+    final stageOwnersSection = stageOwners.isEmpty
+        ? null
+        : _CollapsibleDetailSection(
+            title: 'Responsáveis por etapa',
+            subtitle:
+                'Veja de forma compacta quem passou por cada ponto do fluxo.',
+            initiallyExpanded: false,
+            child: _StageOwnersSection(owners: stageOwners, showHeader: false),
+          );
+    final flowSection = showFlowActions
+        ? _CollapsibleDetailSection(
+            title: 'Passagem do fluxo',
+            subtitle: 'Histórico das etapas concluídas neste pedido.',
+            initiallyExpanded: false,
+            child: Wrap(
+              spacing: 10,
+              runSpacing: 10,
+              children: workflowStages
+                  .map((stage) {
+                    final isPast = workflowStages.indexOf(stage) <= stageIndex;
+                    return Container(
+                      width: 152,
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: isPast
+                            ? stage.color.withValues(alpha: 0.12)
+                            : subtleSurfaceColor,
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(
+                          color: isPast ? stage.color : subtleBorderColor,
+                        ),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Icon(stage.icon, color: stage.color),
+                          const SizedBox(height: 8),
+                          Text(
+                            stage.title,
+                            style: const TextStyle(fontWeight: FontWeight.w700),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            order!.history[stage] ?? 'Aguardando etapa',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: secondaryTextColor,
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  })
+                  .toList(growable: false),
+            ),
+          )
+        : null;
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: _panelDecoration(context),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _OrderDetailsHero(
+            order: order!,
+            allOrders: allOrders,
+            secondaryTextColor: secondaryTextColor,
+            headerActionPanel: headerActionPanel,
+            headerActions: headerActions,
+            showStandaloneEditAction: showStandaloneEditAction,
+            inlineHeaderMinWidth: inlineHeaderMinWidth,
+            progressTrackColor: progressTrackColor,
+          ),
+          const SizedBox(height: 18),
+          customerDataSection,
+          const SizedBox(height: 12),
+          stageFilesSection,
+          if (serviceOrderSection != null) ...[
+            const SizedBox(height: 12),
+            serviceOrderSection,
+          ],
+          if (proposalExtensionsSection != null) ...[
+            const SizedBox(height: 12),
+            proposalExtensionsSection,
+          ],
+          if (engineeringSection != null) ...[
+            const SizedBox(height: 12),
+            engineeringSection,
+          ],
+          if (assemblyTeamSection != null) ...[
+            const SizedBox(height: 12),
+            assemblyTeamSection,
+          ],
+          if (installationSection != null) ...[
+            const SizedBox(height: 12),
+            installationSection,
+          ],
+          if (stageOwnersSection != null) ...[
+            const SizedBox(height: 12),
+            stageOwnersSection,
+          ],
+          if (flowSection != null) ...[const SizedBox(height: 12), flowSection],
+        ],
+      ),
+    );
+  }
+}
+
+class _ServiceOrderSummaryCard extends StatelessWidget {
+  const _ServiceOrderSummaryCard({
+    required this.order,
+    required this.canEdit,
+    this.onAttachServiceOrderPdf,
+    this.onToggleFinanceClientApproval,
+  });
+
+  final WorkflowOrder order;
+  final bool canEdit;
+  final Future<void> Function()? onAttachServiceOrderPdf;
+  final Future<void> Function()? onToggleFinanceClientApproval;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    final borderColor = isDarkMode
+        ? const Color(0xFF526860)
+        : const Color(0xFFE2E8F0);
+    final surfaceColor = isDarkMode
+        ? const Color(0xFF2A3732)
+        : const Color(0xFFF8FAFC);
+    final secondaryTextColor = isDarkMode
+        ? const Color(0xFF9FB2AC)
+        : const Color(0xFF52605C);
+    final hasPdf = order.serviceOrderFileName.trim().isNotEmpty;
+    final approvalColor = order.financeClientApproved
+        ? const Color(0xFF15803D)
+        : const Color(0xFFB45309);
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: surfaceColor,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: borderColor, width: isDarkMode ? 1.1 : 1),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        const _StatusBadge(
+                          label: 'Ordem de serviço',
+                          color: Color(0xFF92400E),
+                        ),
+                        _StatusBadge(
+                          label: order.financeClientApproved
+                              ? 'Cliente aprovado'
+                              : 'Aguardando aprovação',
+                          color: order.financeClientApproved
+                              ? const Color(0xFF15803D)
+                              : const Color(0xFFB45309),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    Text(
+                      order.serviceDescription.trim().isEmpty
+                          ? 'Sem detalhes informados.'
+                          : order.serviceDescription,
+                      style: TextStyle(color: secondaryTextColor, height: 1.35),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final useTwoColumns = constraints.maxWidth >= 720;
+              final itemWidth = useTwoColumns
+                  ? (constraints.maxWidth - 12) / 2
+                  : constraints.maxWidth;
+
+              return Wrap(
+                spacing: 12,
+                runSpacing: 12,
+                children: [
+                  SizedBox(
+                    width: itemWidth,
+                    child: _InfoRow(
+                      label: 'Tipo',
+                      value: order.kind.title,
+                      emphasizeValue: true,
+                    ),
+                  ),
+                  SizedBox(
+                    width: itemWidth,
+                    child: _InfoRow(
+                      label: 'Status financeiro',
+                      value: order.financeClientApproved
+                          ? 'Cliente aprovado'
+                          : 'Aguardando aprovação do cliente',
+                    ),
+                  ),
+                  SizedBox(
+                    width: itemWidth,
+                    child: _InfoRow(
+                      label: 'Próxima ação',
+                      value: order.nextAction,
+                    ),
+                  ),
+                  SizedBox(
+                    width: itemWidth,
+                    child: Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: approvalColor.withValues(alpha: 0.08),
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(
+                          color: approvalColor.withValues(alpha: 0.18),
+                        ),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Confirmação do Financeiro',
+                            style: TextStyle(
+                              color: secondaryTextColor,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w800,
+                              letterSpacing: 0.7,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            order.financeClientApproved
+                                ? 'Aprovado'
+                                : 'Pendente',
+                            style: TextStyle(
+                              color: approvalColor,
+                              fontSize: 18,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                          if (canEdit &&
+                              order.currentStage == WorkflowStage.finance &&
+                              onToggleFinanceClientApproval != null) ...[
+                            const SizedBox(height: 12),
+                            OutlinedButton.icon(
+                              onPressed: () async {
+                                await onToggleFinanceClientApproval!();
+                              },
+                              icon: Icon(
+                                order.financeClientApproved
+                                    ? Icons.undo_outlined
+                                    : Icons.check_circle_outline,
+                              ),
+                              label: Text(
+                                order.financeClientApproved
+                                    ? 'Remover aprovação'
+                                    : 'Confirmar aprovação',
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              if (canEdit &&
+                  order.currentStage == WorkflowStage.estimating &&
+                  onAttachServiceOrderPdf != null)
+                OutlinedButton.icon(
+                  onPressed: () async {
+                    await onAttachServiceOrderPdf!();
+                  },
+                  style: _attachmentReadyButtonStyle(hasPdf),
+                  icon: Icon(
+                    hasPdf
+                        ? Icons.upload_file_outlined
+                        : Icons.picture_as_pdf_outlined,
+                  ),
+                  label: Text(hasPdf ? 'Trocar PDF da OS' : 'Anexar PDF da OS'),
+                ),
+              if (canEdit &&
+                  order.currentStage == WorkflowStage.finance &&
+                  onToggleFinanceClientApproval != null)
+                OutlinedButton.icon(
+                  onPressed: () async {
+                    await onToggleFinanceClientApproval!();
+                  },
+                  icon: Icon(
+                    order.financeClientApproved
+                        ? Icons.undo_outlined
+                        : Icons.check_circle_outline,
+                  ),
+                  label: Text(
+                    order.financeClientApproved
+                        ? 'Remover aprovação'
+                        : 'Confirmar aprovação',
+                  ),
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ProposalExtensionsCard extends StatelessWidget {
+  const _ProposalExtensionsCard({
+    required this.currentOrder,
+    required this.proposals,
+  });
+
+  final WorkflowOrder currentOrder;
+  final List<WorkflowOrder> proposals;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    final borderColor = isDarkMode
+        ? const Color(0xFF29403A)
+        : const Color(0xFFE2E8F0);
+    final surfaceColor = isDarkMode
+        ? const Color(0xFF121E1B)
+        : const Color(0xFFF8FAFC);
+    final secondaryTextColor = isDarkMode
+        ? const Color(0xFF9FB2AC)
+        : const Color(0xFF52605C);
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: surfaceColor,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: borderColor),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          ...proposals.map(
+            (proposal) => Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: proposal.code == currentOrder.code
+                      ? proposal.currentStage.color.withValues(alpha: 0.05)
+                      : isDarkMode
+                      ? const Color(0xFF0E1715)
+                      : Colors.white,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: proposal.code == currentOrder.code
+                        ? proposal.currentStage.color.withValues(alpha: 0.4)
+                        : borderColor,
+                  ),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 6,
+                      children: [
+                        _StatusBadge(
+                          label: _proposalVersionTitle(proposal),
+                          color: proposal.proposalVersion > 1
+                              ? const Color(0xFF1D4ED8)
+                              : const Color(0xFF475569),
+                        ),
+                        _StatusBadge(
+                          label: proposal.currentStage.title,
+                          color: proposal.currentStage.color,
+                        ),
+                        if (proposal.code == currentOrder.code)
+                          const _StatusBadge(
+                            label: 'Selecionada',
+                            color: Color(0xFF0F766E),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      proposal.workName,
+                      style: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '${_displayOrderCode(proposal, proposals)} • ${proposal.client.name}',
+                      style: TextStyle(color: secondaryTextColor),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+InstallationVisitLog? _plannedVisitForCurrentInstallationSchedule(
+  WorkflowOrder order,
+) {
+  final scheduledAt = order.installationScheduledAt;
+  if (scheduledAt == null) {
+    return null;
+  }
+
+  for (
+    var index = order.installationVisitHistory.length - 1;
+    index >= 0;
+    index--
+  ) {
+    final visit = order.installationVisitHistory[index];
+    if (visit.plannedItems.isNotEmpty &&
+        visit.scheduledAt.year == scheduledAt.year &&
+        visit.scheduledAt.month == scheduledAt.month &&
+        visit.scheduledAt.day == scheduledAt.day &&
+        visit.scheduledAt.hour == scheduledAt.hour &&
+        visit.scheduledAt.minute == scheduledAt.minute) {
+      return visit;
+    }
+  }
+  return null;
+}
+
+class _InstallationScheduleCard extends StatelessWidget {
+  const _InstallationScheduleCard({
+    required this.order,
+    required this.workspaceProfiles,
+    required this.canEdit,
+    this.onScheduleInstallation,
+    this.onToggleExecutionItem,
+  });
+
+  final WorkflowOrder order;
+  final List<EmployeeWorkspaceProfile> workspaceProfiles;
+  final bool canEdit;
+  final Future<void> Function()? onScheduleInstallation;
+  final Future<void> Function(int visitIndex, String item)?
+  onToggleExecutionItem;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    final borderColor = isDarkMode
+        ? const Color(0xFF29403A)
+        : const Color(0xFFE2E8F0);
+    final surfaceColor = isDarkMode
+        ? const Color(0xFF121E1B)
+        : const Color(0xFFF8FAFC);
+    final secondaryTextColor = isDarkMode
+        ? const Color(0xFF9FB2AC)
+        : const Color(0xFF52605C);
+    final scheduledAt = order.installationScheduledAt;
+    final hasSchedule = scheduledAt != null;
+    final assignedProfiles = _profilesForEmails(
+      order.installationAssignedEmployeeEmails,
+      workspaceProfiles,
+    );
+    final team = assignedProfiles.isNotEmpty
+        ? assignedProfiles
+              .map(
+                (profile) =>
+                    profile.name.trim().isEmpty ? profile.login : profile.name,
+              )
+              .join(', ')
+        : order.installationAssignedTeam.trim();
+    final notes = order.installationNotes.trim();
+    final status = order.installationWorkflowStatus;
+    final plannedVisit = _plannedVisitForCurrentInstallationSchedule(order);
+    final plannedItems = plannedVisit?.plannedItems ?? const <String>[];
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: surfaceColor,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: borderColor),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _StatusBadge(label: status.title, color: status.color),
+                    const SizedBox(height: 10),
+                    Text(
+                      hasSchedule
+                          ? _formatDateWithWeekday(scheduledAt)
+                          : 'Defina uma data e hora para organizar a execução em campo.',
+                      style: TextStyle(color: secondaryTextColor, height: 1.35),
+                    ),
+                  ],
+                ),
+              ),
+              if (canEdit && onScheduleInstallation != null)
+                OutlinedButton.icon(
+                  onPressed: () async {
+                    await onScheduleInstallation!();
+                  },
+                  icon: const Icon(Icons.edit_calendar_outlined),
+                  label: Text(hasSchedule ? 'Reagendar' : 'Agendar'),
+                ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final useTwoColumns = constraints.maxWidth >= 720;
+              final itemWidth = useTwoColumns
+                  ? (constraints.maxWidth - 12) / 2
+                  : constraints.maxWidth;
+
+              return Wrap(
+                spacing: 12,
+                runSpacing: 12,
+                children: [
+                  SizedBox(
+                    width: itemWidth,
+                    child: _InfoRow(
+                      label: 'Data da instalação',
+                      value: hasSchedule
+                          ? _formatDate(scheduledAt)
+                          : 'Ainda não agendada',
+                      emphasizeValue: hasSchedule,
+                    ),
+                  ),
+                  SizedBox(
+                    width: itemWidth,
+                    child: _InfoRow(
+                      label: 'Horário',
+                      value: hasSchedule
+                          ? _formatTimeOnly(scheduledAt)
+                          : 'Definir horário',
+                    ),
+                  ),
+                  SizedBox(
+                    width: itemWidth,
+                    child: _InfoRow(
+                      label: 'Equipe responsável',
+                      value: team.isEmpty ? 'Não informada' : team,
+                    ),
+                  ),
+                  SizedBox(
+                    width: itemWidth,
+                    child: _InfoRow(
+                      label: 'Observações',
+                      value: notes.isEmpty ? 'Sem observações.' : notes,
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
+          if (plannedItems.isNotEmpty) ...[
+            const SizedBox(height: 14),
+            Text(
+              'Trabalhos planejados',
+              style: TextStyle(
+                color: isDarkMode
+                    ? const Color(0xFFE7F1EC)
+                    : const Color(0xFF17211E),
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: plannedItems
+                  .map(
+                    (item) => Chip(
+                      label: Text(item),
+                      backgroundColor: status.color.withValues(alpha: 0.08),
+                      side: BorderSide(
+                        color: status.color.withValues(alpha: 0.18),
+                      ),
+                    ),
+                  )
+                  .toList(growable: false),
+            ),
+          ],
+          if (assignedProfiles.isNotEmpty) ...[
+            const SizedBox(height: 14),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: assignedProfiles
+                  .map(
+                    (profile) => Chip(
+                      avatar: CircleAvatar(
+                        backgroundColor: profile.accent.withValues(alpha: 0.15),
+                        backgroundImage: _resolveProfileImageProvider(
+                          profile.photoFilePath,
+                        ),
+                        child:
+                            profile.photoFilePath == null ||
+                                profile.photoFilePath!.trim().isEmpty
+                            ? Text(
+                                (profile.name.trim().isEmpty
+                                        ? profile.login
+                                        : profile.name)
+                                    .trim()
+                                    .substring(0, 1)
+                                    .toUpperCase(),
+                                style: TextStyle(
+                                  color: profile.accent,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              )
+                            : null,
+                      ),
+                      label: Text(
+                        profile.name.trim().isEmpty
+                            ? profile.login
+                            : profile.name,
+                      ),
+                    ),
+                  )
+                  .toList(growable: false),
+            ),
+          ],
+          if (order.installationVisitHistory.isNotEmpty) ...[
+            const SizedBox(height: 18),
+            Text(
+              'Relatórios da instalação',
+              style: TextStyle(
+                color: isDarkMode
+                    ? const Color(0xFFE7F1EC)
+                    : const Color(0xFF17211E),
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+            const SizedBox(height: 10),
+            ...order.installationVisitHistory.asMap().entries.map((entry) {
+              final visitIndex = entry.key;
+              final visit = entry.value;
+              final visitProfiles = _profilesForEmails(
+                visit.employeeEmails,
+                workspaceProfiles,
+              );
+              final visitTeam = visitProfiles.isEmpty
+                  ? visit.employeeEmails.join(', ')
+                  : visitProfiles
+                        .map(
+                          (profile) => profile.name.trim().isEmpty
+                              ? profile.login
+                              : profile.name,
+                        )
+                        .join(', ');
+
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: isDarkMode ? const Color(0xFF0E1715) : Colors.white,
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: borderColor),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        _formatDateWithWeekday(visit.scheduledAt),
+                        style: const TextStyle(fontWeight: FontWeight.w800),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Registrado em ${_formatDateTime(visit.createdAt)}',
+                        style: TextStyle(
+                          color: secondaryTextColor,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        visitTeam.isEmpty
+                            ? 'Equipe não registrada'
+                            : 'Equipe: $visitTeam',
+                        style: TextStyle(color: secondaryTextColor),
+                      ),
+                      if (visit.plannedItems.isNotEmpty) ...[
+                        const SizedBox(height: 10),
+                        Text(
+                          'Trabalhos',
+                          style: TextStyle(
+                            color: secondaryTextColor,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        ...visit.plannedItems.map((item) {
+                          final isChecked = visit.completedItems.contains(item);
+                          final canToggle =
+                              canEdit &&
+                              onToggleExecutionItem != null &&
+                              order.installationWorkflowStatus ==
+                                  InstallationWorkflowStatus.doing &&
+                              visitIndex ==
+                                  order.installationVisitHistory.length - 1;
+                          return CheckboxListTile(
+                            value: isChecked,
+                            contentPadding: EdgeInsets.zero,
+                            dense: true,
+                            controlAffinity: ListTileControlAffinity.leading,
+                            title: Text(item),
+                            onChanged: canToggle
+                                ? (_) async {
+                                    await onToggleExecutionItem!(
+                                      visitIndex,
+                                      item,
+                                    );
+                                  }
+                                : null,
+                          );
+                        }),
+                      ],
+                      if (visit.notes.trim().isNotEmpty) ...[
+                        const SizedBox(height: 4),
+                        Text(
+                          visit.notes,
+                          style: TextStyle(
+                            color: secondaryTextColor,
+                            height: 1.35,
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              );
+            }),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _InstallationCalendarBoard extends StatelessWidget {
+  const _InstallationCalendarBoard({
+    required this.orders,
+    required this.selectedDate,
+    required this.onDateSelected,
+    required this.onOrderSelected,
+    this.selectedOrder,
+    this.onScheduleSelectedOrder,
+  });
+
+  final List<WorkflowOrder> orders;
+  final DateTime selectedDate;
+  final WorkflowOrder? selectedOrder;
+  final ValueChanged<DateTime> onDateSelected;
+  final ValueChanged<WorkflowOrder> onOrderSelected;
+  final Future<void> Function()? onScheduleSelectedOrder;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    final borderColor = isDarkMode
+        ? const Color(0xFF29403A)
+        : const Color(0xFFE2E8F0);
+    final surfaceColor = isDarkMode ? const Color(0xFF121E1B) : Colors.white;
+    final secondaryTextColor = isDarkMode
+        ? const Color(0xFF9FB2AC)
+        : const Color(0xFF52605C);
+    final stageOrders = orders
+        .where((order) => order.currentStage == WorkflowStage.installation)
+        .toList(growable: false);
+    final scheduledOrders =
+        stageOrders
+            .where((order) => order.installationScheduledAt != null)
+            .toList(growable: false)
+          ..sort(
+            (left, right) => left.installationScheduledAt!.compareTo(
+              right.installationScheduledAt!,
+            ),
+          );
+    final selectedDayOrders = scheduledOrders
+        .where(
+          (order) => _isSameDate(order.installationScheduledAt!, selectedDate),
+        )
+        .toList(growable: false);
+    final unscheduledCount = stageOrders
+        .where((order) => order.installationScheduledAt == null)
+        .length;
+    final canScheduleSelectedOrder =
+        selectedOrder?.currentStage == WorkflowStage.installation &&
+        onScheduleSelectedOrder != null;
+
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: _panelDecoration(context),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Calendário de instalação',
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      'Planeje as visitas da equipe e visualize os pedidos do dia selecionado.',
+                      style: TextStyle(color: secondaryTextColor, height: 1.35),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 12),
+              if (canScheduleSelectedOrder)
+                FilledButton.icon(
+                  onPressed: () async {
+                    await onScheduleSelectedOrder!();
+                  },
+                  icon: const Icon(Icons.event_outlined),
+                  label: const Text('Agendar pedido selecionado'),
+                ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              _CalendarMetricPill(
+                label: 'Agendados',
+                value: '${scheduledOrders.length}',
+                accent: const Color(0xFF0F766E),
+              ),
+              _CalendarMetricPill(
+                label: 'Sem agenda',
+                value: '$unscheduledCount',
+                accent: const Color(0xFFB45309),
+              ),
+              _CalendarMetricPill(
+                label: 'Dia selecionado',
+                value: '${selectedDayOrders.length}',
+                accent: WorkflowStage.installation.color,
+              ),
+            ],
+          ),
+          const SizedBox(height: 18),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final useColumn = constraints.maxWidth < 980;
+              final calendar = Container(
+                decoration: BoxDecoration(
+                  color: surfaceColor,
+                  borderRadius: BorderRadius.circular(18),
+                  border: Border.all(color: borderColor),
+                ),
+                padding: const EdgeInsets.all(12),
+                child: CalendarDatePicker(
+                  initialDate: selectedDate,
+                  currentDate: DateTime.now(),
+                  firstDate: DateTime(2020),
+                  lastDate: DateTime(2035, 12, 31),
+                  onDateChanged: onDateSelected,
+                ),
+              );
+              final agenda = Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: surfaceColor,
+                  borderRadius: BorderRadius.circular(18),
+                  border: Border.all(color: borderColor),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      _formatDayWithWeekday(selectedDate),
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      selectedDayOrders.isEmpty
+                          ? 'Nenhuma instalação marcada para este dia.'
+                          : '${selectedDayOrders.length} instalação(ões) programada(s).',
+                      style: TextStyle(color: secondaryTextColor),
+                    ),
+                    const SizedBox(height: 16),
+                    if (selectedDayOrders.isEmpty)
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: isDarkMode
+                              ? Colors.black.withValues(alpha: 0.12)
+                              : const Color(0xFFF8FAFC),
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(color: borderColor),
+                        ),
+                        child: Text(
+                          'Selecione um pedido da lista de Instalação e use o botão de agendamento para preencher este calendário.',
+                          style: TextStyle(
+                            color: secondaryTextColor,
+                            height: 1.35,
+                          ),
+                        ),
+                      )
+                    else
+                      ...selectedDayOrders.map(
+                        (order) => Padding(
+                          padding: const EdgeInsets.only(bottom: 10),
+                          child: InkWell(
+                            onTap: () => onOrderSelected(order),
+                            borderRadius: BorderRadius.circular(14),
+                            child: Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.all(14),
+                              decoration: BoxDecoration(
+                                color: selectedOrder?.code == order.code
+                                    ? WorkflowStage.installation.color
+                                          .withValues(alpha: 0.08)
+                                    : isDarkMode
+                                    ? const Color(0xFF0E1715)
+                                    : const Color(0xFFF8FAFC),
+                                borderRadius: BorderRadius.circular(14),
+                                border: Border.all(
+                                  color: selectedOrder?.code == order.code
+                                      ? WorkflowStage.installation.color
+                                      : borderColor,
+                                ),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    children: [
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 10,
+                                          vertical: 6,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: WorkflowStage
+                                              .installation
+                                              .color
+                                              .withValues(alpha: 0.12),
+                                          borderRadius: BorderRadius.circular(
+                                            999,
+                                          ),
+                                        ),
+                                        child: Text(
+                                          _formatTimeOnly(
+                                            order.installationScheduledAt!,
+                                          ),
+                                          style: TextStyle(
+                                            color: WorkflowStage
+                                                .installation
+                                                .color,
+                                            fontWeight: FontWeight.w800,
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 10),
+                                      Expanded(
+                                        child: Text(
+                                          order.code,
+                                          style: TextStyle(
+                                            color: secondaryTextColor,
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w700,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 10),
+                                  Text(
+                                    order.workName,
+                                    style: const TextStyle(
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    '${order.client.name} • ${order.address}',
+                                    style: TextStyle(
+                                      color: secondaryTextColor,
+                                      height: 1.35,
+                                    ),
+                                  ),
+                                  if (order.installationAssignedTeam
+                                      .trim()
+                                      .isNotEmpty) ...[
+                                    const SizedBox(height: 8),
+                                    Text(
+                                      'Equipe: ${order.installationAssignedTeam}',
+                                      style: TextStyle(
+                                        color: secondaryTextColor,
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ],
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              );
+
+              if (useColumn) {
+                return Column(
+                  children: [calendar, const SizedBox(height: 16), agenda],
+                );
+              }
+
+              return Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(flex: 5, child: calendar),
+                  const SizedBox(width: 16),
+                  Expanded(flex: 6, child: agenda),
+                ],
+              );
+            },
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _EngineeringStageCalendarBoard extends StatefulWidget {
+  const _EngineeringStageCalendarBoard({
+    required this.orders,
+    required this.onOrderSelected,
+    this.selectedOrder,
+  });
+
+  final List<WorkflowOrder> orders;
+  final WorkflowOrder? selectedOrder;
+  final ValueChanged<WorkflowOrder> onOrderSelected;
+
+  @override
+  State<_EngineeringStageCalendarBoard> createState() =>
+      _EngineeringStageCalendarBoardState();
+}
+
+class _EngineeringStageCalendarBoardState
+    extends State<_EngineeringStageCalendarBoard> {
+  late DateTime _selectedDate;
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedDate = _resolveInitialDate(widget.orders);
+  }
+
+  @override
+  void didUpdateWidget(covariant _EngineeringStageCalendarBoard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.orders != widget.orders && widget.orders.isNotEmpty) {
+      final hasSchedulesForCurrentDate = widget.orders.any(
+        (order) => order.engineeringActivitySchedules.values.any(
+          (schedule) => _isSameDate(schedule.scheduledAt, _selectedDate),
+        ),
+      );
+      if (!hasSchedulesForCurrentDate) {
+        _selectedDate = _resolveInitialDate(widget.orders);
+      }
+    }
+  }
+
+  DateTime _resolveInitialDate(List<WorkflowOrder> orders) {
+    DateTime? earliestSchedule;
+    for (final order in orders) {
+      for (final schedule in order.engineeringActivitySchedules.values) {
+        if (earliestSchedule == null ||
+            schedule.scheduledAt.isBefore(earliestSchedule)) {
+          earliestSchedule = schedule.scheduledAt;
+        }
+      }
+    }
+
+    return DateUtils.dateOnly(earliestSchedule ?? DateTime.now());
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    final borderColor = isDarkMode
+        ? const Color(0xFF29403A)
+        : const Color(0xFFE2E8F0);
+    final surfaceColor = isDarkMode ? const Color(0xFF121E1B) : Colors.white;
+    final secondaryTextColor = isDarkMode
+        ? const Color(0xFF9FB2AC)
+        : const Color(0xFF52605C);
+    final stageOrders = widget.orders
+        .where((order) => order.currentStage == WorkflowStage.engineering)
+        .toList(growable: false);
+    final scheduledEntries = <_EngineeringCalendarEntry>[];
+    for (final order in stageOrders) {
+      for (final entry in order.engineeringActivitySchedules.entries) {
+        final task = _engineeringChecklistTaskByKey(entry.key);
+        if (task == null) {
+          continue;
+        }
+        scheduledEntries.add(
+          _EngineeringCalendarEntry(
+            order: order,
+            task: task,
+            schedule: entry.value,
+          ),
+        );
+      }
+    }
+    scheduledEntries.sort(
+      (left, right) =>
+          left.schedule.scheduledAt.compareTo(right.schedule.scheduledAt),
+    );
+    final selectedDayEntries = scheduledEntries
+        .where(
+          (entry) => _isSameDate(entry.schedule.scheduledAt, _selectedDate),
+        )
+        .toList(growable: false);
+    final ordersWithSchedule = stageOrders
+        .where((order) => order.engineeringActivitySchedules.isNotEmpty)
+        .length;
+
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: _panelDecoration(context),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Calendário da engenharia',
+            style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Concentre aqui as apresentações, visitas em obra e conferências de cabos já agendadas.',
+            style: TextStyle(color: secondaryTextColor, height: 1.35),
+          ),
+          const SizedBox(height: 16),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              _CalendarMetricPill(
+                label: 'Atividades',
+                value: '${scheduledEntries.length}',
+                accent: WorkflowStage.engineering.color,
+              ),
+              _CalendarMetricPill(
+                label: 'Pedidos com agenda',
+                value: '$ordersWithSchedule',
+                accent: const Color(0xFF0F766E),
+              ),
+              _CalendarMetricPill(
+                label: 'Dia selecionado',
+                value: '${selectedDayEntries.length}',
+                accent: const Color(0xFF475569),
+              ),
+            ],
+          ),
+          const SizedBox(height: 18),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final useColumn = constraints.maxWidth < 980;
+              final calendar = Container(
+                decoration: BoxDecoration(
+                  color: surfaceColor,
+                  borderRadius: BorderRadius.circular(18),
+                  border: Border.all(color: borderColor),
+                ),
+                padding: const EdgeInsets.all(12),
+                child: CalendarDatePicker(
+                  initialDate: _selectedDate,
+                  currentDate: DateTime.now(),
+                  firstDate: DateTime(2020),
+                  lastDate: DateTime(2035, 12, 31),
+                  onDateChanged: (value) {
+                    setState(() {
+                      _selectedDate = DateUtils.dateOnly(value);
+                    });
+                  },
+                ),
+              );
+              final agenda = Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: surfaceColor,
+                  borderRadius: BorderRadius.circular(18),
+                  border: Border.all(color: borderColor),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      _formatDayWithWeekday(_selectedDate),
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      selectedDayEntries.isEmpty
+                          ? 'Nenhuma atividade técnica marcada para este dia.'
+                          : '${selectedDayEntries.length} atividade(s) técnica(s) programada(s).',
+                      style: TextStyle(color: secondaryTextColor),
+                    ),
+                    const SizedBox(height: 16),
+                    if (selectedDayEntries.isEmpty)
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: isDarkMode
+                              ? Colors.black.withValues(alpha: 0.12)
+                              : const Color(0xFFF8FAFC),
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(color: borderColor),
+                        ),
+                        child: Text(
+                          'Abra um pedido em Trabalhos para agendar as atividades do checklist técnico. Elas aparecem aqui automaticamente.',
+                          style: TextStyle(
+                            color: secondaryTextColor,
+                            height: 1.35,
+                          ),
+                        ),
+                      )
+                    else
+                      ...selectedDayEntries.map((entry) {
+                        final isSelected =
+                            widget.selectedOrder?.code == entry.order.code;
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 10),
+                          child: InkWell(
+                            onTap: () => widget.onOrderSelected(entry.order),
+                            borderRadius: BorderRadius.circular(14),
+                            child: Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.all(14),
+                              decoration: BoxDecoration(
+                                color: isSelected
+                                    ? WorkflowStage.engineering.color
+                                          .withValues(alpha: 0.08)
+                                    : isDarkMode
+                                    ? const Color(0xFF0E1715)
+                                    : const Color(0xFFF8FAFC),
+                                borderRadius: BorderRadius.circular(14),
+                                border: Border.all(
+                                  color: isSelected
+                                      ? WorkflowStage.engineering.color
+                                      : borderColor,
+                                ),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    children: [
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 10,
+                                          vertical: 6,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: WorkflowStage.engineering.color
+                                              .withValues(alpha: 0.12),
+                                          borderRadius: BorderRadius.circular(
+                                            999,
+                                          ),
+                                        ),
+                                        child: Text(
+                                          _formatTimeOnly(
+                                            entry.schedule.scheduledAt,
+                                          ),
+                                          style: TextStyle(
+                                            color:
+                                                WorkflowStage.engineering.color,
+                                            fontWeight: FontWeight.w800,
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 10),
+                                      Expanded(
+                                        child: Text(
+                                          _displayOrderCode(
+                                            entry.order,
+                                            widget.orders,
+                                          ),
+                                          style: TextStyle(
+                                            color: secondaryTextColor,
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w700,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 10),
+                                  Text(
+                                    entry.task.label,
+                                    style: const TextStyle(
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    '${entry.order.workName} • ${entry.order.client.name}',
+                                    style: TextStyle(
+                                      color: secondaryTextColor,
+                                      height: 1.35,
+                                    ),
+                                  ),
+                                  if (entry.schedule.notes
+                                      .trim()
+                                      .isNotEmpty) ...[
+                                    const SizedBox(height: 8),
+                                    Text(
+                                      entry.schedule.notes,
+                                      style: TextStyle(
+                                        color: secondaryTextColor,
+                                        fontSize: 12,
+                                        height: 1.35,
+                                      ),
+                                    ),
+                                  ],
+                                ],
+                              ),
+                            ),
+                          ),
+                        );
+                      }),
+                  ],
+                ),
+              );
+
+              if (useColumn) {
+                return Column(
+                  children: [calendar, const SizedBox(height: 16), agenda],
+                );
+              }
+
+              return Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(flex: 5, child: calendar),
+                  const SizedBox(width: 16),
+                  Expanded(flex: 6, child: agenda),
+                ],
+              );
+            },
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _EngineeringCalendarEntry {
+  const _EngineeringCalendarEntry({
+    required this.order,
+    required this.task,
+    required this.schedule,
+  });
+
+  final WorkflowOrder order;
+  final EngineeringChecklistTask task;
+  final EngineeringTaskSchedule schedule;
+}
+
+class _CalendarMetricPill extends StatelessWidget {
+  const _CalendarMetricPill({
+    required this.label,
+    required this.value,
+    required this.accent,
+  });
+
+  final String label;
+  final String value;
+  final Color accent;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: accent.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: accent.withValues(alpha: 0.16)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            value,
+            style: TextStyle(
+              color: accent,
+              fontSize: 16,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(width: 8),
+          Text(label, style: const TextStyle(fontWeight: FontWeight.w700)),
+        ],
+      ),
+    );
+  }
+}
+
+class _InstallationScheduleDraft {
+  const _InstallationScheduleDraft({
+    required this.scheduledAt,
+    required this.assignedTeam,
+    required this.plannedItems,
+    required this.notes,
+  });
+
+  final DateTime scheduledAt;
+  final String assignedTeam;
+  final List<String> plannedItems;
+  final String notes;
+}
+
+class _InstallationExecutionDraft {
+  const _InstallationExecutionDraft({
+    required this.plannedItems,
+    required this.notes,
+  });
+
+  final List<String> plannedItems;
+  final String notes;
+}
+
+class _InstallationExecutionDialog extends StatefulWidget {
+  const _InstallationExecutionDialog({required this.order});
+
+  final WorkflowOrder order;
+
+  @override
+  State<_InstallationExecutionDialog> createState() =>
+      _InstallationExecutionDialogState();
+}
+
+class _InstallationExecutionDialogState
+    extends State<_InstallationExecutionDialog> {
+  final Set<String> _selectedItems = {...WorkflowStage.installation.checklist};
+  late final TextEditingController _customItemsController;
+  late final TextEditingController _notesController;
+
+  @override
+  void initState() {
+    super.initState();
+    _customItemsController = TextEditingController();
+    _notesController = TextEditingController(
+      text: widget.order.installationNotes,
+    );
+  }
+
+  @override
+  void dispose() {
+    _customItemsController.dispose();
+    _notesController.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final customItems = _customItemsController.text
+        .split('\n')
+        .map((item) => item.trim())
+        .where((item) => item.isNotEmpty);
+    final plannedItems = {
+      ..._selectedItems,
+      ...customItems,
+    }.toList(growable: false);
+    if (plannedItems.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Selecione ou descreva pelo menos uma execução.'),
+        ),
+      );
+      return;
+    }
+
+    Navigator.of(context).pop(
+      _InstallationExecutionDraft(
+        plannedItems: plannedItems,
+        notes: _notesController.text.trim(),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final screenWidth = MediaQuery.sizeOf(context).width;
+
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      insetPadding: EdgeInsets.symmetric(
+        horizontal: screenWidth < 640 ? 16 : 32,
+        vertical: 24,
+      ),
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 760),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF5F7F2),
+          borderRadius: BorderRadius.circular(28),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(24),
+              decoration: const BoxDecoration(
+                borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+                color: Color(0xFF14211D),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.08),
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    child: const Icon(
+                      Icons.checklist_rtl_outlined,
+                      color: Colors.white,
+                      size: 28,
+                    ),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Execução da instalação',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 25,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          '${_displayOrderCode(widget.order)} • ${widget.order.workName}',
+                          style: const TextStyle(color: Colors.white70),
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.close, color: Colors.white),
+                  ),
+                ],
+              ),
+            ),
+            Flexible(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'O que será executado',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    ...WorkflowStage.installation.checklist.map((item) {
+                      return CheckboxListTile(
+                        value: _selectedItems.contains(item),
+                        contentPadding: EdgeInsets.zero,
+                        title: Text(item),
+                        onChanged: (value) {
+                          setState(() {
+                            if (value == true) {
+                              _selectedItems.add(item);
+                            } else {
+                              _selectedItems.remove(item);
+                            }
+                          });
+                        },
+                      );
+                    }),
+                    const SizedBox(height: 14),
+                    _DialogField(
+                      controller: _customItemsController,
+                      label: 'Outras execuções',
+                      validator: (_) => null,
+                      hintText: 'Uma execução por linha',
+                      maxLines: 3,
+                    ),
+                    const SizedBox(height: 16),
+                    _DialogField(
+                      controller: _notesController,
+                      label: 'Observação desta execução',
+                      validator: (_) => null,
+                      hintText:
+                          'Descreva acesso, pendências, materiais, impedimentos...',
+                      maxLines: 4,
+                    ),
+                    const SizedBox(height: 24),
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: Wrap(
+                        spacing: 12,
+                        runSpacing: 12,
+                        children: [
+                          OutlinedButton(
+                            onPressed: () => Navigator.of(context).pop(),
+                            child: const Text('Cancelar'),
+                          ),
+                          FilledButton.icon(
+                            onPressed: _submit,
+                            icon: const Icon(Icons.play_arrow_outlined),
+                            label: const Text('Iniciar execução'),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _EngineeringActivityScheduleDraft {
+  const _EngineeringActivityScheduleDraft({
+    required this.scheduledAt,
+    required this.notes,
+  });
+
+  final DateTime scheduledAt;
+  final String notes;
+}
+
+class _EngineeringActivityScheduleDialog extends StatefulWidget {
+  const _EngineeringActivityScheduleDialog({
+    required this.order,
+    required this.task,
+    required this.initialDraft,
+  });
+
+  final WorkflowOrder order;
+  final EngineeringChecklistTask task;
+  final _EngineeringActivityScheduleDraft initialDraft;
+
+  @override
+  State<_EngineeringActivityScheduleDialog> createState() =>
+      _EngineeringActivityScheduleDialogState();
+}
+
+class _EngineeringActivityScheduleDialogState
+    extends State<_EngineeringActivityScheduleDialog> {
+  late DateTime _scheduledAt;
+  late TextEditingController _notesController;
+
+  @override
+  void initState() {
+    super.initState();
+    _scheduledAt = widget.initialDraft.scheduledAt;
+    _notesController = TextEditingController(text: widget.initialDraft.notes);
+  }
+
+  @override
+  void dispose() {
+    _notesController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _pickDate() async {
+    final pickedDate = await showDatePicker(
+      context: context,
+      initialDate: _scheduledAt,
+      firstDate: DateTime(DateTime.now().year - 1),
+      lastDate: DateTime(DateTime.now().year + 3),
+    );
+    if (pickedDate == null) {
+      return;
+    }
+
+    setState(() {
+      _scheduledAt = DateTime(
+        pickedDate.year,
+        pickedDate.month,
+        pickedDate.day,
+        _scheduledAt.hour,
+        _scheduledAt.minute,
+      );
+    });
+  }
+
+  Future<void> _pickTime() async {
+    final pickedTime = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.fromDateTime(_scheduledAt),
+    );
+    if (pickedTime == null) {
+      return;
+    }
+
+    setState(() {
+      _scheduledAt = DateTime(
+        _scheduledAt.year,
+        _scheduledAt.month,
+        _scheduledAt.day,
+        pickedTime.hour,
+        pickedTime.minute,
+      );
+    });
+  }
+
+  void _submit() {
+    Navigator.of(context).pop(
+      _EngineeringActivityScheduleDraft(
+        scheduledAt: _scheduledAt,
+        notes: _notesController.text.trim(),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final screenWidth = MediaQuery.sizeOf(context).width;
+    final isCompact = screenWidth < 720;
+
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      insetPadding: EdgeInsets.symmetric(
+        horizontal: screenWidth < 640 ? 16 : 32,
+        vertical: 24,
+      ),
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 720),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF5F7F2),
+          borderRadius: BorderRadius.circular(28),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(24),
+              decoration: const BoxDecoration(
+                borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+                color: Color(0xFF14211D),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.08),
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    child: const Icon(
+                      Icons.event_note_outlined,
+                      color: Colors.white,
+                      size: 28,
+                    ),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          widget.task.label,
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: isCompact ? 22 : 26,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          '${_displayOrderCode(widget.order)} • ${widget.order.workName}',
+                          style: const TextStyle(color: Colors.white70),
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.close, color: Colors.white),
+                  ),
+                ],
+              ),
+            ),
+            Flexible(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    LayoutBuilder(
+                      builder: (context, constraints) {
+                        final useTwoColumns = constraints.maxWidth >= 560;
+                        final fieldWidth = useTwoColumns
+                            ? (constraints.maxWidth - 16) / 2
+                            : constraints.maxWidth;
+
+                        return Wrap(
+                          spacing: 16,
+                          runSpacing: 16,
+                          children: [
+                            SizedBox(
+                              width: fieldWidth,
+                              child: _SchedulePickerTile(
+                                label: 'Data',
+                                value: _formatDate(_scheduledAt),
+                                icon: Icons.calendar_month_outlined,
+                                onTap: _pickDate,
+                              ),
+                            ),
+                            SizedBox(
+                              width: fieldWidth,
+                              child: _SchedulePickerTile(
+                                label: 'Horário',
+                                value: _formatTimeOnly(_scheduledAt),
+                                icon: Icons.schedule_outlined,
+                                onTap: _pickTime,
+                              ),
+                            ),
+                          ],
+                        );
+                      },
+                    ),
+                    const SizedBox(height: 20),
+                    _DialogField(
+                      controller: _notesController,
+                      label: 'Observações',
+                      validator: (_) => null,
+                      hintText:
+                          'Ponto de encontro, responsável na obra, dependências, materiais...',
+                      maxLines: 4,
+                    ),
+                    const SizedBox(height: 24),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      children: [
+                        TextButton(
+                          onPressed: () => Navigator.of(context).pop(),
+                          child: const Text('Cancelar'),
+                        ),
+                        const SizedBox(width: 12),
+                        FilledButton.icon(
+                          onPressed: _submit,
+                          icon: const Icon(Icons.check_circle_outline),
+                          label: const Text('Salvar agenda'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _InstallationScheduleDialog extends StatefulWidget {
+  const _InstallationScheduleDialog({
+    required this.order,
+    required this.initialDraft,
+  });
+
+  final WorkflowOrder order;
+  final _InstallationScheduleDraft initialDraft;
+
+  @override
+  State<_InstallationScheduleDialog> createState() =>
+      _InstallationScheduleDialogState();
+}
+
+class _InstallationScheduleDialogState
+    extends State<_InstallationScheduleDialog> {
+  late DateTime _scheduledAt;
+  late final TextEditingController _notesController;
+  final Set<String> _selectedItems = <String>{};
+  late final TextEditingController _customItemsController;
+
+  @override
+  void initState() {
+    super.initState();
+    _scheduledAt = widget.initialDraft.scheduledAt;
+    _notesController = TextEditingController(text: widget.initialDraft.notes);
+    _customItemsController = TextEditingController();
+    for (final item in widget.initialDraft.plannedItems) {
+      if (WorkflowStage.installation.checklist.contains(item)) {
+        _selectedItems.add(item);
+      }
+    }
+    final customItems = widget.initialDraft.plannedItems
+        .where((item) => !WorkflowStage.installation.checklist.contains(item))
+        .join('\n');
+    _customItemsController.text = customItems;
+  }
+
+  @override
+  void dispose() {
+    _notesController.dispose();
+    _customItemsController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _pickDate() async {
+    final pickedDate = await showDatePicker(
+      context: context,
+      initialDate: _scheduledAt,
+      firstDate: DateTime(2020),
+      lastDate: DateTime(2035, 12, 31),
+    );
+    if (pickedDate == null) {
+      return;
+    }
+
+    setState(() {
+      _scheduledAt = DateTime(
+        pickedDate.year,
+        pickedDate.month,
+        pickedDate.day,
+        _scheduledAt.hour,
+        _scheduledAt.minute,
+      );
+    });
+  }
+
+  Future<void> _pickTime() async {
+    final pickedTime = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.fromDateTime(_scheduledAt),
+    );
+    if (pickedTime == null) {
+      return;
+    }
+
+    setState(() {
+      _scheduledAt = DateTime(
+        _scheduledAt.year,
+        _scheduledAt.month,
+        _scheduledAt.day,
+        pickedTime.hour,
+        pickedTime.minute,
+      );
+    });
+  }
+
+  void _submit() {
+    final customItems = _customItemsController.text
+        .split('\n')
+        .map((item) => item.trim())
+        .where((item) => item.isNotEmpty);
+    final plannedItems = {
+      ..._selectedItems,
+      ...customItems,
+    }.toList(growable: false);
+    if (plannedItems.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Informe pelo menos um trabalho da instalação.'),
+        ),
+      );
+      return;
+    }
+    if (_notesController.text.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('A observação da instalação é obrigatória.'),
+        ),
+      );
+      return;
+    }
+
+    Navigator.of(context).pop(
+      _InstallationScheduleDraft(
+        scheduledAt: _scheduledAt,
+        assignedTeam: '',
+        plannedItems: plannedItems,
+        notes: _notesController.text.trim(),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final screenWidth = MediaQuery.sizeOf(context).width;
+    final isCompact = screenWidth < 720;
+
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      insetPadding: EdgeInsets.symmetric(
+        horizontal: screenWidth < 640 ? 16 : 32,
+        vertical: 24,
+      ),
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 760),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF5F7F2),
+          borderRadius: BorderRadius.circular(28),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(24),
+              decoration: const BoxDecoration(
+                borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+                color: Color(0xFF14211D),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.08),
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    child: const Icon(
+                      Icons.event_available_outlined,
+                      color: Colors.white,
+                      size: 28,
+                    ),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Calendário de instalação',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: isCompact ? 22 : 26,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          '${_displayOrderCode(widget.order)} • ${widget.order.workName}',
+                          style: const TextStyle(color: Colors.white70),
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.close, color: Colors.white),
+                  ),
+                ],
+              ),
+            ),
+            Flexible(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    LayoutBuilder(
+                      builder: (context, constraints) {
+                        final useTwoColumns = constraints.maxWidth >= 560;
+                        final fieldWidth = useTwoColumns
+                            ? (constraints.maxWidth - 16) / 2
+                            : constraints.maxWidth;
+
+                        return Wrap(
+                          spacing: 16,
+                          runSpacing: 16,
+                          children: [
+                            SizedBox(
+                              width: fieldWidth,
+                              child: _SchedulePickerTile(
+                                label: 'Data',
+                                value: _formatDate(_scheduledAt),
+                                icon: Icons.calendar_month_outlined,
+                                onTap: _pickDate,
+                              ),
+                            ),
+                            SizedBox(
+                              width: fieldWidth,
+                              child: _SchedulePickerTile(
+                                label: 'Horário',
+                                value: _formatTimeOnly(_scheduledAt),
+                                icon: Icons.schedule_outlined,
+                                onTap: _pickTime,
+                              ),
+                            ),
+                          ],
+                        );
+                      },
+                    ),
+                    const SizedBox(height: 20),
+                    const Text(
+                      'Trabalhos da instalação',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    ...WorkflowStage.installation.checklist.map((item) {
+                      return CheckboxListTile(
+                        value: _selectedItems.contains(item),
+                        contentPadding: EdgeInsets.zero,
+                        title: Text(item),
+                        onChanged: (value) {
+                          setState(() {
+                            if (value == true) {
+                              _selectedItems.add(item);
+                            } else {
+                              _selectedItems.remove(item);
+                            }
+                          });
+                        },
+                      );
+                    }),
+                    const SizedBox(height: 14),
+                    _DialogField(
+                      controller: _customItemsController,
+                      label: 'Outros trabalhos',
+                      validator: (_) => null,
+                      hintText: 'Um trabalho por linha',
+                      maxLines: 3,
+                    ),
+                    const SizedBox(height: 16),
+                    _DialogField(
+                      controller: _notesController,
+                      label: 'Observação da instalação',
+                      validator: (_) => null,
+                      hintText:
+                          'Ex.: Instalar 3 unifi, 2 switch poe, acesso ao local, materiais pendentes...',
+                      maxLines: 4,
+                    ),
+                    const SizedBox(height: 24),
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: Wrap(
+                        spacing: 12,
+                        runSpacing: 12,
+                        children: [
+                          OutlinedButton(
+                            onPressed: () => Navigator.of(context).pop(),
+                            child: const Text('Cancelar'),
+                          ),
+                          FilledButton.icon(
+                            onPressed: _submit,
+                            icon: const Icon(Icons.save_outlined),
+                            label: const Text('Salvar agenda'),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SchedulePickerTile extends StatelessWidget {
+  const _SchedulePickerTile({
+    required this.label,
+    required this.value,
+    required this.icon,
+    required this.onTap,
+  });
+
+  final String label;
+  final String value;
+  final IconData icon;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(18),
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: const Color(0xFFDCE5E1)),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 42,
+              height: 42,
+              decoration: BoxDecoration(
+                color: const Color(0xFF14211D).withValues(alpha: 0.06),
+                borderRadius: BorderRadius.circular(14),
+              ),
+              child: Icon(icon, color: const Color(0xFF14211D)),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    label,
+                    style: const TextStyle(
+                      color: Color(0xFF52605C),
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    value,
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Icon(Icons.chevron_right),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _EngineeringChecklistCard extends StatelessWidget {
+  const _EngineeringChecklistCard({
+    required this.order,
+    required this.isEditable,
+    this.onScheduleActivity,
+    this.onStatusChanged,
+  });
+
+  final WorkflowOrder order;
+  final bool isEditable;
+  final Future<void> Function(String taskKey)? onScheduleActivity;
+  final Future<void> Function(
+    String taskKey,
+    EngineeringChecklistStatus status,
+  )?
+  onStatusChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    final secondaryTextColor = isDarkMode
+        ? const Color(0xFF9FB2AC)
+        : const Color(0xFF52605C);
+    final surfaceColor = isDarkMode
+        ? const Color(0xFF121E1B)
+        : const Color(0xFFF8FAFC);
+    final borderColor = isDarkMode
+        ? const Color(0xFF29403A)
+        : const Color(0xFFE2E8F0);
+    final flowSnapshot = _engineeringFlowSnapshot(order);
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: surfaceColor,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: borderColor),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Checklist da engenharia',
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            isEditable
+                ? 'Use o kanban interno da Engenharia e conclua cada etapa antes de liberar para Montagem.'
+                : 'Visualização do andamento técnico e da agenda registrada pela Engenharia.',
+            style: TextStyle(color: secondaryTextColor, height: 1.4),
+          ),
+          const SizedBox(height: 14),
+          _EngineeringFlowKanban(
+            order: order,
+            flowSnapshot: flowSnapshot,
+            isDarkMode: isDarkMode,
+            borderColor: borderColor,
+            isEditable: isEditable,
+            onScheduleActivity: onScheduleActivity,
+            onStatusChanged: onStatusChanged,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _EngineeringTaskScheduleLine extends StatelessWidget {
+  const _EngineeringTaskScheduleLine({
+    required this.task,
+    required this.schedule,
+    required this.isDarkMode,
+    required this.borderColor,
+    required this.canEdit,
+    this.onSchedule,
+  });
+
+  final EngineeringChecklistTask task;
+  final EngineeringTaskSchedule? schedule;
+  final bool isDarkMode;
+  final Color borderColor;
+  final bool canEdit;
+  final Future<void> Function()? onSchedule;
+
+  @override
+  Widget build(BuildContext context) {
+    final surfaceColor = isDarkMode ? const Color(0xFF0E1715) : Colors.white;
+    final mutedTextColor = isDarkMode
+        ? const Color(0xFF9FB2AC)
+        : const Color(0xFF52605C);
+    final hasSchedule = schedule != null;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: surfaceColor,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: borderColor),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  hasSchedule
+                      ? 'Agendado para ${_formatDateTime(schedule!.scheduledAt)}'
+                      : 'Sem agendamento definido',
+                  style: TextStyle(
+                    color: hasSchedule
+                        ? const Color(0xFF0F766E)
+                        : mutedTextColor,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                if (hasSchedule && schedule!.notes.trim().isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    schedule!.notes,
+                    style: TextStyle(color: mutedTextColor, height: 1.35),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          if (canEdit)
+            OutlinedButton.icon(
+              onPressed: onSchedule == null
+                  ? null
+                  : () async {
+                      await onSchedule!();
+                    },
+              icon: Icon(
+                hasSchedule
+                    ? Icons.event_repeat_outlined
+                    : Icons.event_available_outlined,
+              ),
+              label: Text(hasSchedule ? 'Reagendar' : 'Agendar'),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _EngineeringFlowKanban extends StatelessWidget {
+  const _EngineeringFlowKanban({
+    required this.order,
+    required this.flowSnapshot,
+    required this.isDarkMode,
+    required this.borderColor,
+    required this.isEditable,
+    this.onScheduleActivity,
+    this.onStatusChanged,
+  });
+
+  final WorkflowOrder order;
+  final _EngineeringFlowSnapshot flowSnapshot;
+  final bool isDarkMode;
+  final Color borderColor;
+  final bool isEditable;
+  final Future<void> Function(String taskKey)? onScheduleActivity;
+  final Future<void> Function(
+    String taskKey,
+    EngineeringChecklistStatus status,
+  )?
+  onStatusChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final useColumn = constraints.maxWidth < 980;
+        final columns = [
+          _EngineeringFlowKanbanColumn(
+            title: 'Concluídas',
+            accent: const Color(0xFF15803D),
+            tasks: flowSnapshot.completedTasks,
+            emptyMessage: 'Nenhuma etapa concluída ainda.',
+            isDarkMode: isDarkMode,
+            borderColor: borderColor,
+            order: order,
+            isEditable: isEditable,
+            onScheduleActivity: onScheduleActivity,
+            onStatusChanged: onStatusChanged,
+            taskState: _EngineeringFlowTaskState.completed,
+          ),
+          _EngineeringFlowKanbanColumn(
+            title: 'Etapa atual',
+            accent: const Color(0xFFC2410C),
+            tasks: flowSnapshot.currentTask == null
+                ? const <EngineeringChecklistTask>[]
+                : [flowSnapshot.currentTask!],
+            emptyMessage: 'Fluxo técnico concluído e pronto para Montagem.',
+            isDarkMode: isDarkMode,
+            borderColor: borderColor,
+            order: order,
+            isEditable: isEditable,
+            onScheduleActivity: onScheduleActivity,
+            onStatusChanged: onStatusChanged,
+            taskState: _EngineeringFlowTaskState.current,
+          ),
+          _EngineeringFlowKanbanColumn(
+            title: 'Próximas',
+            accent: const Color(0xFF64748B),
+            tasks: flowSnapshot.upcomingTasks,
+            emptyMessage: 'Não existem próximas etapas pendentes.',
+            isDarkMode: isDarkMode,
+            borderColor: borderColor,
+            order: order,
+            isEditable: isEditable,
+            onScheduleActivity: onScheduleActivity,
+            onStatusChanged: onStatusChanged,
+            taskState: _EngineeringFlowTaskState.upcoming,
+          ),
+        ];
+
+        if (useColumn) {
+          return Column(
+            children: [
+              for (var index = 0; index < columns.length; index++) ...[
+                if (index > 0) const SizedBox(height: 12),
+                columns[index],
+              ],
+            ],
+          );
+        }
+
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            for (var index = 0; index < columns.length; index++) ...[
+              if (index > 0) const SizedBox(width: 12),
+              Expanded(child: columns[index]),
+            ],
+          ],
+        );
+      },
+    );
+  }
+}
+
+enum _EngineeringFlowTaskState { completed, current, upcoming }
+
+class _EngineeringFlowKanbanColumn extends StatelessWidget {
+  const _EngineeringFlowKanbanColumn({
+    required this.title,
+    required this.accent,
+    required this.tasks,
+    required this.emptyMessage,
+    required this.isDarkMode,
+    required this.borderColor,
+    required this.order,
+    required this.isEditable,
+    required this.taskState,
+    this.onScheduleActivity,
+    this.onStatusChanged,
+  });
+
+  final String title;
+  final Color accent;
+  final List<EngineeringChecklistTask> tasks;
+  final String emptyMessage;
+  final bool isDarkMode;
+  final Color borderColor;
+  final WorkflowOrder order;
+  final bool isEditable;
+  final _EngineeringFlowTaskState taskState;
+  final Future<void> Function(String taskKey)? onScheduleActivity;
+  final Future<void> Function(
+    String taskKey,
+    EngineeringChecklistStatus status,
+  )?
+  onStatusChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final surfaceColor = isDarkMode
+        ? const Color(0xFF0E1715)
+        : const Color(0xFFFFFFFF);
+    final mutedTextColor = isDarkMode
+        ? const Color(0xFF9FB2AC)
+        : const Color(0xFF52605C);
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: surfaceColor,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: borderColor),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 12,
+                height: 12,
+                decoration: BoxDecoration(
+                  color: accent,
+                  borderRadius: BorderRadius.circular(999),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  title,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 4,
+                ),
+                decoration: BoxDecoration(
+                  color: accent.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Text(
+                  '${tasks.length}',
+                  style: TextStyle(color: accent, fontWeight: FontWeight.w800),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          if (tasks.isEmpty)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: isDarkMode
+                    ? Colors.black.withValues(alpha: 0.12)
+                    : const Color(0xFFF8FAFC),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(color: borderColor),
+              ),
+              child: Text(
+                emptyMessage,
+                style: TextStyle(color: mutedTextColor, height: 1.35),
+              ),
+            )
+          else
+            ...tasks.map(
+              (task) => Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: _EngineeringFlowTaskCard(
+                  task: task,
+                  taskState: taskState,
+                  accent: accent,
+                  order: order,
+                  isDarkMode: isDarkMode,
+                  borderColor: borderColor,
+                  isEditable: isEditable,
+                  onScheduleActivity: onScheduleActivity,
+                  onStatusChanged: onStatusChanged,
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _EngineeringFlowTaskCard extends StatelessWidget {
+  const _EngineeringFlowTaskCard({
+    required this.task,
+    required this.taskState,
+    required this.accent,
+    required this.order,
+    required this.isDarkMode,
+    required this.borderColor,
+    required this.isEditable,
+    this.onScheduleActivity,
+    this.onStatusChanged,
+  });
+
+  final EngineeringChecklistTask task;
+  final _EngineeringFlowTaskState taskState;
+  final Color accent;
+  final WorkflowOrder order;
+  final bool isDarkMode;
+  final Color borderColor;
+  final bool isEditable;
+  final Future<void> Function(String taskKey)? onScheduleActivity;
+  final Future<void> Function(
+    String taskKey,
+    EngineeringChecklistStatus status,
+  )?
+  onStatusChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final schedule = order.engineeringActivitySchedules[task.key];
+    final helperText = switch (taskState) {
+      _EngineeringFlowTaskState.completed => 'Etapa já concluída no fluxo.',
+      _EngineeringFlowTaskState.current =>
+        'Etapa atual do kanban interno da Engenharia.',
+      _EngineeringFlowTaskState.upcoming =>
+        'Aguardando a conclusão da etapa anterior.',
+    };
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: accent.withValues(alpha: isDarkMode ? 0.14 : 0.08),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: accent.withValues(alpha: 0.24)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            task.label,
+            style: const TextStyle(fontWeight: FontWeight.w700, height: 1.35),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            helperText,
+            style: TextStyle(
+              color: isDarkMode
+                  ? const Color(0xFFD2E1DB)
+                  : const Color(0xFF52605C),
+              height: 1.3,
+              fontSize: 12,
+            ),
+          ),
+          if (task.supportsScheduling) ...[
+            const SizedBox(height: 10),
+            _EngineeringTaskScheduleLine(
+              task: task,
+              schedule: schedule,
+              isDarkMode: isDarkMode,
+              borderColor: borderColor,
+              canEdit:
+                  isEditable && taskState == _EngineeringFlowTaskState.current,
+              onSchedule:
+                  !isEditable ||
+                      taskState != _EngineeringFlowTaskState.current ||
+                      onScheduleActivity == null
+                  ? null
+                  : () async {
+                      await onScheduleActivity!(task.key);
+                    },
+            ),
+          ],
+          if (isEditable && onStatusChanged != null) ...[
+            const SizedBox(height: 10),
+            if (taskState == _EngineeringFlowTaskState.current)
+              FilledButton.icon(
+                onPressed: () async {
+                  await onStatusChanged!(
+                    task.key,
+                    EngineeringChecklistStatus.done,
+                  );
+                },
+                icon: const Icon(Icons.arrow_forward_rounded),
+                label: const Text('Concluir e avançar'),
+              ),
+            if (taskState == _EngineeringFlowTaskState.completed)
+              OutlinedButton.icon(
+                onPressed: () async {
+                  await onStatusChanged!(
+                    task.key,
+                    EngineeringChecklistStatus.notStarted,
+                  );
+                },
+                icon: const Icon(Icons.restart_alt_rounded),
+                label: const Text('Reabrir daqui'),
+              ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _OrderCard extends StatelessWidget {
+  const _OrderCard({
+    required this.order,
+    required this.allOrders,
+    required this.selected,
+    required this.onTap,
+    required this.onOpenConversation,
+    required this.workspaceProfiles,
+  });
+
+  final WorkflowOrder order;
+  final List<WorkflowOrder> allOrders;
+  final bool selected;
+  final VoidCallback onTap;
+  final VoidCallback onOpenConversation;
+  final List<EmployeeWorkspaceProfile> workspaceProfiles;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    final cardBackgroundColor = selected
+        ? (isDarkMode ? const Color(0xFF304139) : const Color(0xFFF5FAF7))
+        : isDarkMode
+        ? const Color(0xFF2A3732)
+        : Colors.white;
+    final cardBorderColor = selected
+        ? order.currentStage.color
+        : isDarkMode
+        ? const Color(0xFF566C64)
+        : const Color(0xFFE5E7EB);
+    final primaryTextColor = selected
+        ? (isDarkMode ? const Color(0xFFF4FBF8) : const Color(0xFF14211D))
+        : isDarkMode
+        ? const Color(0xFFE7F1EC)
+        : const Color(0xFF14211D);
+    final secondaryTextColor = selected
+        ? (isDarkMode ? const Color(0xFFC8D8D1) : const Color(0xFF52605C))
+        : isDarkMode
+        ? const Color(0xFFC0D0C9)
+        : const Color(0xFF52605C);
+    final progressTrackColor = selected
+        ? const Color(0xFFE5E7EB)
+        : isDarkMode
+        ? const Color(0xFF526860)
+        : const Color(0xFFE5E7EB);
+    final linkedProposals = _proposalExtensionsForPrimary(allOrders, order);
+    final proposalBadgeColor = order.proposalVersion > 1
+        ? const Color(0xFF1D4ED8)
+        : const Color(0xFF475569);
+    final assemblyProfiles = _assemblyAssignedProfilesForOrder(
+      order,
+      workspaceProfiles,
+    );
+    final proposalSummary = linkedProposals.isNotEmpty
+        ? '${linkedProposals.length + 1} propostas'
+        : _proposalBadgeLabel(order);
+    final displayCode = _displayOrderCode(order, allOrders);
+    final effectiveProgress = _effectiveOrderProgress(order);
+
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(14),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: cardBackgroundColor,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: cardBorderColor, width: selected ? 1.4 : 1),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        displayCode,
+                        style: TextStyle(
+                          color: order.currentStage.color,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 0.7,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        order.workName,
+                        style: TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w700,
+                          color: primaryTextColor,
+                          height: 1.2,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 4,
+                        children: [
+                          if (order.isServiceOrder)
+                            const Text(
+                              'OS',
+                              style: TextStyle(
+                                color: Color(0xFF92400E),
+                                fontSize: 11,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                          Text(
+                            proposalSummary,
+                            style: TextStyle(
+                              color: proposalBadgeColor,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+                _StatusBadge(
+                  label: order.currentStage.title,
+                  color: order.currentStage.color,
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(
+              '${order.client.name} • ${order.client.phone}',
+              style: TextStyle(color: secondaryTextColor, fontSize: 13),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              'Cliente ${order.client.id}',
+              style: TextStyle(color: secondaryTextColor, fontSize: 12),
+            ),
+            const SizedBox(height: 10),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(99),
+              child: LinearProgressIndicator(
+                value: effectiveProgress,
+                minHeight: 6,
+                backgroundColor: progressTrackColor,
+                valueColor: AlwaysStoppedAnimation(order.currentStage.color),
+              ),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              order.nextAction,
+              style: TextStyle(color: secondaryTextColor, fontSize: 13),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+            if (assemblyProfiles.isNotEmpty &&
+                order.currentStage != WorkflowStage.installation) ...[
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                children: assemblyProfiles
+                    .map(
+                      (profile) => Tooltip(
+                        message: profile.name.trim().isEmpty
+                            ? profile.login
+                            : profile.name,
+                        child: CircleAvatar(
+                          radius: 12,
+                          backgroundColor: profile.accent.withValues(
+                            alpha: 0.15,
+                          ),
+                          backgroundImage: _resolveProfileImageProvider(
+                            profile.photoFilePath,
+                          ),
+                          child:
+                              profile.photoFilePath == null ||
+                                  profile.photoFilePath!.trim().isEmpty
+                              ? Text(
+                                  profile.name.trim().isEmpty
+                                      ? profile.login
+                                            .trim()
+                                            .substring(0, 1)
+                                            .toUpperCase()
+                                      : profile.name
+                                            .trim()
+                                            .substring(0, 1)
+                                            .toUpperCase(),
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w600,
+                                    color: profile.accent,
+                                  ),
+                                )
+                              : null,
+                        ),
+                      ),
+                    )
+                    .toList(growable: false),
+              ),
+            ],
+            if (linkedProposals.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Text(
+                linkedProposals
+                    .map(
+                      (proposal) =>
+                          '${_proposalBadgeLabel(proposal)} ${proposal.currentStage.title}',
+                    )
+                    .join(' • '),
+                style: TextStyle(
+                  color: secondaryTextColor,
+                  fontSize: 12,
+                  height: 1.35,
+                ),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ],
+            const SizedBox(height: 10),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: onOpenConversation,
+                style: TextButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 6,
+                  ),
+                  minimumSize: const Size(0, 32),
+                  foregroundColor: order.currentStage.color,
+                  backgroundColor: order.currentStage.color.withValues(
+                    alpha: 0.08,
+                  ),
+                ),
+                icon: const Icon(Icons.chat_bubble_outline_rounded, size: 16),
+                label: Text(
+                  order.conversationMessages.isEmpty
+                      ? 'Conversa'
+                      : 'Conversa (${order.conversationMessages.length})',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _HeaderCountBadgeIcon extends StatelessWidget {
+  const _HeaderCountBadgeIcon({
+    required this.icon,
+    required this.count,
+    required this.color,
+  });
+
+  final IconData icon;
+  final int count;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    final label = count > 9 ? '9+' : '$count';
+
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        Icon(icon),
+        Positioned(
+          top: -6,
+          right: -9,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+            decoration: BoxDecoration(
+              color: color,
+              borderRadius: BorderRadius.circular(999),
+            ),
+            child: Text(
+              label,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 9,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+ButtonStyle _attachmentReadyButtonStyle(bool hasFile) {
+  if (!hasFile) {
+    return OutlinedButton.styleFrom();
+  }
+
+  return OutlinedButton.styleFrom(
+    foregroundColor: const Color(0xFF15803D),
+    backgroundColor: const Color(0xFFF0FDF4),
+    side: const BorderSide(color: Color(0xFF86EFAC)),
+  );
+}
+
+class _ConversationMentionMatch {
+  const _ConversationMentionMatch({
+    required this.start,
+    required this.end,
+    required this.query,
+  });
+
+  final int start;
+  final int end;
+  final String query;
+}
+
+class _OrderConversationDialog extends StatefulWidget {
+  const _OrderConversationDialog({
+    required this.order,
+    required this.currentProfile,
+    required this.profiles,
+    required this.onSendMessage,
+  });
+
+  final WorkflowOrder order;
+  final EmployeeWorkspaceProfile currentProfile;
+  final List<EmployeeWorkspaceProfile> profiles;
+  final Future<bool> Function(String message) onSendMessage;
+
+  @override
+  State<_OrderConversationDialog> createState() =>
+      _OrderConversationDialogState();
+}
+
+class _OrderConversationDialogState extends State<_OrderConversationDialog> {
+  final TextEditingController _messageController = TextEditingController();
+  final ScrollController _scrollController = ScrollController();
+  late List<OrderConversationMessage> _messages;
+  bool _isSending = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _messages = List<OrderConversationMessage>.from(
+      widget.order.conversationMessages,
+    )..sort((left, right) => left.createdAt.compareTo(right.createdAt));
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scrollToBottom(jump: true);
+    });
+  }
+
+  @override
+  void dispose() {
+    _messageController.dispose();
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  void _scrollToBottom({bool jump = false}) {
+    if (!_scrollController.hasClients) {
+      return;
+    }
+
+    final target = _scrollController.position.maxScrollExtent;
+    if (jump) {
+      _scrollController.jumpTo(target);
+      return;
+    }
+
+    _scrollController.animateTo(
+      target,
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeOut,
+    );
+  }
+
+  _ConversationMentionMatch? _resolveActiveMention(TextEditingValue value) {
+    final text = value.text;
+    final selection = value.selection;
+    final caretOffset = selection.baseOffset;
+    if (caretOffset < 0 || caretOffset > text.length) {
+      return null;
+    }
+
+    final prefix = text.substring(0, caretOffset);
+    final match = RegExp(r'(?:^|\s)@([A-Za-z0-9._-]*)$').firstMatch(prefix);
+    if (match == null) {
+      return null;
+    }
+
+    final fullMatch = match.group(0) ?? '';
+    final atOffset = fullMatch.lastIndexOf('@');
+    if (atOffset == -1) {
+      return null;
+    }
+
+    return _ConversationMentionMatch(
+      start: match.start + atOffset,
+      end: caretOffset,
+      query: (match.group(1) ?? '').trim(),
+    );
+  }
+
+  List<EmployeeWorkspaceProfile> _mentionSuggestionsFor(
+    TextEditingValue value,
+  ) {
+    final mention = _resolveActiveMention(value);
+    if (mention == null) {
+      return const <EmployeeWorkspaceProfile>[];
+    }
+
+    final query = mention.query.toLowerCase();
+    final currentEmail = widget.currentProfile.email.trim().toLowerCase();
+    final suggestions = widget.profiles
+        .where((profile) {
+          final login = profile.login.trim().toLowerCase();
+          final name = profile.name.trim().toLowerCase();
+          final email = profile.email.trim().toLowerCase();
+          if (login.isEmpty || email.isEmpty || email == currentEmail) {
+            return false;
+          }
+
+          if (query.isEmpty) {
+            return true;
+          }
+
+          return login.contains(query) || name.contains(query);
+        })
+        .toList(growable: false);
+
+    suggestions.sort((left, right) {
+      final leftLogin = left.login.trim().toLowerCase();
+      final rightLogin = right.login.trim().toLowerCase();
+      final leftStarts = query.isNotEmpty && leftLogin.startsWith(query);
+      final rightStarts = query.isNotEmpty && rightLogin.startsWith(query);
+      if (leftStarts != rightStarts) {
+        return leftStarts ? -1 : 1;
+      }
+      return leftLogin.compareTo(rightLogin);
+    });
+
+    return suggestions.take(6).toList(growable: false);
+  }
+
+  void _insertMention(EmployeeWorkspaceProfile profile) {
+    final mention = _resolveActiveMention(_messageController.value);
+    if (mention == null) {
+      return;
+    }
+
+    final text = _messageController.text;
+    final replacement = '@${profile.login.trim()} ';
+    final updatedText = text.replaceRange(
+      mention.start,
+      mention.end,
+      replacement,
+    );
+    final caretOffset = mention.start + replacement.length;
+    _messageController.value = TextEditingValue(
+      text: updatedText,
+      selection: TextSelection.collapsed(offset: caretOffset),
+    );
+  }
+
+  List<String> _resolveMentionedEmails(String message) {
+    final mentionedLogins = RegExp(r'(?:^|\s)@([A-Za-z0-9._-]+)')
+        .allMatches(message)
+        .map((match) => (match.group(1) ?? '').trim().toLowerCase())
+        .where((login) => login.isNotEmpty)
+        .toSet();
+    if (mentionedLogins.isEmpty) {
+      return const <String>[];
+    }
+
+    final currentEmail = widget.currentProfile.email.trim().toLowerCase();
+    return widget.profiles
+        .where(
+          (profile) =>
+              mentionedLogins.contains(profile.login.trim().toLowerCase()),
+        )
+        .map((profile) => profile.email.trim().toLowerCase())
+        .where((email) => email.isNotEmpty && email != currentEmail)
+        .toSet()
+        .toList(growable: false);
+  }
+
+  Future<void> _handleSend() async {
+    if (_isSending) {
+      return;
+    }
+
+    final normalizedMessage = _messageController.text.trim();
+    if (normalizedMessage.isEmpty) {
+      return;
+    }
+
+    setState(() {
+      _isSending = true;
+    });
+
+    final sent = await widget.onSendMessage(normalizedMessage);
+    if (!mounted) {
+      return;
+    }
+
+    if (!sent) {
+      setState(() {
+        _isSending = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Não foi possível enviar a mensagem do card.'),
+        ),
+      );
+      return;
+    }
+
+    final authorEmail = widget.currentProfile.email.trim().toLowerCase();
+    setState(() {
+      _messages = [
+        ..._messages,
+        OrderConversationMessage(
+          id: DateTime.now().microsecondsSinceEpoch.toString(),
+          authorEmail: authorEmail,
+          authorName: _workspaceProfileOwnerLabel(widget.currentProfile),
+          message: normalizedMessage,
+          createdAt: DateTime.now(),
+          mentionedUserEmails: _resolveMentionedEmails(normalizedMessage),
+          readByUserEmails: authorEmail.isEmpty ? const [] : [authorEmail],
+        ),
+      ];
+      _messageController.clear();
+      _isSending = false;
+    });
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scrollToBottom();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    final borderColor = isDarkMode
+        ? const Color(0xFF29403A)
+        : const Color(0xFFDCE5E1);
+    final panelColor = isDarkMode ? const Color(0xFF101917) : Colors.white;
+    final mutedTextColor = isDarkMode
+        ? const Color(0xFF9FB2AC)
+        : const Color(0xFF52605C);
+
+    return Dialog(
+      insetPadding: const EdgeInsets.all(24),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 820, maxHeight: 720),
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Conversa do cliente',
+                          style: TextStyle(
+                            fontSize: 22,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          '${_displayOrderCode(widget.order)} • ${widget.order.workName}',
+                          style: TextStyle(
+                            color: mutedTextColor,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.close),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              Expanded(
+                child: Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: panelColor,
+                    borderRadius: BorderRadius.circular(18),
+                    border: Border.all(color: borderColor),
+                  ),
+                  child: _messages.isEmpty
+                      ? Center(
+                          child: Text(
+                            'Nenhuma mensagem neste card ainda.',
+                            style: TextStyle(color: mutedTextColor),
+                          ),
+                        )
+                      : Scrollbar(
+                          controller: _scrollController,
+                          thumbVisibility: true,
+                          child: ListView.separated(
+                            controller: _scrollController,
+                            itemCount: _messages.length,
+                            separatorBuilder: (context, index) =>
+                                const SizedBox(height: 12),
+                            itemBuilder: (context, index) {
+                              final message = _messages[index];
+                              final isOwnMessage =
+                                  message.authorEmail ==
+                                  widget.currentProfile.email
+                                      .trim()
+                                      .toLowerCase();
+                              return _ConversationMessageBubble(
+                                message: message,
+                                isOwnMessage: isOwnMessage,
+                                profiles: widget.profiles,
+                              );
+                            },
+                          ),
+                        ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: _messageController,
+                minLines: 3,
+                maxLines: 5,
+                textInputAction: TextInputAction.newline,
+                decoration: InputDecoration(
+                  labelText: 'Mensagem do card',
+                  hintText: 'Use @login para mencionar outro colaborador.',
+                  alignLabelWithHint: true,
+                  filled: true,
+                  fillColor: isDarkMode
+                      ? const Color(0xFF0F1715)
+                      : const Color(0xFFF8FBFA),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                ),
+              ),
+              ValueListenableBuilder<TextEditingValue>(
+                valueListenable: _messageController,
+                builder: (context, value, _) {
+                  final suggestions = _mentionSuggestionsFor(value);
+
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const SizedBox(height: 10),
+                      if (suggestions.isNotEmpty)
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: [
+                            for (final profile in suggestions)
+                              ActionChip(
+                                avatar: CircleAvatar(
+                                  backgroundColor: profile.accent.withValues(
+                                    alpha: 0.16,
+                                  ),
+                                  child: Text(
+                                    profile.login.trim().isEmpty
+                                        ? '?'
+                                        : profile.login
+                                              .trim()
+                                              .substring(0, 1)
+                                              .toUpperCase(),
+                                    style: TextStyle(
+                                      color: profile.accent,
+                                      fontWeight: FontWeight.w800,
+                                      fontSize: 11,
+                                    ),
+                                  ),
+                                ),
+                                label: Text(
+                                  '${profile.name.trim().isEmpty ? profile.login : profile.name} (@${profile.login})',
+                                ),
+                                onPressed: () => _insertMention(profile),
+                              ),
+                          ],
+                        )
+                      else
+                        Text(
+                          'As mensagens ficam salvas dentro deste card e podem ser respondidas depois.',
+                          style: TextStyle(
+                            color: mutedTextColor,
+                            fontSize: 12.5,
+                          ),
+                        ),
+                      const SizedBox(height: 14),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.end,
+                        children: [
+                          TextButton(
+                            onPressed: _isSending
+                                ? null
+                                : () => Navigator.of(context).pop(),
+                            child: const Text('Fechar'),
+                          ),
+                          const SizedBox(width: 10),
+                          FilledButton.icon(
+                            onPressed: _isSending ? null : _handleSend,
+                            icon: _isSending
+                                ? const SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : const Icon(Icons.send_rounded),
+                            label: Text(
+                              _isSending ? 'Enviando...' : 'Enviar mensagem',
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  );
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ConversationMessageBubble extends StatelessWidget {
+  const _ConversationMessageBubble({
+    required this.message,
+    required this.isOwnMessage,
+    required this.profiles,
+  });
+
+  final OrderConversationMessage message;
+  final bool isOwnMessage;
+  final List<EmployeeWorkspaceProfile> profiles;
+
+  InlineSpan _buildMessageSpan(BuildContext context) {
+    final baseColor = isOwnMessage
+        ? const Color(0xFF10231D)
+        : Theme.of(context).textTheme.bodyMedium?.color ??
+              const Color(0xFF14211D);
+    final mentionColor = isOwnMessage
+        ? const Color(0xFF1D4ED8)
+        : const Color(0xFF2563EB);
+    final matches = RegExp(r'@([A-Za-z0-9._-]+)').allMatches(message.message);
+    if (matches.isEmpty) {
+      return TextSpan(
+        text: message.message,
+        style: TextStyle(color: baseColor, height: 1.45),
+      );
+    }
+
+    final spans = <InlineSpan>[];
+    var lastIndex = 0;
+    for (final match in matches) {
+      if (match.start > lastIndex) {
+        spans.add(
+          TextSpan(
+            text: message.message.substring(lastIndex, match.start),
+            style: TextStyle(color: baseColor, height: 1.45),
+          ),
+        );
+      }
+      spans.add(
+        TextSpan(
+          text: match.group(0),
+          style: TextStyle(
+            color: mentionColor,
+            fontWeight: FontWeight.w700,
+            height: 1.45,
+          ),
+        ),
+      );
+      lastIndex = match.end;
+    }
+    if (lastIndex < message.message.length) {
+      spans.add(
+        TextSpan(
+          text: message.message.substring(lastIndex),
+          style: TextStyle(color: baseColor, height: 1.45),
+        ),
+      );
+    }
+
+    return TextSpan(children: spans);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    final bubbleColor = isOwnMessage
+        ? const Color(0xFFEAF4EF)
+        : isDarkMode
+        ? const Color(0xFF15211D)
+        : const Color(0xFFF8FBFA);
+    final borderColor = isOwnMessage
+        ? const Color(0xFFCFE3D6)
+        : isDarkMode
+        ? const Color(0xFF29403A)
+        : const Color(0xFFDCE5E1);
+    final headerColor = isDarkMode
+        ? const Color(0xFFE7F1EC)
+        : const Color(0xFF14211D);
+    final metaColor = isDarkMode
+        ? const Color(0xFF9FB2AC)
+        : const Color(0xFF52605C);
+    final mentionedProfiles = profiles
+        .where(
+          (profile) => message.mentionedUserEmails.contains(
+            profile.email.trim().toLowerCase(),
+          ),
+        )
+        .toList(growable: false);
+
+    return Align(
+      alignment: isOwnMessage ? Alignment.centerRight : Alignment.centerLeft,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 620),
+        child: Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: bubbleColor,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: borderColor),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      message.authorName,
+                      style: TextStyle(
+                        color: headerColor,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                  Text(
+                    _formatDateTime(message.createdAt),
+                    style: TextStyle(
+                      color: metaColor,
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              SelectionArea(child: RichText(text: _buildMessageSpan(context))),
+              if (mentionedProfiles.isNotEmpty) ...[
+                const SizedBox(height: 10),
+                Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: [
+                    for (final profile in mentionedProfiles)
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 4,
+                        ),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFDBEAFE),
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                        child: Text(
+                          '@${profile.login}',
+                          style: const TextStyle(
+                            color: Color(0xFF1D4ED8),
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _CustomerRegistrationDraft {
+  const _CustomerRegistrationDraft({
+    required this.workName,
+    required this.phone,
+    required this.address,
+    required this.proposalFileName,
+    this.proposalFilePath,
+    required this.detailFileName,
+    this.detailFilePath,
+  });
+
+  final String workName;
+  final String phone;
+  final String address;
+  final String proposalFileName;
+  final String? proposalFilePath;
+  final String detailFileName;
+  final String? detailFilePath;
+}
+
+class _ServiceOrderClientOption {
+  const _ServiceOrderClientOption({
+    required this.client,
+    required this.address,
+    required this.referenceWorkName,
+  });
+
+  final ClientProfile client;
+  final String address;
+  final String referenceWorkName;
+
+  String get label => '${client.id} • ${client.name}';
+}
+
+class _ServiceOrderDraft {
+  const _ServiceOrderDraft({
+    required this.client,
+    required this.address,
+    required this.serviceTitle,
+    required this.serviceDescription,
+  });
+
+  final ClientProfile client;
+  final String address;
+  final String serviceTitle;
+  final String serviceDescription;
+}
+
+class _ServiceOrderDialog extends StatefulWidget {
+  const _ServiceOrderDialog({required this.clients});
+
+  final List<_ServiceOrderClientOption> clients;
+
+  @override
+  State<_ServiceOrderDialog> createState() => _ServiceOrderDialogState();
+}
+
+class _ServiceOrderDialogState extends State<_ServiceOrderDialog> {
+  final _formKey = GlobalKey<FormState>();
+  final _serviceTitleController = TextEditingController();
+  final _serviceDescriptionController = TextEditingController();
+  String? _selectedClientId;
+
+  _ServiceOrderClientOption? get _selectedClient {
+    final clientId = _selectedClientId;
+    if (clientId == null) {
+      return null;
+    }
+
+    for (final option in widget.clients) {
+      if (option.client.id == clientId) {
+        return option;
+      }
+    }
+
+    return null;
+  }
+
+  @override
+  void dispose() {
+    _serviceTitleController.dispose();
+    _serviceDescriptionController.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    if (!_formKey.currentState!.validate()) {
+      return;
+    }
+
+    final selectedClient = _selectedClient;
+    if (selectedClient == null) {
+      return;
+    }
+
+    Navigator.of(context).pop(
+      _ServiceOrderDraft(
+        client: selectedClient.client,
+        address: selectedClient.address,
+        serviceTitle: _serviceTitleController.text.trim(),
+        serviceDescription: _serviceDescriptionController.text.trim(),
+      ),
+    );
+  }
+
+  String? _requiredField(String? value) {
+    if (value == null || value.trim().isEmpty) {
+      return 'Campo obrigatório.';
+    }
+
+    return null;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final screenWidth = MediaQuery.sizeOf(context).width;
+    final selectedClient = _selectedClient;
+    final isCompact = screenWidth < 720;
+
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      insetPadding: EdgeInsets.symmetric(
+        horizontal: screenWidth < 640 ? 16 : 32,
+        vertical: 24,
+      ),
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 820),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF5F7F2),
+          borderRadius: BorderRadius.circular(28),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(24),
+              decoration: const BoxDecoration(
+                borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+                color: Color(0xFF14211D),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.08),
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    child: const Icon(
+                      Icons.assignment_outlined,
+                      color: Colors.white,
+                      size: 28,
+                    ),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Nova ordem de serviço',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: isCompact ? 22 : 26,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        const Text(
+                          'Selecione o cliente, descreva o serviço e envie a OS para o Orçamentista.',
+                          style: TextStyle(color: Colors.white70),
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.close, color: Colors.white),
+                  ),
+                ],
+              ),
+            ),
+            Flexible(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(24),
+                child: Form(
+                  key: _formKey,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      DropdownButtonFormField<String>(
+                        initialValue: _selectedClientId,
+                        decoration: const InputDecoration(
+                          labelText: 'Cliente',
+                          border: OutlineInputBorder(),
+                        ),
+                        items: widget.clients
+                            .map(
+                              (option) => DropdownMenuItem<String>(
+                                value: option.client.id,
+                                child: Text(option.label),
+                              ),
+                            )
+                            .toList(growable: false),
+                        onChanged: (value) {
+                          setState(() {
+                            _selectedClientId = value;
+                          });
+                        },
+                        validator: (value) {
+                          if (value == null || value.trim().isEmpty) {
+                            return 'Selecione o cliente.';
+                          }
+
+                          return null;
+                        },
+                      ),
+                      if (selectedClient != null) ...[
+                        const SizedBox(height: 16),
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(color: const Color(0xFFDCE5E1)),
+                          ),
+                          child: Wrap(
+                            spacing: 12,
+                            runSpacing: 12,
+                            children: [
+                              SizedBox(
+                                width: 220,
+                                child: _InfoRow(
+                                  label: 'Cliente',
+                                  value: selectedClient.client.name,
+                                  emphasizeValue: true,
+                                ),
+                              ),
+                              SizedBox(
+                                width: 220,
+                                child: _InfoRow(
+                                  label: 'Telefone',
+                                  value: selectedClient.client.phone,
+                                ),
+                              ),
+                              SizedBox(
+                                width: 220,
+                                child: _InfoRow(
+                                  label: 'Última referência',
+                                  value: selectedClient.referenceWorkName,
+                                ),
+                              ),
+                              SizedBox(
+                                width: 320,
+                                child: _InfoRow(
+                                  label: 'Endereço',
+                                  value: selectedClient.address,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                      const SizedBox(height: 16),
+                      _DialogField(
+                        controller: _serviceTitleController,
+                        label: 'Título do serviço',
+                        validator: _requiredField,
+                        hintText:
+                            'Ex.: Manutenção corretiva no quadro elétrico',
+                      ),
+                      const SizedBox(height: 16),
+                      _DialogField(
+                        controller: _serviceDescriptionController,
+                        label: 'Detalhes do serviço',
+                        validator: _requiredField,
+                        hintText:
+                            'Descreva o escopo, materiais previstos, observações e contexto da OS.',
+                        maxLines: 5,
+                      ),
+                      const SizedBox(height: 24),
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: Wrap(
+                          spacing: 12,
+                          runSpacing: 12,
+                          children: [
+                            OutlinedButton(
+                              onPressed: () => Navigator.of(context).pop(),
+                              child: const Text('Cancelar'),
+                            ),
+                            FilledButton.icon(
+                              onPressed: _submit,
+                              icon: const Icon(Icons.send_outlined),
+                              label: const Text('Criar e enviar'),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _AdditionalProposalDraft {
+  const _AdditionalProposalDraft({
+    required this.workName,
+    required this.address,
+    required this.proposalFileName,
+    this.proposalFilePath,
+  });
+
+  final String workName;
+  final String address;
+  final String proposalFileName;
+  final String? proposalFilePath;
+}
+
+class _AdditionalProposalClientPickerDialog extends StatefulWidget {
+  const _AdditionalProposalClientPickerDialog({required this.baseOrders});
+
+  final List<WorkflowOrder> baseOrders;
+
+  @override
+  State<_AdditionalProposalClientPickerDialog> createState() =>
+      _AdditionalProposalClientPickerDialogState();
+}
+
+class _AdditionalProposalClientPickerDialogState
+    extends State<_AdditionalProposalClientPickerDialog> {
+  final TextEditingController _searchController = TextEditingController();
+  String _query = '';
+
+  List<WorkflowOrder> get _filteredOrders {
+    final normalizedQuery = _query.trim().toLowerCase();
+    if (normalizedQuery.isEmpty) {
+      return widget.baseOrders;
+    }
+
+    return widget.baseOrders
+        .where((order) {
+          return order.client.id.toLowerCase().contains(normalizedQuery) ||
+              order.client.name.toLowerCase().contains(normalizedQuery) ||
+              order.workName.toLowerCase().contains(normalizedQuery) ||
+              order.client.phone.toLowerCase().contains(normalizedQuery) ||
+              order.address.toLowerCase().contains(normalizedQuery);
+        })
+        .toList(growable: false);
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final screenWidth = MediaQuery.sizeOf(context).width;
+    final filteredOrders = _filteredOrders;
+
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      insetPadding: EdgeInsets.symmetric(
+        horizontal: screenWidth < 640 ? 16 : 32,
+        vertical: 24,
+      ),
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 820, maxHeight: 760),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF5F7F2),
+          borderRadius: BorderRadius.circular(28),
+        ),
+        child: Column(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(24),
+              decoration: const BoxDecoration(
+                borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+                color: Color(0xFF14211D),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.08),
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    child: const Icon(
+                      Icons.people_alt_outlined,
+                      color: Colors.white,
+                      size: 28,
+                    ),
+                  ),
+                  const SizedBox(width: 14),
+                  const Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Selecionar cliente',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 25,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        SizedBox(height: 4),
+                        Text(
+                          'Escolha o cliente para gerar uma nova proposta vinculada.',
+                          style: TextStyle(color: Colors.white70),
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.close, color: Colors.white),
+                  ),
+                ],
+              ),
+            ),
+            Flexible(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  children: [
+                    TextField(
+                      controller: _searchController,
+                      onChanged: (value) {
+                        setState(() {
+                          _query = value;
+                        });
+                      },
+                      decoration: InputDecoration(
+                        labelText: 'Pesquisar cliente',
+                        hintText: 'ID, nome, obra, telefone ou endereço',
+                        filled: true,
+                        fillColor: Colors.white,
+                        prefixIcon: const Icon(Icons.search),
+                        suffixIcon: _query.trim().isEmpty
+                            ? null
+                            : IconButton(
+                                onPressed: () {
+                                  _searchController.clear();
+                                  setState(() {
+                                    _query = '';
+                                  });
+                                },
+                                icon: const Icon(Icons.close),
+                              ),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(18),
+                        ),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(18),
+                          borderSide: const BorderSide(
+                            color: Color(0xFFDCE5E1),
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 18),
+                    Expanded(
+                      child: filteredOrders.isEmpty
+                          ? Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.all(24),
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(20),
+                                border: Border.all(
+                                  color: const Color(0xFFDCE5E1),
+                                ),
+                              ),
+                              child: const Text(
+                                'Nenhum cliente encontrado com esse filtro.',
+                                style: TextStyle(
+                                  color: Color(0xFF52605C),
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            )
+                          : ListView.separated(
+                              itemCount: filteredOrders.length,
+                              separatorBuilder: (context, index) =>
+                                  const SizedBox(height: 12),
+                              itemBuilder: (context, index) {
+                                final order = filteredOrders[index];
+                                return InkWell(
+                                  onTap: () => Navigator.of(context).pop(order),
+                                  borderRadius: BorderRadius.circular(20),
+                                  child: Container(
+                                    padding: const EdgeInsets.all(18),
+                                    decoration: BoxDecoration(
+                                      color: Colors.white,
+                                      borderRadius: BorderRadius.circular(20),
+                                      border: Border.all(
+                                        color: const Color(0xFFDCE5E1),
+                                      ),
+                                    ),
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Row(
+                                          children: [
+                                            Expanded(
+                                              child: Text(
+                                                '${order.client.id} • ${order.client.name}',
+                                                style: const TextStyle(
+                                                  fontSize: 16,
+                                                  fontWeight: FontWeight.w800,
+                                                ),
+                                              ),
+                                            ),
+                                            Container(
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                    horizontal: 10,
+                                                    vertical: 6,
+                                                  ),
+                                              decoration: BoxDecoration(
+                                                color: const Color(0xFFEEF2FF),
+                                                borderRadius:
+                                                    BorderRadius.circular(999),
+                                              ),
+                                              child: Text(
+                                                _proposalVersionTitle(order),
+                                                style: const TextStyle(
+                                                  color: Color(0xFF3730A3),
+                                                  fontWeight: FontWeight.w700,
+                                                  fontSize: 12,
+                                                ),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                        const SizedBox(height: 8),
+                                        Text(
+                                          order.workName,
+                                          style: const TextStyle(
+                                            fontSize: 15,
+                                            fontWeight: FontWeight.w700,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 4),
+                                        Text(
+                                          '${order.client.phone} • ${order.address}',
+                                          style: const TextStyle(
+                                            color: Color(0xFF52605C),
+                                            height: 1.35,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _AdditionalProposalDialog extends StatefulWidget {
+  const _AdditionalProposalDialog({
+    required this.baseOrder,
+    required this.proposalVersion,
+  });
+
+  final WorkflowOrder baseOrder;
+  final int proposalVersion;
+
+  @override
+  State<_AdditionalProposalDialog> createState() =>
+      _AdditionalProposalDialogState();
+}
+
+class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
+  final _formKey = GlobalKey<FormState>();
+  final _workNameController = TextEditingController();
+  final _addressController = TextEditingController();
+  final _proposalController = TextEditingController();
+  String? _proposalFilePath;
+
+  @override
+  void initState() {
+    super.initState();
+    _workNameController.text = widget.baseOrder.workName;
+    _addressController.text = widget.baseOrder.address;
+  }
+
+  @override
+  void dispose() {
+    _workNameController.dispose();
+    _addressController.dispose();
+    _proposalController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _pickProposalFile() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: const ['pdf', 'xls', 'xlsx'],
+        withData: false,
+      );
+
+      if (result == null || result.files.isEmpty) {
+        return;
+      }
+
+      setState(() {
+        _proposalController.text = result.files.single.name;
+        _proposalFilePath = result.files.single.path;
+      });
+    } on MissingPluginException {
+      _showPickerUnavailable();
+    } catch (error) {
+      final message = error.toString();
+      if (message.contains('LateInitializationError') ||
+          message.contains('LateError') ||
+          error is UnimplementedError) {
+        _showPickerUnavailable();
+        return;
+      }
+
+      rethrow;
+    }
+  }
+
+  void _showPickerUnavailable() {
+    if (!mounted) {
+      return;
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'Seletor de arquivo indisponível neste ambiente. Faça um restart completo do app para carregar o plugin.',
+        ),
+      ),
+    );
+  }
+
+  String? _requiredField(String? value) {
+    if (value == null || value.trim().isEmpty) {
+      return 'Campo obrigatório.';
+    }
+
+    return null;
+  }
+
+  String? _validateAttachment(String? value) {
+    final requiredError = _requiredField(value);
+    if (requiredError != null) {
+      return requiredError;
+    }
+
+    final normalized = value!.trim().toLowerCase();
+    if (normalized.endsWith('.pdf') ||
+        normalized.endsWith('.xls') ||
+        normalized.endsWith('.xlsx')) {
+      return null;
+    }
+
+    return 'Use arquivo PDF, XLS ou XLSX.';
+  }
+
+  void _submit() {
+    if (!_formKey.currentState!.validate()) {
+      return;
+    }
+
+    Navigator.of(context).pop(
+      _AdditionalProposalDraft(
+        workName: _workNameController.text.trim(),
+        address: _addressController.text.trim(),
+        proposalFileName: _proposalController.text.trim(),
+        proposalFilePath: _proposalFilePath,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final screenWidth = MediaQuery.sizeOf(context).width;
+    final isCompact = screenWidth < 720;
+
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      insetPadding: EdgeInsets.symmetric(
+        horizontal: screenWidth < 640 ? 16 : 32,
+        vertical: 24,
+      ),
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 860),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF5F7F2),
+          borderRadius: BorderRadius.circular(28),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(24),
+              decoration: const BoxDecoration(
+                borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+                color: Color(0xFF14211D),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.08),
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    child: const Icon(
+                      Icons.post_add_outlined,
+                      color: Colors.white,
+                      size: 28,
+                    ),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Nova proposta vinculada',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: isCompact ? 22 : 26,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          '${widget.baseOrder.client.id} • ${widget.baseOrder.client.name} • ${_proposalVersionTitleFromNumber(widget.proposalVersion)}',
+                          style: const TextStyle(color: Colors.white70),
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.close, color: Colors.white),
+                  ),
+                ],
+              ),
+            ),
+            Flexible(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(24),
+                child: Form(
+                  key: _formKey,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: Colors.white,
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(color: const Color(0xFFDCE5E1)),
+                        ),
+                        child: Wrap(
+                          spacing: 12,
+                          runSpacing: 12,
+                          children: [
+                            SizedBox(
+                              width: 220,
+                              child: _InfoRow(
+                                label: 'Cliente',
+                                value: widget.baseOrder.client.name,
+                                emphasizeValue: true,
+                              ),
+                            ),
+                            SizedBox(
+                              width: 220,
+                              child: _InfoRow(
+                                label: 'Telefone',
+                                value: widget.baseOrder.client.phone,
+                              ),
+                            ),
+                            SizedBox(
+                              width: 220,
+                              child: _InfoRow(
+                                label: 'Card principal',
+                                value: widget.baseOrder.code,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      _DialogField(
+                        controller: _workNameController,
+                        label: 'Nome da obra / proposta',
+                        validator: _requiredField,
+                      ),
+                      const SizedBox(height: 16),
+                      _DialogField(
+                        controller: _addressController,
+                        label: 'Endereço',
+                        validator: _requiredField,
+                        maxLines: 2,
+                      ),
+                      const SizedBox(height: 16),
+                      _AttachmentPickerField(
+                        label: 'Arquivo da nova proposta',
+                        helper:
+                            'Anexe o arquivo da proposta que seguirá no fluxo.',
+                        controller: _proposalController,
+                        onPick: _pickProposalFile,
+                        validator: _validateAttachment,
+                        onClear: _proposalController.text.isEmpty
+                            ? null
+                            : () {
+                                setState(() {
+                                  _proposalController.clear();
+                                  _proposalFilePath = null;
+                                });
+                              },
+                      ),
+                      const SizedBox(height: 24),
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: Wrap(
+                          spacing: 12,
+                          runSpacing: 12,
+                          children: [
+                            OutlinedButton(
+                              onPressed: () => Navigator.of(context).pop(),
+                              child: const Text('Cancelar'),
+                            ),
+                            FilledButton.icon(
+                              onPressed: _submit,
+                              icon: const Icon(Icons.save_outlined),
+                              label: const Text('Criar proposta'),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _AssemblyTeamSelectionDialog extends StatefulWidget {
+  const _AssemblyTeamSelectionDialog({
+    required this.profiles,
+    required this.initialSelectedEmails,
+    this.title = 'Equipe da montagem',
+    this.subtitle = 'Selecione os funcionários que vão executar esta montagem.',
+    this.emptySelectionMessage =
+        'Selecione pelo menos um funcionário da montagem.',
+  });
+
+  final List<EmployeeWorkspaceProfile> profiles;
+  final List<String> initialSelectedEmails;
+  final String title;
+  final String subtitle;
+  final String emptySelectionMessage;
+
+  @override
+  State<_AssemblyTeamSelectionDialog> createState() =>
+      _AssemblyTeamSelectionDialogState();
+}
+
+class _AssemblyTeamSelectionDialogState
+    extends State<_AssemblyTeamSelectionDialog> {
+  late Set<String> _selectedEmails;
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedEmails = widget.initialSelectedEmails
+        .map((item) => item.trim().toLowerCase())
+        .where((item) => item.isNotEmpty)
+        .toSet();
+  }
+
+  void _submit() {
+    if (_selectedEmails.isEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(widget.emptySelectionMessage)));
+      return;
+    }
+
+    final selectedEmails = widget.profiles
+        .map((profile) => profile.email.trim().toLowerCase())
+        .where(_selectedEmails.contains)
+        .toList(growable: false);
+    Navigator.of(context).pop(selectedEmails);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final screenWidth = MediaQuery.sizeOf(context).width;
+
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      insetPadding: EdgeInsets.symmetric(
+        horizontal: screenWidth < 640 ? 16 : 32,
+        vertical: 24,
+      ),
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 760),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF5F7F2),
+          borderRadius: BorderRadius.circular(28),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(24),
+              decoration: const BoxDecoration(
+                borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+                color: Color(0xFF14211D),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.08),
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    child: const Icon(
+                      Icons.groups_2_outlined,
+                      color: Colors.white,
+                      size: 28,
+                    ),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          widget.title,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 25,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          widget.subtitle,
+                          style: const TextStyle(color: Colors.white70),
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    icon: const Icon(Icons.close, color: Colors.white),
+                  ),
+                ],
+              ),
+            ),
+            Flexible(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(24),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(color: const Color(0xFFDCE5E1)),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'Funcionários disponíveis',
+                            style: TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          ...widget.profiles.map((profile) {
+                            final email = profile.email.trim().toLowerCase();
+                            final isSelected = _selectedEmails.contains(email);
+                            return CheckboxListTile(
+                              value: isSelected,
+                              contentPadding: EdgeInsets.zero,
+                              activeColor: profile.accent,
+                              title: Text(
+                                profile.name.trim().isEmpty
+                                    ? profile.login
+                                    : profile.name,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              subtitle: Text(
+                                profile.role.trim().isEmpty
+                                    ? '@${profile.login}'
+                                    : '${profile.role} • @${profile.login}',
+                              ),
+                              onChanged: (value) {
+                                setState(() {
+                                  if (value == true) {
+                                    _selectedEmails.add(email);
+                                  } else {
+                                    _selectedEmails.remove(email);
+                                  }
+                                });
+                              },
+                            );
+                          }),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 18),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      children: [
+                        TextButton(
+                          onPressed: () => Navigator.of(context).pop(),
+                          child: const Text('Cancelar'),
+                        ),
+                        const SizedBox(width: 10),
+                        FilledButton.icon(
+                          onPressed: _submit,
+                          icon: const Icon(Icons.check_circle_outline),
+                          label: const Text('Confirmar equipe'),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _CustomerRegistrationDialog extends StatefulWidget {
+  const _CustomerRegistrationDialog({
+    this.initialDraft,
+    this.isEditing = false,
+    this.allowProposalEdit = true,
+    this.allowDetailAccess = true,
+  });
+
+  final _CustomerRegistrationDraft? initialDraft;
+  final bool isEditing;
+  final bool allowProposalEdit;
+  final bool allowDetailAccess;
+
+  @override
+  State<_CustomerRegistrationDialog> createState() =>
+      _CustomerRegistrationDialogState();
+}
+
+class _CustomerRegistrationDialogState
+    extends State<_CustomerRegistrationDialog> {
+  final _formKey = GlobalKey<FormState>();
+  final _workNameController = TextEditingController();
+  final _phoneController = TextEditingController();
+  final _addressController = TextEditingController();
+  final _proposalController = TextEditingController();
+  final _detailController = TextEditingController();
+  String? _proposalFilePath;
+  String? _detailFilePath;
+
+  @override
+  void initState() {
+    super.initState();
+    final draft = widget.initialDraft;
+    if (draft == null) {
+      return;
+    }
+
+    _workNameController.text = draft.workName;
+    _phoneController.text = draft.phone;
+    _addressController.text = draft.address;
+    _proposalController.text = draft.proposalFileName;
+    _detailController.text = draft.detailFileName;
+    _proposalFilePath = draft.proposalFilePath;
+    _detailFilePath = draft.detailFilePath;
+  }
+
+  @override
+  void dispose() {
+    _workNameController.dispose();
+    _phoneController.dispose();
+    _addressController.dispose();
+    _proposalController.dispose();
+    _detailController.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    if (!_formKey.currentState!.validate()) {
+      return;
+    }
+
+    Navigator.of(context).pop(
+      _CustomerRegistrationDraft(
+        workName: _workNameController.text.trim(),
+        phone: _phoneController.text.trim(),
+        address: _addressController.text.trim(),
+        proposalFileName: _proposalController.text.trim(),
+        proposalFilePath: _proposalFilePath,
+        detailFileName: _detailController.text.trim(),
+        detailFilePath: _detailFilePath,
+      ),
+    );
+  }
+
+  Future<void> _pickProposalFile() async {
+    final file = await _pickFile();
+    if (file == null) {
+      return;
+    }
+
+    setState(() {
+      _proposalController.text = file.name;
+      _proposalFilePath = file.path;
+    });
+  }
+
+  Future<void> _pickDetailFile() async {
+    final file = await _pickFile();
+    if (file == null) {
+      return;
+    }
+
+    setState(() {
+      _detailController.text = file.name;
+      _detailFilePath = file.path;
+    });
+  }
+
+  Future<PlatformFile?> _pickFile() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: const ['pdf', 'xls', 'xlsx'],
+        withData: false,
+      );
+
+      if (result == null || result.files.isEmpty) {
+        return null;
+      }
+
+      return result.files.single;
+    } on MissingPluginException {
+      _showFilePickerUnavailableMessage();
+    } catch (error) {
+      final message = error.toString();
+      if (message.contains('LateInitializationError') ||
+          message.contains('LateError') ||
+          error is UnimplementedError) {
+        _showFilePickerUnavailableMessage();
+        return null;
+      }
+
+      rethrow;
+    }
+
+    return null;
+  }
+
+  void _showFilePickerUnavailableMessage() {
+    if (!mounted) {
+      return;
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'Seletor de arquivo indisponível neste ambiente. Faça um restart completo do app para carregar o plugin.',
+        ),
+      ),
+    );
+  }
+
+  String? _validatePhoneNumber(String? value) {
+    final normalized = (value ?? '').trim();
+    if (normalized.isEmpty) {
+      return 'Informe o telefone.';
+    }
+    if (!RegExp(r'^[0-9]+$').hasMatch(normalized)) {
+      return 'Digite apenas números.';
+    }
+    return null;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final screenWidth = MediaQuery.sizeOf(context).width;
+    final proposalReadOnly = widget.isEditing && !widget.allowProposalEdit;
+    final detailAccessBlocked = widget.isEditing && !widget.allowDetailAccess;
+
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      insetPadding: EdgeInsets.symmetric(
+        horizontal: screenWidth < 640 ? 16 : 32,
+        vertical: 24,
+      ),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final isCompact = constraints.maxWidth < 720;
+
+          return Container(
+            constraints: const BoxConstraints(maxWidth: 900),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF5F7F2),
+              borderRadius: BorderRadius.circular(28),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(24),
+                  decoration: const BoxDecoration(
+                    borderRadius: BorderRadius.vertical(
+                      top: Radius.circular(28),
+                    ),
+                    gradient: LinearGradient(
+                      colors: [Color(0xFF12372A), Color(0xFF059669)],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                    ),
+                  ),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.15),
+                          borderRadius: BorderRadius.circular(16),
+                        ),
+                        child: const Icon(
+                          Icons.badge_outlined,
+                          color: Colors.white,
+                          size: 28,
+                        ),
+                      ),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              widget.isEditing
+                                  ? 'Editar cadastro do cliente'
+                                  : 'Novo cadastro do cliente',
+                              style: TextStyle(
+                                color: Colors.white,
+                                fontSize: isCompact ? 22 : 26,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              widget.isEditing
+                                  ? 'Atualize obra, telefone, endereço e anexos no mesmo padrão visual do ERP.'
+                                  : 'Crie a obra com telefone, endereço e anexos iniciais no mesmo padrão visual do ERP.',
+                              style: TextStyle(color: Colors.white70),
+                            ),
+                          ],
+                        ),
+                      ),
+                      IconButton(
+                        onPressed: () => Navigator.of(context).pop(),
+                        icon: const Icon(Icons.close, color: Colors.white),
+                      ),
+                    ],
+                  ),
+                ),
+                Flexible(
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.all(24),
+                    child: Form(
+                      key: _formKey,
+                      child: Column(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.all(20),
+                            decoration: _panelDecoration(context),
+                            child: Column(
+                              children: [
+                                if (isCompact) ...[
+                                  _DialogField(
+                                    controller: _workNameController,
+                                    label: 'Nome da obra',
+                                    validator: _requiredField,
+                                  ),
+                                  const SizedBox(height: 16),
+                                  _DialogField(
+                                    controller: _phoneController,
+                                    label: 'Telefone',
+                                    keyboardType: TextInputType.phone,
+                                    validator: _validatePhoneNumber,
+                                    inputFormatters: [
+                                      FilteringTextInputFormatter.digitsOnly,
+                                    ],
+                                  ),
+                                ] else
+                                  Row(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Expanded(
+                                        child: _DialogField(
+                                          controller: _workNameController,
+                                          label: 'Nome da obra',
+                                          validator: _requiredField,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 16),
+                                      Expanded(
+                                        child: _DialogField(
+                                          controller: _phoneController,
+                                          label: 'Telefone',
+                                          keyboardType: TextInputType.phone,
+                                          validator: _validatePhoneNumber,
+                                          inputFormatters: [
+                                            FilteringTextInputFormatter
+                                                .digitsOnly,
+                                          ],
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                const SizedBox(height: 16),
+                                _DialogField(
+                                  controller: _addressController,
+                                  label: 'Endereço',
+                                  maxLines: 2,
+                                  validator: _requiredField,
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 20),
+                          if (isCompact) ...[
+                            _AttachmentPickerField(
+                              label: 'Proposta',
+                              helper: proposalReadOnly
+                                  ? 'A proposta pode ser visualizada, mas não alterada pelo Orçamentista.'
+                                  : 'Adicione um arquivo Excel ou PDF da proposta.',
+                              controller: _proposalController,
+                              onPick: proposalReadOnly
+                                  ? null
+                                  : _pickProposalFile,
+                              onClear:
+                                  proposalReadOnly ||
+                                      _proposalController.text.isEmpty
+                                  ? null
+                                  : () => setState(() {
+                                      _proposalController.clear();
+                                      _proposalFilePath = null;
+                                    }),
+                              validator: _validateAttachment,
+                            ),
+                            const SizedBox(height: 16),
+                            _AttachmentPickerField(
+                              label: 'Detalhes',
+                              helper: detailAccessBlocked
+                                  ? 'Arquivo indisponível para o Orçamentista.'
+                                  : 'Adicione um arquivo Excel ou PDF com os detalhes.',
+                              controller: _detailController,
+                              onPick: detailAccessBlocked
+                                  ? null
+                                  : _pickDetailFile,
+                              onClear:
+                                  detailAccessBlocked ||
+                                      _detailController.text.isEmpty
+                                  ? null
+                                  : () => setState(() {
+                                      _detailController.clear();
+                                      _detailFilePath = null;
+                                    }),
+                              validator: _validateAttachment,
+                              lockedMessage: detailAccessBlocked
+                                  ? 'Arquivo restrito nesta etapa'
+                                  : null,
+                            ),
+                          ] else
+                            Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Expanded(
+                                  child: _AttachmentPickerField(
+                                    label: 'Proposta',
+                                    helper: proposalReadOnly
+                                        ? 'A proposta pode ser visualizada, mas não alterada pelo Orçamentista.'
+                                        : 'Adicione um arquivo Excel ou PDF da proposta.',
+                                    controller: _proposalController,
+                                    onPick: proposalReadOnly
+                                        ? null
+                                        : _pickProposalFile,
+                                    onClear:
+                                        proposalReadOnly ||
+                                            _proposalController.text.isEmpty
+                                        ? null
+                                        : () => setState(() {
+                                            _proposalController.clear();
+                                            _proposalFilePath = null;
+                                          }),
+                                    validator: _validateAttachment,
+                                  ),
+                                ),
+                                const SizedBox(width: 16),
+                                Expanded(
+                                  child: _AttachmentPickerField(
+                                    label: 'Detalhes',
+                                    helper: detailAccessBlocked
+                                        ? 'Arquivo indisponível para o Orçamentista.'
+                                        : 'Adicione um arquivo Excel ou PDF com os detalhes.',
+                                    controller: _detailController,
+                                    onPick: detailAccessBlocked
+                                        ? null
+                                        : _pickDetailFile,
+                                    onClear:
+                                        detailAccessBlocked ||
+                                            _detailController.text.isEmpty
+                                        ? null
+                                        : () => setState(() {
+                                            _detailController.clear();
+                                            _detailFilePath = null;
+                                          }),
+                                    validator: _validateAttachment,
+                                    lockedMessage: detailAccessBlocked
+                                        ? 'Arquivo restrito nesta etapa'
+                                        : null,
+                                  ),
+                                ),
+                              ],
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
+                  child: Wrap(
+                    alignment: WrapAlignment.end,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    spacing: 12,
+                    runSpacing: 12,
+                    children: [
+                      TextButton(
+                        onPressed: () => Navigator.of(context).pop(),
+                        child: const Text('Cancelar'),
+                      ),
+                      FilledButton.icon(
+                        onPressed: _submit,
+                        icon: const Icon(Icons.save_outlined),
+                        label: Text(
+                          widget.isEditing
+                              ? 'Salvar alterações'
+                              : 'Criar cadastro',
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  String? _requiredField(String? value) {
+    if (value == null || value.trim().isEmpty) {
+      return 'Campo obrigatório.';
+    }
+
+    return null;
+  }
+
+  String? _validateAttachment(String? value) {
+    final requiredError = _requiredField(value);
+    if (requiredError != null) {
+      return requiredError;
+    }
+
+    final normalized = value!.trim().toLowerCase();
+    if (normalized.endsWith('.pdf') ||
+        normalized.endsWith('.xls') ||
+        normalized.endsWith('.xlsx')) {
+      return null;
+    }
+
+    return 'Use arquivo PDF, XLS ou XLSX.';
+  }
+}
+
+class _AttachmentPickerField extends FormField<String> {
+  _AttachmentPickerField({
+    required String label,
+    required String helper,
+    required TextEditingController controller,
+    Future<void> Function()? onPick,
+    required String? Function(String?) validator,
+    VoidCallback? onClear,
+    String? lockedMessage,
+  }) : super(
+         validator: validator,
+         builder: (field) {
+           final hasFile = controller.text.isNotEmpty;
+           final isLocked = lockedMessage != null;
+           return Container(
+             padding: const EdgeInsets.all(20),
+             decoration: _panelDecoration(field.context),
+             child: Column(
+               crossAxisAlignment: CrossAxisAlignment.start,
+               children: [
+                 Text(
+                   label,
+                   style: const TextStyle(
+                     fontSize: 18,
+                     fontWeight: FontWeight.w700,
+                   ),
+                 ),
+                 const SizedBox(height: 6),
+                 Text(helper, style: const TextStyle(color: Color(0xFF52605C))),
+                 const SizedBox(height: 16),
+                 OutlinedButton.icon(
+                   onPressed: onPick == null
+                       ? null
+                       : () async {
+                           await onPick();
+                           field.didChange(controller.text);
+                         },
+                   icon: const Icon(Icons.attach_file_outlined),
+                   label: Text(
+                     onPick == null
+                         ? 'Arquivo bloqueado'
+                         : hasFile
+                         ? 'Trocar arquivo'
+                         : 'Adicionar arquivo',
+                   ),
+                 ),
+                 const SizedBox(height: 12),
+                 if (isLocked)
+                   TextFormField(
+                     initialValue: lockedMessage,
+                     readOnly: true,
+                     decoration: const InputDecoration(
+                       labelText: 'Arquivo selecionado',
+                       border: OutlineInputBorder(),
+                     ),
+                   )
+                 else if (hasFile)
+                   TextFormField(
+                     controller: controller,
+                     readOnly: true,
+                     validator: validator,
+                     decoration: InputDecoration(
+                       labelText: 'Arquivo selecionado',
+                       border: const OutlineInputBorder(),
+                       suffixIcon: onClear == null
+                           ? null
+                           : IconButton(
+                               onPressed: () {
+                                 onClear();
+                                 field.didChange(controller.text);
+                               },
+                               icon: const Icon(Icons.close),
+                             ),
+                     ),
+                   )
+                 else
+                   TextFormField(
+                     controller: controller,
+                     readOnly: true,
+                     validator: validator,
+                     decoration: const InputDecoration(
+                       labelText: 'Arquivo selecionado',
+                       hintText: 'Nenhum arquivo adicionado',
+                       border: OutlineInputBorder(),
+                     ),
+                   ),
+                 if (field.hasError) ...[
+                   const SizedBox(height: 8),
+                   Text(
+                     field.errorText!,
+                     style: const TextStyle(color: Color(0xFFB91C1C)),
+                   ),
+                 ],
+               ],
+             ),
+           );
+         },
+       );
+}
+
+class _DialogField extends StatelessWidget {
+  const _DialogField({
+    required this.controller,
+    required this.label,
+    required this.validator,
+    this.maxLines = 1,
+    this.keyboardType,
+    this.inputFormatters,
+    this.enabled = true,
+    this.hintText,
+  });
+
+  final TextEditingController controller;
+  final String label;
+  final String? Function(String?) validator;
+  final int maxLines;
+  final TextInputType? keyboardType;
+  final List<TextInputFormatter>? inputFormatters;
+  final bool enabled;
+  final String? hintText;
+
+  @override
+  Widget build(BuildContext context) {
+    return TextFormField(
+      enabled: enabled,
+      controller: controller,
+      maxLines: maxLines,
+      keyboardType: keyboardType,
+      inputFormatters: inputFormatters,
+      validator: validator,
+      decoration: InputDecoration(
+        labelText: label,
+        hintText: hintText,
+        border: const OutlineInputBorder(),
+      ),
+    );
+  }
+}
+
+class _StageFilterChip extends StatelessWidget {
+  const _StageFilterChip({
+    required this.title,
+    required this.subtitle,
+    required this.selected,
+    required this.color,
+    required this.onTap,
+    required this.icon,
+    this.metadata,
+    this.counter,
+  });
+
+  final String title;
+  final String subtitle;
+  final bool selected;
+  final Color color;
+  final VoidCallback onTap;
+  final IconData icon;
+  final String? metadata;
+  final int? counter;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    final titleColor = isDarkMode
+        ? const Color(0xFFE7F1EC)
+        : const Color(0xFF14211D);
+    final subtitleColor = isDarkMode
+        ? const Color(0xFF9FB2AC)
+        : const Color(0xFF52605C);
+
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(26),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        padding: const EdgeInsets.all(18),
+        decoration: BoxDecoration(
+          color: isDarkMode
+              ? const Color(0xFF101A18)
+              : Colors.white.withValues(alpha: 0.94),
+          borderRadius: BorderRadius.circular(26),
+          border: Border.all(
+            color: isDarkMode
+                ? const Color(0xFF29403A)
+                : const Color(0xFFE7ECE8),
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              width: 42,
+              height: 4,
+              decoration: BoxDecoration(
+                color: color.withValues(alpha: 0.75),
+                borderRadius: BorderRadius.circular(999),
+              ),
+            ),
+            const SizedBox(height: 14),
+            Row(
+              children: [
+                Container(
+                  width: 42,
+                  height: 42,
+                  decoration: BoxDecoration(
+                    color: color.withValues(alpha: isDarkMode ? 0.12 : 0.08),
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Icon(icon, color: color, size: 20),
+                ),
+                const Spacer(),
+                if (counter != null)
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 5,
+                    ),
+                    decoration: BoxDecoration(
+                      color: isDarkMode
+                          ? const Color(0xFF162320)
+                          : const Color(0xFFF7FAF8),
+                      borderRadius: BorderRadius.circular(999),
+                      border: Border.all(
+                        color: isDarkMode
+                            ? const Color(0xFF29403A)
+                            : const Color(0xFFE7ECE8),
+                      ),
+                    ),
+                    child: Text(
+                      '$counter',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w800,
+                        color: color,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 14),
+            Text(
+              title,
+              style: TextStyle(
+                fontWeight: FontWeight.w800,
+                fontSize: 15,
+                color: titleColor,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              subtitle,
+              style: TextStyle(color: subtitleColor, height: 1.35),
+            ),
+            if (metadata != null) ...[
+              const SizedBox(height: 14),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 6,
+                ),
+                decoration: BoxDecoration(
+                  color: color.withValues(alpha: isDarkMode ? 0.10 : 0.07),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Text(
+                  metadata!,
+                  style: TextStyle(
+                    color: color,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 12,
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _MetricCard extends StatelessWidget {
+  const _MetricCard({
+    required this.title,
+    required this.value,
+    required this.icon,
+    required this.accent,
+  });
+
+  final String title;
+  final String value;
+  final IconData icon;
+  final Color accent;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    final titleColor = isDarkMode
+        ? const Color(0xFFE7F1EC)
+        : const Color(0xFF14211D);
+    return Container(
+      constraints: const BoxConstraints(minHeight: 92),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: isDarkMode ? const Color(0xFF2A3732) : Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: isDarkMode ? const Color(0xFF566C64) : const Color(0xFFE2E8F0),
+          width: isDarkMode ? 1.1 : 1,
+        ),
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title.toUpperCase(),
+                      style: TextStyle(
+                        color: accent.withValues(alpha: isDarkMode ? 0.9 : 0.8),
+                        fontSize: 10,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 0.5,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      value,
+                      style: TextStyle(
+                        color: titleColor,
+                        fontSize: 24,
+                        fontWeight: FontWeight.w800,
+                        height: 1,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Container(
+                width: 34,
+                height: 34,
+                decoration: BoxDecoration(
+                  color: accent.withValues(alpha: isDarkMode ? 0.14 : 0.08),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Icon(icon, color: accent, size: 16),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _EmployeeWorkspaceHero extends StatelessWidget {
+  const _EmployeeWorkspaceHero({
+    required this.profile,
+    required this.taskCount,
+    required this.tasksToday,
+    required this.allowedStageCount,
+  });
+
+  final EmployeeWorkspaceProfile profile;
+  final int taskCount;
+  final int tasksToday;
+  final int allowedStageCount;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    final titleColor = isDarkMode
+        ? const Color(0xFFE7F1EC)
+        : const Color(0xFF14211D);
+    final secondaryTextColor = isDarkMode
+        ? const Color(0xFF9FB2AC)
+        : const Color(0xFF52605C);
+
+    return Container(
+      padding: const EdgeInsets.all(24),
+      decoration: _panelDecoration(context),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final useTwoColumns = constraints.maxWidth >= 980;
+
+          final summaryCard = Container(
+            width: useTwoColumns ? 300 : double.infinity,
+            padding: const EdgeInsets.all(18),
+            decoration: BoxDecoration(
+              color: isDarkMode
+                  ? const Color(0xFF121E1B)
+                  : const Color(0xFFF6FAF6),
+              borderRadius: BorderRadius.circular(24),
+              border: Border.all(
+                color: isDarkMode
+                    ? const Color(0xFF29403A)
+                    : const Color(0xFFE6ECE8),
+              ),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Resumo rápido',
+                  style: TextStyle(
+                    color: secondaryTextColor,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 14),
+                Row(
+                  children: [
+                    Expanded(
+                      child: _EmployeeWorkspaceStat(
+                        label: 'Ativas',
+                        value: '$taskCount',
+                        accent: profile.accent,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: _EmployeeWorkspaceStat(
+                        label: 'Hoje',
+                        value: '$tasksToday',
+                        accent: const Color(0xFF64748B),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                _EmployeeWorkspaceStat(
+                  label: 'Quadros liberados',
+                  value: '$allowedStageCount',
+                  fullWidth: true,
+                  accent: const Color(0xFF17211E),
+                ),
+              ],
+            ),
+          );
+
+          final content = Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _AdminProfileAvatar(profile: profile, large: true),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 7,
+                          ),
+                          decoration: BoxDecoration(
+                            color: isDarkMode
+                                ? const Color(0xFF121C19)
+                                : Colors.white.withValues(alpha: 0.92),
+                            borderRadius: BorderRadius.circular(999),
+                            border: Border.all(
+                              color: isDarkMode
+                                  ? const Color(0xFF23322E)
+                                  : const Color(0xFFE4EAE5),
+                            ),
+                          ),
+                          child: Text(
+                            'Dashboard overview',
+                            style: TextStyle(
+                              color: profile.accent,
+                              fontSize: 12,
+                              letterSpacing: 0.9,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 14),
+                        Text(
+                          profile.name,
+                          style: TextStyle(
+                            color: titleColor,
+                            fontSize: 30,
+                            fontWeight: FontWeight.w800,
+                            height: 1,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          profile.role,
+                          style: TextStyle(
+                            color: secondaryTextColor,
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        Text(
+                          'Acompanhe suas tarefas, indicadores e acessos liberados em um único painel.',
+                          style: TextStyle(
+                            color: secondaryTextColor,
+                            height: 1.4,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _WorkspaceMetaChip(
+                    icon: Icons.task_alt_outlined,
+                    label: '$taskCount tarefas',
+                  ),
+                  _WorkspaceMetaChip(
+                    icon: Icons.schedule_rounded,
+                    label: '$tasksToday hoje',
+                  ),
+                  _WorkspaceMetaChip(
+                    icon: Icons.grid_view_rounded,
+                    label: '$allowedStageCount áreas',
+                  ),
+                ],
+              ),
+            ],
+          );
+
+          if (!useTwoColumns) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [content, const SizedBox(height: 18), summaryCard],
+            );
+          }
+
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(child: content),
+              const SizedBox(width: 20),
+              summaryCard,
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _EmployeeWorkspaceMetric extends StatelessWidget {
+  const _EmployeeWorkspaceMetric({
+    required this.title,
+    required this.value,
+    required this.subtitle,
+    required this.icon,
+    required this.accent,
+  });
+
+  final String title;
+  final String value;
+  final String subtitle;
+  final IconData icon;
+  final Color accent;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    final titleColor = isDarkMode
+        ? const Color(0xFFE7F1EC)
+        : const Color(0xFF14211D);
+    final subtitleColor = isDarkMode
+        ? const Color(0xFF9FB2AC)
+        : const Color(0xFF52605C);
+
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: isDarkMode
+            ? const Color(0xFF101A18)
+            : Colors.white.withValues(alpha: 0.94),
+        borderRadius: BorderRadius.circular(24),
+        border: Border.all(
+          color: isDarkMode ? const Color(0xFF29403A) : const Color(0xFFE7ECE8),
+        ),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title.toUpperCase(),
+                  style: TextStyle(
+                    color: accent,
+                    fontSize: 10,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0.7,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  value,
+                  style: TextStyle(
+                    color: titleColor,
+                    fontSize: 30,
+                    fontWeight: FontWeight.w800,
+                    height: 1,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  subtitle,
+                  style: TextStyle(color: subtitleColor, height: 1.35),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          Container(
+            width: 42,
+            height: 42,
+            decoration: BoxDecoration(
+              color: accent.withValues(alpha: 0.10),
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: Icon(icon, size: 18, color: accent),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _EmployeeWorkspaceStat extends StatelessWidget {
+  const _EmployeeWorkspaceStat({
+    required this.label,
+    required this.value,
+    required this.accent,
+    this.fullWidth = false,
+  });
+
+  final String label;
+  final String value;
+  final Color accent;
+  final bool fullWidth;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+
+    return Container(
+      width: fullWidth ? double.infinity : null,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: isDarkMode
+            ? const Color(0xFF0E1715)
+            : Colors.white.withValues(alpha: 0.96),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: isDarkMode ? const Color(0xFF29403A) : const Color(0xFFE7ECE8),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: TextStyle(
+              color: isDarkMode
+                  ? const Color(0xFF9FB2AC)
+                  : const Color(0xFF52605C),
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            value,
+            style: TextStyle(
+              color: accent,
+              fontSize: 24,
+              fontWeight: FontWeight.w900,
+              height: 1,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _OrdersKanbanColumnData {
+  const _OrdersKanbanColumnData({
+    required this.title,
+    required this.subtitle,
+    required this.accent,
+    required this.icon,
+    required this.emptyMessage,
+    required this.orders,
+  });
+
+  final String title;
+  final String subtitle;
+  final Color accent;
+  final IconData icon;
+  final String emptyMessage;
+  final List<WorkflowOrder> orders;
+}
+
+class _PersonalKanbanBoard extends StatelessWidget {
+  const _PersonalKanbanBoard({
+    required this.tasks,
+    required this.isWide,
+    required this.onOpenTaskOrder,
+  });
+
+  final List<WorkspaceTask> tasks;
+  final bool isWide;
+  final ValueChanged<String> onOpenTaskOrder;
+
+  @override
+  Widget build(BuildContext context) {
+    final columnWidth = isWide ? 290.0 : 270.0;
+
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: WorkspaceTaskStatus.values
+            .map((status) {
+              final statusTasks = tasks
+                  .where((task) => task.status == status)
+                  .toList(growable: false);
+
+              return Padding(
+                padding: const EdgeInsets.only(right: 16),
+                child: SizedBox(
+                  width: columnWidth,
+                  child: _KanbanColumn(
+                    status: status,
+                    tasks: statusTasks,
+                    onOpenTaskOrder: onOpenTaskOrder,
+                  ),
+                ),
+              );
+            })
+            .toList(growable: false),
+      ),
+    );
+  }
+}
+
+class _StageOrdersKanbanBoard extends StatelessWidget {
+  const _StageOrdersKanbanBoard({
+    required this.columns,
+    required this.allOrders,
+    required this.selectedOrderCode,
+    required this.onOrderSelected,
+    required this.onOpenOrderConversation,
+    required this.workspaceProfiles,
+  });
+
+  final List<_OrdersKanbanColumnData> columns;
+  final List<WorkflowOrder> allOrders;
+  final String? selectedOrderCode;
+  final ValueChanged<WorkflowOrder> onOrderSelected;
+  final ValueChanged<WorkflowOrder> onOpenOrderConversation;
+  final List<EmployeeWorkspaceProfile> workspaceProfiles;
+
+  @override
+  Widget build(BuildContext context) {
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          for (var index = 0; index < columns.length; index++) ...[
+            if (index > 0) const SizedBox(width: 12),
+            SizedBox(
+              width: 300,
+              child: _StageOrdersKanbanColumn(
+                column: columns[index],
+                allOrders: allOrders,
+                selectedOrderCode: selectedOrderCode,
+                onOrderSelected: onOrderSelected,
+                onOpenOrderConversation: onOpenOrderConversation,
+                workspaceProfiles: workspaceProfiles,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _StageOrdersKanbanColumn extends StatelessWidget {
+  const _StageOrdersKanbanColumn({
+    required this.column,
+    required this.allOrders,
+    required this.selectedOrderCode,
+    required this.onOrderSelected,
+    required this.onOpenOrderConversation,
+    required this.workspaceProfiles,
+  });
+
+  final _OrdersKanbanColumnData column;
+  final List<WorkflowOrder> allOrders;
+  final String? selectedOrderCode;
+  final ValueChanged<WorkflowOrder> onOrderSelected;
+  final ValueChanged<WorkflowOrder> onOpenOrderConversation;
+  final List<EmployeeWorkspaceProfile> workspaceProfiles;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: _panelDecoration(context),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 34,
+                height: 34,
+                decoration: BoxDecoration(
+                  color: column.accent.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Icon(column.icon, color: column.accent, size: 16),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      column.title,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w800,
+                        fontSize: 15,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      column.subtitle,
+                      style: TextStyle(
+                        color: isDarkMode
+                            ? const Color(0xFFC0D0C9)
+                            : const Color(0xFF52605C),
+                        fontSize: 13,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                decoration: BoxDecoration(
+                  color: isDarkMode
+                      ? column.accent.withValues(alpha: 0.12)
+                      : const Color(0xFFF4F7F6),
+                  borderRadius: BorderRadius.circular(999),
+                  border: Border.all(
+                    color: column.accent.withValues(
+                      alpha: isDarkMode ? 0.32 : 0.14,
+                    ),
+                  ),
+                ),
+                child: Text(
+                  '${column.orders.length}',
+                  style: TextStyle(
+                    color: column.accent,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          if (column.orders.isEmpty)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: column.accent.withValues(alpha: 0.04),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(
+                  color: column.accent.withValues(
+                    alpha: isDarkMode ? 0.30 : 0.12,
+                  ),
+                ),
+              ),
+              child: Text(
+                column.emptyMessage,
+                style: TextStyle(
+                  color: isDarkMode
+                      ? const Color(0xFFC0D0C9)
+                      : const Color(0xFF52605C),
+                  fontSize: 13,
+                  height: 1.35,
+                ),
+              ),
+            )
+          else
+            ...column.orders.map(
+              (order) => Padding(
+                padding: const EdgeInsets.only(bottom: 10),
+                child: _OrderCard(
+                  order: order,
+                  allOrders: allOrders,
+                  selected: selectedOrderCode == order.code,
+                  onTap: () => onOrderSelected(order),
+                  onOpenConversation: () => onOpenOrderConversation(order),
+                  workspaceProfiles: workspaceProfiles,
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _KanbanColumn extends StatelessWidget {
+  const _KanbanColumn({
+    required this.status,
+    required this.tasks,
+    required this.onOpenTaskOrder,
+  });
+
+  final WorkspaceTaskStatus status;
+  final List<WorkspaceTask> tasks;
+  final ValueChanged<String> onOpenTaskOrder;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: _panelDecoration(context),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 6,
+                ),
+                decoration: BoxDecoration(
+                  color: status.color.withValues(alpha: 0.14),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Text(
+                  status.title,
+                  style: TextStyle(
+                    color: status.color,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+              const Spacer(),
+              Text(
+                '${tasks.length}',
+                style: const TextStyle(
+                  color: Color(0xFF52605C),
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          if (tasks.isEmpty)
+            const Padding(
+              padding: EdgeInsets.only(bottom: 6),
+              child: Text(
+                'Nenhuma tarefa neste quadro.',
+                style: TextStyle(color: Color(0xFF52605C)),
+              ),
+            )
+          else
+            ...tasks.map(
+              (task) => Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: _WorkspaceTaskCard(
+                  task: task,
+                  onTap: () => onOpenTaskOrder(task.orderCode),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _WorkspaceTaskCard extends StatelessWidget {
+  const _WorkspaceTaskCard({required this.task, required this.onTap});
+
+  final WorkspaceTask task;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(18),
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: const Color(0xFFE2E8F0)),
+          boxShadow: const [
+            BoxShadow(
+              color: Color(0x0F0F172A),
+              blurRadius: 14,
+              offset: Offset(0, 8),
+            ),
+          ],
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    task.title,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w700,
+                      fontSize: 16,
+                    ),
+                  ),
+                ),
+                _StatusBadge(label: task.stage.title, color: task.stage.color),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Text(
+              task.summary,
+              style: const TextStyle(color: Color(0xFF52605C), height: 1.4),
+            ),
+            const SizedBox(height: 14),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                _WorkspaceMetaChip(
+                  icon: Icons.inventory_2_outlined,
+                  label: task.orderCode,
+                ),
+                _WorkspaceMetaChip(
+                  icon: Icons.flag_outlined,
+                  label: task.priorityLabel,
+                ),
+                _WorkspaceMetaChip(
+                  icon: Icons.schedule_outlined,
+                  label: task.dueLabel,
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _WorkspaceMetaChip extends StatelessWidget {
+  const _WorkspaceMetaChip({required this.icon, required this.label});
+
+  final IconData icon;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 8),
+      decoration: BoxDecoration(
+        color: isDarkMode
+            ? const Color(0xFF121C19)
+            : Colors.white.withValues(alpha: 0.94),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(
+          color: isDarkMode ? const Color(0xFF23322E) : const Color(0xFFE7ECE8),
+        ),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            icon,
+            size: 15,
+            color: isDarkMode
+                ? const Color(0xFF9FB2AC)
+                : const Color(0xFF52605C),
+          ),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: TextStyle(
+              color: isDarkMode
+                  ? const Color(0xFFE7F1EC)
+                  : const Color(0xFF334155),
+              fontWeight: FontWeight.w600,
+              fontSize: 12,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StatusBadge extends StatelessWidget {
+  const _StatusBadge({required this.label, required this.color});
+
+  final String label;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: color.withValues(alpha: 0.12)),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          color: color,
+          fontWeight: FontWeight.w700,
+          fontSize: 11,
+        ),
+      ),
+    );
+  }
+}
+
+class _StageOwnersSection extends StatelessWidget {
+  const _StageOwnersSection({required this.owners, this.showHeader = true});
+
+  final List<MapEntry<WorkflowStage, String>> owners;
+  final bool showHeader;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    final itemWidth = MediaQuery.sizeOf(context).width >= 900 ? 320.0 : 260.0;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: isDarkMode
+            ? const Color(0xFF101714).withValues(alpha: 0.56)
+            : Colors.white.withValues(alpha: 0.46),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: isDarkMode ? const Color(0xFF24332E) : const Color(0xFFE9EEEA),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (showHeader) ...[
+            Text(
+              'Responsáveis por etapa',
+              style: TextStyle(
+                color: isDarkMode
+                    ? const Color(0xFF9FB2AC)
+                    : const Color(0xFF52605C),
+                fontSize: 9,
+                fontWeight: FontWeight.w600,
+                letterSpacing: 0.3,
+              ),
+            ),
+            const SizedBox(height: 6),
+          ],
+          Wrap(
+            spacing: 10,
+            runSpacing: 2,
+            children: owners
+                .map(
+                  (entry) => SizedBox(
+                    width: itemWidth,
+                    child: _StageOwnerLine(
+                      label: _stageOwnerSummaryLabel(entry.key),
+                      value: entry.value,
+                    ),
+                  ),
+                )
+                .toList(growable: false),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StageOwnerLine extends StatelessWidget {
+  const _StageOwnerLine({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 7),
+      decoration: BoxDecoration(
+        border: Border(
+          bottom: BorderSide(
+            color: isDarkMode
+                ? const Color(0xFF21302B)
+                : const Color(0xFFE8ECE9),
+          ),
+        ),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              label,
+              style: TextStyle(
+                color: isDarkMode
+                    ? const Color(0xFF9FB2AC)
+                    : const Color(0xFF66736E),
+                fontSize: 10,
+                fontWeight: FontWeight.w600,
+                letterSpacing: 0.2,
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Flexible(
+            flex: 2,
+            child: Text(
+              value,
+              textAlign: TextAlign.right,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: isDarkMode
+                    ? const Color(0xFFE7F1EC)
+                    : const Color(0xFF1C2622),
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _InfoRow extends StatelessWidget {
+  const _InfoRow({
+    required this.label,
+    required this.value,
+    this.emphasizeValue = false,
+  });
+
+  final String label;
+  final String value;
+  final bool emphasizeValue;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: isDarkMode ? const Color(0xFF121E1B) : const Color(0xFFF8FAFC),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: isDarkMode ? const Color(0xFF29403A) : const Color(0xFFE2E8F0),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label.toUpperCase(),
+            style: TextStyle(
+              color: isDarkMode
+                  ? const Color(0xFF9FB2AC)
+                  : const Color(0xFF52605C),
+              fontSize: 10,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 0.6,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            value,
+            style: TextStyle(
+              color: isDarkMode
+                  ? const Color(0xFFE7F1EC)
+                  : const Color(0xFF14211D),
+              height: 1.25,
+              fontWeight: emphasizeValue ? FontWeight.w800 : FontWeight.w600,
+              fontSize: emphasizeValue ? 16 : 14,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+enum _FileInfoStatus { available, missing, restricted }
+
+class _FileInfoRow extends StatelessWidget {
+  const _FileInfoRow({
+    required this.label,
+    required this.value,
+    this.filePath,
+    this.status,
+  });
+
+  final String label;
+  final String value;
+  final String? filePath;
+  final _FileInfoStatus? status;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    final accentColor = _detailAccentColorForLabel(label, isDarkMode);
+    final isClickable =
+        filePath != null &&
+        filePath!.trim().isNotEmpty &&
+        value.trim().isNotEmpty;
+    final effectiveStatus =
+        status ??
+        (isClickable
+            ? _FileInfoStatus.available
+            : _inferFileStatusFromValue(value));
+    final statusLabel = switch (effectiveStatus) {
+      _FileInfoStatus.available => 'Disponível',
+      _FileInfoStatus.missing => 'Pendente',
+      _FileInfoStatus.restricted => 'Restrito',
+    };
+    final statusColor = switch (effectiveStatus) {
+      _FileInfoStatus.available =>
+        isDarkMode ? const Color(0xFF5EEAD4) : const Color(0xFF0F766E),
+      _FileInfoStatus.missing =>
+        isDarkMode ? const Color(0xFFFBBF24) : const Color(0xFFB45309),
+      _FileInfoStatus.restricted =>
+        isDarkMode ? const Color(0xFFFCA5A5) : const Color(0xFFB91C1C),
+    };
+    final titleColor = isDarkMode
+        ? const Color(0xFFE7F1EC)
+        : const Color(0xFF14211D);
+    final helperColor = isDarkMode
+        ? const Color(0xFF9FB2AC)
+        : const Color(0xFF52605C);
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      margin: const EdgeInsets.only(bottom: 10),
+      decoration: BoxDecoration(
+        color: isDarkMode ? const Color(0xFF121E1B) : const Color(0xFFF8FAFC),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: isDarkMode ? const Color(0xFF29403A) : const Color(0xFFE2E8F0),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      label.toUpperCase(),
+                      style: TextStyle(
+                        color: helperColor,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 0.6,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      value.trim().isEmpty ? 'Nenhum arquivo informado' : value,
+                      style: TextStyle(
+                        color: titleColor,
+                        height: 1.25,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 14,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 10),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                decoration: BoxDecoration(
+                  color: statusColor.withValues(
+                    alpha: isDarkMode ? 0.16 : 0.10,
+                  ),
+                  borderRadius: BorderRadius.circular(999),
+                  border: Border.all(
+                    color: statusColor.withValues(alpha: 0.24),
+                  ),
+                ),
+                child: Text(
+                  statusLabel,
+                  style: TextStyle(
+                    color: statusColor,
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          if (effectiveStatus == _FileInfoStatus.available && isClickable) ...[
+            const SizedBox(height: 10),
+            InkWell(
+              onTap: () => _openLocalFile(context, filePath),
+              borderRadius: BorderRadius.circular(10),
+              child: Ink(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 8,
+                ),
+                decoration: BoxDecoration(
+                  color: accentColor.withValues(
+                    alpha: isDarkMode ? 0.12 : 0.08,
+                  ),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      Icons.open_in_new_rounded,
+                      size: 16,
+                      color: accentColor,
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Abrir arquivo',
+                      style: TextStyle(
+                        color: accentColor,
+                        fontWeight: FontWeight.w800,
+                        fontSize: 13,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ] else ...[
+            const SizedBox(height: 8),
+            Text(
+              switch (effectiveStatus) {
+                _FileInfoStatus.available =>
+                  'Arquivo cadastrado, mas sem link disponível nesta estação.',
+                _FileInfoStatus.missing =>
+                  'Nenhum anexo enviado para este item até o momento.',
+                _FileInfoStatus.restricted =>
+                  'Este documento existe, mas o acesso está bloqueado na etapa atual.',
+              },
+              style: TextStyle(
+                color: helperColor,
+                height: 1.32,
+                fontWeight: FontWeight.w500,
+                fontSize: 12,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _DetailSectionLabel extends StatelessWidget {
+  const _DetailSectionLabel({required this.title, required this.subtitle});
+
+  final String title;
+  final String subtitle;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          title,
+          style: TextStyle(
+            color: isDarkMode
+                ? const Color(0xFFE7F1EC)
+                : const Color(0xFF14211D),
+            fontSize: 16,
+            fontWeight: FontWeight.w800,
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          subtitle,
+          style: TextStyle(
+            color: isDarkMode
+                ? const Color(0xFF9FB2AC)
+                : const Color(0xFF52605C),
+            fontSize: 12,
+            height: 1.35,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _CollapsibleDetailSection extends StatefulWidget {
+  const _CollapsibleDetailSection({
+    required this.title,
+    required this.subtitle,
+    required this.child,
+    this.initiallyExpanded = true,
+  });
+
+  final String title;
+  final String subtitle;
+  final Widget child;
+  final bool initiallyExpanded;
+
+  @override
+  State<_CollapsibleDetailSection> createState() =>
+      _CollapsibleDetailSectionState();
+}
+
+class _CollapsibleDetailSectionState extends State<_CollapsibleDetailSection> {
+  late bool _expanded;
+
+  @override
+  void initState() {
+    super.initState();
+    _expanded = widget.initiallyExpanded;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    final borderColor = isDarkMode
+        ? const Color(0xFF29403A)
+        : const Color(0xFFE2E8F0);
+    final surfaceColor = isDarkMode
+        ? const Color(0xFF121E1B)
+        : const Color(0xFFF8FAFC);
+
+    return Container(
+      decoration: BoxDecoration(
+        color: surfaceColor,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: borderColor),
+      ),
+      child: Column(
+        children: [
+          InkWell(
+            onTap: () {
+              setState(() {
+                _expanded = !_expanded;
+              });
+            },
+            borderRadius: BorderRadius.circular(18),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: _DetailSectionLabel(
+                      title: widget.title,
+                      subtitle: widget.subtitle,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Container(
+                    width: 32,
+                    height: 32,
+                    decoration: BoxDecoration(
+                      color: isDarkMode
+                          ? Colors.black.withValues(alpha: 0.14)
+                          : Colors.white,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: borderColor),
+                    ),
+                    child: Icon(
+                      _expanded
+                          ? Icons.keyboard_arrow_up_rounded
+                          : Icons.keyboard_arrow_down_rounded,
+                      color: isDarkMode
+                          ? const Color(0xFF9FB2AC)
+                          : const Color(0xFF52605C),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          ClipRect(
+            child: AnimatedSize(
+              duration: const Duration(milliseconds: 180),
+              curve: Curves.easeOutCubic,
+              child: !_expanded
+                  ? const SizedBox.shrink()
+                  : Padding(
+                      padding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
+                      child: widget.child,
+                    ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _OrderDetailsHero extends StatelessWidget {
+  const _OrderDetailsHero({
+    required this.order,
+    required this.allOrders,
+    required this.secondaryTextColor,
+    required this.headerActionPanel,
+    required this.headerActions,
+    required this.showStandaloneEditAction,
+    required this.inlineHeaderMinWidth,
+    required this.progressTrackColor,
+  });
+
+  final WorkflowOrder order;
+  final List<WorkflowOrder> allOrders;
+  final Color secondaryTextColor;
+  final Widget? headerActionPanel;
+  final List<Widget> headerActions;
+  final bool showStandaloneEditAction;
+  final double inlineHeaderMinWidth;
+  final Color progressTrackColor;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    final stageColor = order.currentStage.color;
+    final displayCode = _displayOrderCode(order, allOrders);
+    final effectiveProgress = _effectiveOrderProgress(order);
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: isDarkMode ? const Color(0xFF101A18) : Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: isDarkMode ? const Color(0xFF29403A) : const Color(0xFFE2E8F0),
+        ),
+      ),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final keepInlineHeader =
+              headerActions.isEmpty ||
+              (showStandaloneEditAction && constraints.maxWidth >= 320) ||
+              constraints.maxWidth >= inlineHeaderMinWidth;
+          final metadata = Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              _HeroMetaChip(
+                icon: Icons.layers_outlined,
+                label: _proposalVersionTitle(order),
+                color: order.proposalVersion > 1
+                    ? const Color(0xFF1D4ED8)
+                    : const Color(0xFF475569),
+              ),
+              if (order.isServiceOrder)
+                const _HeroMetaChip(
+                  icon: Icons.assignment_outlined,
+                  label: 'Ordem de serviço',
+                  color: Color(0xFF92400E),
+                ),
+              _HeroMetaChip(
+                icon: Icons.route_rounded,
+                label: order.currentStage.title,
+                color: stageColor,
+              ),
+              _HeroMetaChip(
+                icon: Icons.badge_outlined,
+                label: 'Cliente ${order.client.id}',
+                color: isDarkMode
+                    ? const Color(0xFFCBD5E1)
+                    : const Color(0xFF475569),
+              ),
+            ],
+          );
+
+          final titleColumn = Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                displayCode,
+                style: TextStyle(
+                  color: isDarkMode
+                      ? const Color(0xFF9FB2AC)
+                      : const Color(0xFF52605C),
+                  fontSize: 12,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 0.8,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                order.workName,
+                style: TextStyle(
+                  color: isDarkMode
+                      ? const Color(0xFFF4FBF8)
+                      : const Color(0xFF10211C),
+                  fontSize: constraints.maxWidth >= 700 ? 24 : 20,
+                  height: 1.05,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                '${order.client.name} • ${order.client.phone}',
+                style: TextStyle(
+                  color: secondaryTextColor,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+              const SizedBox(height: 10),
+              metadata,
+            ],
+          );
+
+          final progressBlock = Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Text(
+                    'Progresso',
+                    style: TextStyle(
+                      color: secondaryTextColor,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 0.3,
+                    ),
+                  ),
+                  const Spacer(),
+                  Text(
+                    '${(effectiveProgress * 100).round()}%',
+                    style: TextStyle(
+                      color: isDarkMode
+                          ? const Color(0xFFF4FBF8)
+                          : const Color(0xFF10211C),
+                      fontSize: 18,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              LinearProgressIndicator(
+                value: effectiveProgress,
+                minHeight: 6,
+                backgroundColor: progressTrackColor,
+                valueColor: AlwaysStoppedAnimation(stageColor),
+                borderRadius: BorderRadius.circular(99),
+              ),
+            ],
+          );
+
+          final hasActions = headerActionPanel != null;
+          final actionsBlock = !hasActions
+              ? const SizedBox.shrink()
+              : Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: headerActionPanel!,
+                  ),
+                );
+
+          if (!keepInlineHeader) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                titleColumn,
+                const SizedBox(height: 14),
+                progressBlock,
+                if (hasActions) actionsBlock,
+              ],
+            );
+          }
+
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(child: titleColumn),
+                  const SizedBox(width: 16),
+                  SizedBox(
+                    width: constraints.maxWidth >= 880 ? 220 : 180,
+                    child: progressBlock,
+                  ),
+                ],
+              ),
+              if (hasActions) actionsBlock,
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _HeroMetaChip extends StatelessWidget {
+  const _HeroMetaChip({
+    required this.icon,
+    required this.label,
+    required this.color,
+  });
+
+  final IconData icon;
+  final String label;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: isDarkMode ? 0.12 : 0.08),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: color.withValues(alpha: 0.18)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 12, color: color),
+          const SizedBox(width: 4),
+          Text(
+            label,
+            style: TextStyle(
+              color: color,
+              fontSize: 10,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+Color _detailAccentColorForLabel(String label, bool isDarkMode) {
+  final normalized = label.trim().toLowerCase();
+
+  if (normalized.contains('telefone')) {
+    return isDarkMode ? const Color(0xFF67E8F9) : const Color(0xFF0891B2);
+  }
+  if (normalized.contains('endereço') || normalized.contains('endereco')) {
+    return isDarkMode ? const Color(0xFFF9A8D4) : const Color(0xFFBE185D);
+  }
+  if (normalized.contains('cliente') || normalized.contains('obra')) {
+    return isDarkMode ? const Color(0xFF86EFAC) : const Color(0xFF15803D);
+  }
+  if (normalized.contains('proposta') || normalized.contains('contrato')) {
+    return isDarkMode ? const Color(0xFFFDE68A) : const Color(0xFFB45309);
+  }
+  if (normalized.contains('materiais') || normalized.contains('projeto')) {
+    return isDarkMode ? const Color(0xFF93C5FD) : const Color(0xFF1D4ED8);
+  }
+
+  return isDarkMode ? const Color(0xFF99F6E4) : const Color(0xFF0F766E);
+}
+
+_FileInfoStatus _inferFileStatusFromValue(String value) {
+  final normalized = value.trim().toLowerCase();
+  if (normalized.contains('restrito')) {
+    return _FileInfoStatus.restricted;
+  }
+  if (normalized.isEmpty || normalized.contains('não anexado')) {
+    return _FileInfoStatus.missing;
+  }
+  return _FileInfoStatus.available;
+}
+
+BoxDecoration _panelDecoration(BuildContext context) {
+  final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+
+  return BoxDecoration(
+    color: isDarkMode
+        ? const Color(0xFF24302C).withValues(alpha: 0.98)
+        : Colors.white.withValues(alpha: 0.90),
+    borderRadius: BorderRadius.circular(24),
+    border: Border.all(
+      color: isDarkMode ? const Color(0xFF4A5F58) : const Color(0xFFE7ECE8),
+      width: isDarkMode ? 1.15 : 1,
+    ),
+    boxShadow: isDarkMode
+        ? null
+        : const [
+            BoxShadow(
+              color: Color(0x120F172A),
+              blurRadius: 26,
+              offset: Offset(0, 16),
+            ),
+          ],
+  );
+}
+
+EngineeringChecklistStatus _normalizeEngineeringChecklistStatus(
+  EngineeringChecklistStatus status,
+) {
+  if (status == EngineeringChecklistStatus.inProgress) {
+    return EngineeringChecklistStatus.notStarted;
+  }
+
+  return status;
+}
+
+class _EngineeringFlowSnapshot {
+  const _EngineeringFlowSnapshot({
+    required this.completedTasks,
+    required this.currentTask,
+    required this.upcomingTasks,
+  });
+
+  final List<EngineeringChecklistTask> completedTasks;
+  final EngineeringChecklistTask? currentTask;
+  final List<EngineeringChecklistTask> upcomingTasks;
+
+  bool get isComplete => currentTask == null && upcomingTasks.isEmpty;
+}
+
+_EngineeringFlowSnapshot _engineeringFlowSnapshot(WorkflowOrder order) {
+  return _engineeringFlowSnapshotFromStatuses(
+    order.engineeringChecklistStatuses,
+  );
+}
+
+double _effectiveOrderProgress(WorkflowOrder order) {
+  final stageIndex = workflowStages.indexOf(order.currentStage);
+  if (stageIndex == -1) {
+    return order.progress.clamp(0, 1);
+  }
+
+  final stageFraction = _stageProgressFraction(order);
+  final progress = (stageIndex + stageFraction) / workflowStages.length;
+  return progress.clamp(0.02, 1);
+}
+
+double _stageProgressFraction(WorkflowOrder order) {
+  return switch (order.currentStage) {
+    WorkflowStage.customerRegistration => 0.35,
+    WorkflowStage.estimating =>
+      order.isServiceOrder
+          ? (order.serviceOrderFileName.trim().isEmpty ? 0.35 : 0.85)
+          : (order.materialFileName.trim().isEmpty ? 0.35 : 0.85),
+    WorkflowStage.finance =>
+      order.isServiceOrder ? (order.financeClientApproved ? 0.85 : 0.40) : 0.60,
+    WorkflowStage.relationship => 0.55,
+    WorkflowStage.engineering => _engineeringProgressFraction(order),
+    WorkflowStage.assembly => switch (order.assemblyWorkflowStatus) {
+      AssemblyWorkflowStatus.waiting => 0.15,
+      AssemblyWorkflowStatus.doing => 0.60,
+      AssemblyWorkflowStatus.done => 0.95,
+    },
+    WorkflowStage.installation => switch (order.installationWorkflowStatus) {
+      InstallationWorkflowStatus.waiting => 0.10,
+      InstallationWorkflowStatus.scheduled => 0.35,
+      InstallationWorkflowStatus.doing => 0.70,
+      InstallationWorkflowStatus.done => 1.0,
+    },
+  };
+}
+
+double _engineeringProgressFraction(WorkflowOrder order) {
+  final completedCount = engineeringChecklistTasks
+      .where(
+        (task) =>
+            _normalizeEngineeringChecklistStatus(
+              order.engineeringChecklistStatuses[task.key] ??
+                  EngineeringChecklistStatus.notStarted,
+            ) ==
+            EngineeringChecklistStatus.done,
+      )
+      .length;
+  if (engineeringChecklistTasks.isEmpty) {
+    return 0.35;
+  }
+  return (completedCount / engineeringChecklistTasks.length).clamp(0.08, 1.0);
+}
+
+_EngineeringFlowSnapshot _engineeringFlowSnapshotFromStatuses(
+  Map<String, EngineeringChecklistStatus> statuses,
+) {
+  final completedTasks = <EngineeringChecklistTask>[];
+  EngineeringChecklistTask? currentTask;
+  final upcomingTasks = <EngineeringChecklistTask>[];
+
+  for (final task in engineeringChecklistTasks) {
+    final status = _normalizeEngineeringChecklistStatus(
+      statuses[task.key] ?? EngineeringChecklistStatus.notStarted,
+    );
+    if (currentTask == null && status != EngineeringChecklistStatus.done) {
+      currentTask = task;
+      continue;
+    }
+
+    if (currentTask == null) {
+      completedTasks.add(task);
+    } else {
+      upcomingTasks.add(task);
+    }
+  }
+
+  return _EngineeringFlowSnapshot(
+    completedTasks: completedTasks,
+    currentTask: currentTask,
+    upcomingTasks: upcomingTasks,
+  );
+}
+
+ImageProvider<Object>? _resolveProfileImageProvider(String? filePath) {
+  final normalized = filePath?.trim();
+  if (normalized == null || normalized.isEmpty) {
+    return null;
+  }
+
+  final uri = Uri.tryParse(normalized);
+  if (uri != null && (uri.scheme == 'http' || uri.scheme == 'https')) {
+    return NetworkImage(_normalizeProfileImageUrl(normalized));
+  }
+
+  if (kIsWeb) {
+    return null;
+  }
+
+  return FileImage(io.File(normalized));
+}
+
+String _normalizeProfileImageUrl(String url) {
+  final uri = Uri.tryParse(url);
+  if (uri == null) {
+    return url;
+  }
+
+  if (uri.host.contains('drive.google.com')) {
+    final idFromQuery = uri.queryParameters['id']?.trim();
+    if (idFromQuery != null && idFromQuery.isNotEmpty) {
+      return 'https://drive.google.com/uc?export=download&id=$idFromQuery';
+    }
+
+    final segments = uri.pathSegments;
+    final fileIndex = segments.indexOf('d');
+    if (fileIndex != -1 && fileIndex + 1 < segments.length) {
+      final fileId = segments[fileIndex + 1].trim();
+      if (fileId.isNotEmpty) {
+        return 'https://drive.google.com/uc?export=download&id=$fileId';
+      }
+    }
+  }
+
+  return url;
+}
+
+String _formatDate(DateTime date) {
+  final day = date.day.toString().padLeft(2, '0');
+  final month = date.month.toString().padLeft(2, '0');
+  return '$day/$month/${date.year}';
+}
+
+int _extractOrderNumber(String code) {
+  final firstNumber = RegExp(r'(\d+)').firstMatch(code)?.group(1) ?? '';
+  return int.tryParse(firstNumber) ?? 0;
+}
+
+String _displayOrderCode(
+  WorkflowOrder order, [
+  List<WorkflowOrder> allOrders = const [],
+]) {
+  final baseCode = 'OP-${order.client.id}';
+  if (!order.isServiceOrder) {
+    final version = order.proposalVersion <= 0 ? 1 : order.proposalVersion;
+    if (version <= 1) {
+      return baseCode;
+    }
+
+    return '$baseCode-P$version';
+  }
+
+  final explicitSuffix = RegExp(r'(-OS\d+)$').firstMatch(order.code.trim());
+  if (explicitSuffix != null) {
+    return '$baseCode${explicitSuffix.group(1)!}';
+  }
+
+  if (allOrders.isNotEmpty) {
+    final clientServiceOrders = allOrders
+        .where(
+          (item) => item.client.id == order.client.id && item.isServiceOrder,
+        )
+        .toList(growable: false);
+
+    if (clientServiceOrders.isNotEmpty) {
+      clientServiceOrders.sort((left, right) {
+        final codeCompare = _extractOrderNumber(
+          left.code,
+        ).compareTo(_extractOrderNumber(right.code));
+        if (codeCompare != 0) {
+          return codeCompare;
+        }
+
+        return left.workName.toLowerCase().compareTo(
+          right.workName.toLowerCase(),
+        );
+      });
+      final index = clientServiceOrders.indexWhere(
+        (item) => item.code == order.code,
+      );
+      if (index != -1) {
+        return '$baseCode-OS${index + 1}';
+      }
+    }
+  }
+
+  return '$baseCode-OS1';
+}
+
+String _proposalBadgeLabel(WorkflowOrder order) {
+  return 'P${order.proposalVersion <= 0 ? 1 : order.proposalVersion}';
+}
+
+String _proposalVersionTitle(WorkflowOrder order) {
+  return _proposalVersionTitleFromNumber(order.proposalVersion);
+}
+
+String _proposalVersionTitleFromNumber(int proposalVersion) {
+  if (proposalVersion <= 1) {
+    return 'Proposta principal';
+  }
+
+  return '${proposalVersion}a proposta';
+}
+
+EngineeringChecklistTask? _engineeringChecklistTaskByKey(String taskKey) {
+  for (final task in engineeringChecklistTasks) {
+    if (task.key == taskKey) {
+      return task;
+    }
+  }
+
+  return null;
+}
+
+List<WorkflowOrder> _proposalGroupOrders(
+  List<WorkflowOrder> allOrders,
+  WorkflowOrder order,
+) {
+  final proposalGroupCode = order.proposalGroupCode.trim().isEmpty
+      ? order.code
+      : order.proposalGroupCode.trim();
+  final groupedOrders = allOrders
+      .where((item) => item.proposalGroupCode.trim() == proposalGroupCode)
+      .toList(growable: false);
+
+  groupedOrders.sort((left, right) {
+    final versionCompare = left.proposalVersion.compareTo(
+      right.proposalVersion,
+    );
+    if (versionCompare != 0) {
+      return versionCompare;
+    }
+    return _extractOrderNumber(
+      left.code,
+    ).compareTo(_extractOrderNumber(right.code));
+  });
+
+  return groupedOrders;
+}
+
+List<WorkflowOrder> _proposalExtensionsForPrimary(
+  List<WorkflowOrder> allOrders,
+  WorkflowOrder order,
+) {
+  if (!order.isPrimaryProposal) {
+    return const <WorkflowOrder>[];
+  }
+
+  return _proposalGroupOrders(
+    allOrders,
+    order,
+  ).where((item) => item.code != order.code).toList(growable: false);
+}
+
+String _formatTimeOnly(DateTime date) {
+  final hour = date.hour.toString().padLeft(2, '0');
+  final minute = date.minute.toString().padLeft(2, '0');
+  return '$hour:$minute';
+}
+
+String _formatDateWithWeekday(DateTime date) {
+  const weekdays = [
+    'Segunda-feira',
+    'Terça-feira',
+    'Quarta-feira',
+    'Quinta-feira',
+    'Sexta-feira',
+    'Sábado',
+    'Domingo',
+  ];
+  final weekday = weekdays[date.weekday - 1];
+  return '$weekday, ${_formatDate(date)} às ${_formatTimeOnly(date)}';
+}
+
+String _formatDayWithWeekday(DateTime date) {
+  const weekdays = [
+    'Segunda-feira',
+    'Terça-feira',
+    'Quarta-feira',
+    'Quinta-feira',
+    'Sexta-feira',
+    'Sábado',
+    'Domingo',
+  ];
+  final weekday = weekdays[date.weekday - 1];
+  return '$weekday, ${_formatDate(date)}';
+}
+
+bool _isSameDate(DateTime left, DateTime right) {
+  return left.year == right.year &&
+      left.month == right.month &&
+      left.day == right.day;
+}
+
+String _formatDateTime(DateTime date) {
+  return '${_formatDate(date)} ${_formatTimeOnly(date)}';
+}

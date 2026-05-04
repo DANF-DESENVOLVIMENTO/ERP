@@ -1,0 +1,31 @@
+{
+  "name": "company-drive-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "bin": "dist/server.bundle.cjs",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "build:bundle": "esbuild src/server.js --bundle --platform=node --format=cjs --outfile=dist/server.bundle.cjs",
+    "build:win": "npm run build:bundle && pkg dist/server.bundle.cjs --targets node18-win-x64 --output company-drive-server.exe"
+  },
+  "pkg": {
+    "assets": [
+      ".env",
+      "oauth-client.json",
+      "service-account.json"
+    ]
+  },
+  "dependencies": {
+    "dotenv": "^17.4.2",
+    "express": "^4.21.2",
+    "firebase-admin": "^13.4.0",
+    "googleapis": "^150.0.1",
+    "multer": "^1.4.5-lts.2"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.0",
+    "pkg": "^5.8.1"
+  }
+}
