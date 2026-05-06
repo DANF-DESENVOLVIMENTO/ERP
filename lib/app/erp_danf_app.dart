@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
+import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../auth/firebase_auth_shell.dart';
@@ -16,6 +17,12 @@ import '../data/mock_data.dart';
 import '../models/erp_models.dart';
 import '../services/company_drive_storage_service.dart';
 import '../services/firebase_workflow_repository.dart';
+
+part 'erp_danf_app_customer_registration.dart';
+part 'erp_danf_app_estimating.dart';
+part 'erp_danf_app_installation.dart';
+part 'erp_danf_app_engineering.dart';
+part 'erp_danf_app_assembly.dart';
 
 Future<void> _openLocalFile(BuildContext context, String? filePath) async {
   if (filePath == null || filePath.trim().isEmpty) {
@@ -207,9 +214,7 @@ class _ErpDanfAppState extends State<ErpDanfApp> {
                 : null);
 
         final home = firebaseError != null
-            ? FirebaseConfigurationScreen(
-                error: firebaseError,
-              )
+            ? FirebaseConfigurationScreen(error: firebaseError)
             : FirebaseAuthShell(
                 firebaseInitializationError: widget.firebaseInitializationError,
                 authenticatedBuilder: (context) => ErpDashboardPage(
@@ -242,6 +247,27 @@ bool _looksLikeFirebaseConfigurationError(Object? error) {
       message.contains('google_service_info') ||
       message.contains('defaultfirebaseoptions') ||
       message.contains('core/no-app');
+}
+
+bool _hasEstimatingWorksheetData(WorkflowOrder order) {
+  final requiredLabels = _estimatingIncludedVisitLabelsForOrder(order);
+  final hasAllVisitDays = requiredLabels.every(
+    (label) => order.estimatingIncludedVisits.any(
+      (entry) => entry.label == label && entry.days.trim().isNotEmpty,
+    ),
+  );
+  if (!hasAllVisitDays) {
+    return false;
+  }
+  if (order.estimatingMaterials.isEmpty) {
+    return false;
+  }
+  return order.estimatingMaterials.every(
+    (entry) =>
+        entry.quantity.trim().isNotEmpty &&
+        entry.description.trim().isNotEmpty &&
+        entry.model.trim().isNotEmpty,
+  );
 }
 
 ThemeData _buildTheme({required Color seed, required Brightness brightness}) {
@@ -379,9 +405,10 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
   final TextEditingController _customerSearchController =
       TextEditingController();
   String _selectedViewKey = 'workspace';
+  int _customerRegistrationSubtab =
+      0; // Added definition for _customerRegistrationSubtab
   String? _selectedOrderCode;
   String? _selectedManagedUserEmail;
-  int _customerRegistrationSubtab = 0;
   final Map<WorkflowStage, int> _stageWorkspaceSubtabs = {
     WorkflowStage.estimating: 0,
     WorkflowStage.finance: 0,
@@ -510,6 +537,8 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       setState(() {
         _driveSyncStatus = availabilityError == null
             ? _DriveSyncStatus.synced
+            : _isDriveConfigurationMissingError(availabilityError)
+            ? _DriveSyncStatus.notConfigured
             : _DriveSyncStatus.offline;
       });
       return;
@@ -525,6 +554,8 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       setState(() {
         _driveSyncStatus = availabilityError == null
             ? _DriveSyncStatus.synced
+            : _isDriveConfigurationMissingError(availabilityError)
+            ? _DriveSyncStatus.notConfigured
             : _DriveSyncStatus.offline;
       });
       return;
@@ -539,6 +570,8 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     setState(() {
       _driveSyncStatus = result.isAvailable
           ? _DriveSyncStatus.synced
+          : _isDriveConfigurationMissingError(result.errorMessage)
+          ? _DriveSyncStatus.notConfigured
           : _DriveSyncStatus.offline;
     });
 
@@ -547,12 +580,21 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       return;
     }
 
-    if (!result.isAvailable) {
+    if (!result.isAvailable &&
+        !_isDriveConfigurationMissingError(result.errorMessage)) {
       _showAppMessage(
         'Servidor local do Drive indisponível. Detalhe: ${result.errorMessage}',
         isError: true,
       );
     }
+  }
+
+  bool _isDriveConfigurationMissingError(String? errorMessage) {
+    final normalized = errorMessage?.toLowerCase() ?? '';
+    return normalized.contains('oauth-client.json') ||
+        normalized.contains('oauth client desktop') ||
+        normalized.contains('drive não configurado') ||
+        normalized.contains('drive nao configurado');
   }
 
   Future<void> _loadPlatformLogs() async {
@@ -849,6 +891,8 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
           onReturnOrder: () => _moveSelectedOrder(-1),
           onSendToEngineering: () =>
               _routeSelectedOrderToStage(WorkflowStage.engineering),
+          onSendToAssembly: () =>
+              _routeSelectedOrderToStage(WorkflowStage.assembly),
           onSendToInstallation: () =>
               _routeSelectedOrderToStage(WorkflowStage.installation),
           onAttachMaterials: _attachMaterialsToSelectedOrder,
@@ -864,8 +908,12 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
               _toggleFinanceClientApprovalForSelectedOrder,
           onScheduleInstallation: _scheduleInstallationForSelectedOrder,
           onToggleInstallationExecutionItem: _toggleInstallationExecutionItem,
+          onOpenAssemblyPreparationChecklist:
+              _openAssemblyChecklistForSelectedOrder,
           onScheduleEngineeringActivity: _scheduleEngineeringActivity,
           onUpdateEngineeringChecklistStatus: _updateEngineeringChecklistStatus,
+          onUpdateFinanceContractStatus: _updateFinanceContractStatus,
+          onUpdateRelationshipKanbanStatus: _updateRelationshipKanbanStatus,
           onEditOrder:
               !_currentWorkspaceProfile.isAdministrator || order.isServiceOrder
               ? null
@@ -987,27 +1035,12 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
   }
 
   List<WorkflowOrder> get _selectedOrderPool {
-    if (_selectedStage == WorkflowStage.customerRegistration &&
-        _customerRegistrationSubtab == 1) {
-      return _orders
-          .where(
-            (order) =>
-                order.currentStage != WorkflowStage.customerRegistration &&
-                _matchesCustomerSearch(order),
-          )
-          .toList(growable: false);
-    }
-
     final stage = _selectedStage;
     if (stage != null &&
         _usesWorkAndCatalogSubtabs(stage) &&
         _stageWorkspaceSubtabIndex(stage) == 1) {
       return _orders
-          .where(
-            (order) =>
-                order.currentStage != WorkflowStage.customerRegistration &&
-                _matchesCustomerSearch(order),
-          )
+          .where((order) => _matchesCustomerSearch(order))
           .toList(growable: false);
     }
 
@@ -1897,6 +1930,8 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       onReturnOrder: () => _moveSelectedOrder(-1),
       onSendToEngineering: () =>
           _routeSelectedOrderToStage(WorkflowStage.engineering),
+      onSendToAssembly: () =>
+          _routeSelectedOrderToStage(WorkflowStage.assembly),
       onSendToInstallation: () =>
           _routeSelectedOrderToStage(WorkflowStage.installation),
       onAttachMaterials: _attachMaterialsToSelectedOrder,
@@ -1911,8 +1946,20 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
           _toggleFinanceClientApprovalForSelectedOrder,
       onScheduleInstallation: _scheduleInstallationForSelectedOrder,
       onToggleInstallationExecutionItem: _toggleInstallationExecutionItem,
+      onOpenAssemblyPreparationChecklist:
+          _openAssemblyChecklistForSelectedOrder,
       onScheduleEngineeringActivity: _scheduleEngineeringActivity,
       onUpdateEngineeringChecklistStatus: _updateEngineeringChecklistStatus,
+      onUpdateFinanceContractStatus: _updateFinanceContractStatus,
+      onUpdateRelationshipKanbanStatus: _updateRelationshipKanbanStatus,
+      onMoveAssemblyKanbanOrder: _moveAssemblyOrderToKanbanColumn,
+      canAcceptAssemblyKanbanDrop: _canMoveAssemblyOrderToTarget,
+      onMoveEngineeringKanbanOrder: _moveEngineeringOrderToKanbanColumn,
+      canAcceptEngineeringKanbanDrop: _canMoveEngineeringOrderToTarget,
+      onMoveFinanceKanbanOrder: _moveFinanceOrderToKanbanColumn,
+      canAcceptFinanceKanbanDrop: _canMoveFinanceOrderToTarget,
+      onMoveRelationshipKanbanOrder: _moveRelationshipOrderToKanbanColumn,
+      canAcceptRelationshipKanbanDrop: _canMoveRelationshipOrderToTarget,
       onCreateServiceOrder: stage == WorkflowStage.relationship
           ? _openServiceOrderForm
           : null,
@@ -1978,19 +2025,53 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
         initialDraft: order == null
             ? null
             : _CustomerRegistrationDraft(
+                fullName: order.client.name,
+                birthDate: order.client.birthDate,
+                email: order.client.email,
+                rg: order.client.rg,
+                cpf: order.client.cpf,
                 workName: order.workName,
                 phone: order.client.phone,
+                billingPostalCode: order.client.postalCode,
+                billingStreet: order.client.street,
+                billingNumber: order.client.number,
+                billingNeighborhood: order.client.neighborhood,
+                billingComplement: order.client.complement,
+                billingCity: order.client.city,
+                workPostalCode: order.workPostalCode,
+                workStreet: order.workStreet,
+                workNumber: order.workNumber,
+                workNeighborhood: order.workNeighborhood,
+                workComplement: order.workComplement,
+                workCity: '',
                 address: order.address,
+                commercialProposalNumber: order.commercialProposalNumber,
+                paymentType: order.paymentType,
+                consolidatedValue: order.value == 0
+                    ? ''
+                    : order.value.toStringAsFixed(2),
+                paymentMethod: order.paymentMethod,
+                paymentObservation: order.paymentObservation,
+                installmentValue: order.installmentValue,
+                installmentCount: order.installmentCount,
+                paymentDate: order.paymentDate,
+                rtValue: order.rtValue,
+                integratorValue: order.integratorValue,
+                integratorName: order.integratorName,
+                architectName: order.architectName,
+                proposalServices: order.proposalServices,
+                isDanfClient: order.isDanfClient,
+                danfInstallerName: order.danfInstallerName,
+                canHaveDanfPlate: order.canHaveDanfPlate,
+                hasWhatsappGroup: order.hasWhatsappGroup,
+                whatsappGroupMembers: order.whatsappGroupMembers,
+                whatsappGroupObservation: order.whatsappGroupObservation,
                 proposalFileName: order.proposalFileName,
                 proposalFilePath: order.proposalFilePath,
                 detailFileName: order.detailFileName,
                 detailFilePath: order.detailFilePath,
               ),
         isEditing: order != null,
-        allowProposalEdit: order?.currentStage != WorkflowStage.estimating,
-        allowDetailAccess:
-            order?.currentStage != WorkflowStage.estimating &&
-            order?.currentStage != WorkflowStage.relationship,
       ),
     );
 
@@ -2003,12 +2084,49 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     if (order != null) {
       final updatedOrder = order.copyWith(
         client: order.client.copyWith(
-          name: draft.workName,
-          city: _cityFromAddress(draft.address),
+          name: draft.fullName,
+          birthDate: draft.birthDate,
+          email: draft.email,
+          rg: draft.rg,
+          cpf: draft.cpf,
+          city: draft.billingCity,
+          postalCode: draft.billingPostalCode,
+          street: draft.billingStreet,
+          number: draft.billingNumber,
+          neighborhood: draft.billingNeighborhood,
+          complement: draft.billingComplement,
           phone: draft.phone,
         ),
         workName: draft.workName,
         address: draft.address,
+        workPostalCode: draft.workPostalCode,
+        workStreet: draft.workStreet,
+        workNumber: draft.workNumber,
+        workNeighborhood: draft.workNeighborhood,
+        workComplement: draft.workComplement,
+        value:
+            double.tryParse(
+              draft.consolidatedValue.replaceAll('.', '').replaceAll(',', '.'),
+            ) ??
+            0,
+        commercialProposalNumber: draft.commercialProposalNumber,
+        paymentType: draft.paymentType,
+        paymentMethod: draft.paymentMethod,
+        paymentObservation: draft.paymentObservation,
+        installmentValue: draft.installmentValue,
+        installmentCount: draft.installmentCount,
+        paymentDate: draft.paymentDate,
+        rtValue: draft.rtValue,
+        integratorValue: draft.integratorValue,
+        integratorName: draft.integratorName,
+        architectName: draft.architectName,
+        proposalServices: draft.proposalServices,
+        isDanfClient: draft.isDanfClient,
+        danfInstallerName: draft.danfInstallerName,
+        canHaveDanfPlate: draft.canHaveDanfPlate,
+        hasWhatsappGroup: draft.hasWhatsappGroup,
+        whatsappGroupMembers: draft.whatsappGroupMembers,
+        whatsappGroupObservation: draft.whatsappGroupObservation,
         proposalFileName: draft.proposalFileName,
         proposalFilePath: draft.proposalFilePath,
         detailFileName: draft.detailFileName,
@@ -2049,8 +2167,17 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       code: newOrderCode,
       client: ClientProfile(
         id: newClientId,
-        name: draft.workName,
-        city: _cityFromAddress(draft.address),
+        name: draft.fullName,
+        birthDate: draft.birthDate,
+        email: draft.email,
+        rg: draft.rg,
+        cpf: draft.cpf,
+        city: draft.billingCity,
+        postalCode: draft.billingPostalCode,
+        street: draft.billingStreet,
+        number: draft.billingNumber,
+        neighborhood: draft.billingNeighborhood,
+        complement: draft.billingComplement,
         segment: 'Cadastro inicial',
         contact: 'A definir',
         phone: draft.phone,
@@ -2058,12 +2185,19 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       ),
       workName: draft.workName,
       address: draft.address,
+      workPostalCode: draft.workPostalCode,
+      workStreet: draft.workStreet,
+      workNumber: draft.workNumber,
+      workNeighborhood: draft.workNeighborhood,
+      workComplement: draft.workComplement,
       proposalFileName: draft.proposalFileName,
       proposalFilePath: draft.proposalFilePath,
       detailFileName: draft.detailFileName,
       detailFilePath: draft.detailFilePath,
       materialFileName: '',
       materialFilePath: null,
+      estimatingIncludedVisits: const [],
+      estimatingMaterials: const [],
       consolidatedProposalFileName: '',
       consolidatedProposalFilePath: null,
       contractFileName: '',
@@ -2078,6 +2212,10 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       engineeringDataFilePath: null,
       engineeringChecklistStatuses: const {},
       engineeringActivitySchedules: const {},
+      financeContractStatuses: const {},
+      estimatingKanbanStatuses: const {},
+      relationshipKanbanStatuses: const {},
+      assemblyPreparationChecklist: const {},
       assemblyWorkflowStatus: AssemblyWorkflowStatus.waiting,
       assemblyAssignedEmployeeEmails: const [],
       currentStage: WorkflowStage.customerRegistration,
@@ -2096,7 +2234,29 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       installationAssignedTeam: '',
       installationNotes: '',
       installationVisitHistory: const [],
-      value: 0,
+      value:
+          double.tryParse(
+            draft.consolidatedValue.replaceAll('.', '').replaceAll(',', '.'),
+          ) ??
+          0,
+      commercialProposalNumber: draft.commercialProposalNumber,
+      paymentType: draft.paymentType,
+      paymentMethod: draft.paymentMethod,
+      paymentObservation: draft.paymentObservation,
+      installmentValue: draft.installmentValue,
+      installmentCount: draft.installmentCount,
+      paymentDate: draft.paymentDate,
+      rtValue: draft.rtValue,
+      integratorValue: draft.integratorValue,
+      integratorName: draft.integratorName,
+      architectName: draft.architectName,
+      proposalServices: draft.proposalServices,
+      isDanfClient: draft.isDanfClient,
+      danfInstallerName: draft.danfInstallerName,
+      canHaveDanfPlate: draft.canHaveDanfPlate,
+      hasWhatsappGroup: draft.hasWhatsappGroup,
+      whatsappGroupMembers: draft.whatsappGroupMembers,
+      whatsappGroupObservation: draft.whatsappGroupObservation,
       deadline: now.add(const Duration(days: 1)),
       progress: 1 / workflowStages.length,
       nextAction: WorkflowStage.customerRegistration.checklist.first,
@@ -2163,12 +2323,19 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       client: draft.client,
       workName: draft.serviceTitle.trim(),
       address: draft.address.trim(),
+      workPostalCode: '',
+      workStreet: '',
+      workNumber: '',
+      workNeighborhood: '',
+      workComplement: '',
       proposalFileName: '',
       proposalFilePath: null,
       detailFileName: '',
       detailFilePath: null,
       materialFileName: '',
       materialFilePath: null,
+      estimatingIncludedVisits: const [],
+      estimatingMaterials: const [],
       consolidatedProposalFileName: '',
       consolidatedProposalFilePath: null,
       contractFileName: '',
@@ -2183,6 +2350,10 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       engineeringDataFilePath: null,
       engineeringChecklistStatuses: const {},
       engineeringActivitySchedules: const {},
+      financeContractStatuses: const {},
+      estimatingKanbanStatuses: const {},
+      relationshipKanbanStatuses: const {},
+      assemblyPreparationChecklist: const {},
       assemblyWorkflowStatus: AssemblyWorkflowStatus.waiting,
       assemblyAssignedEmployeeEmails: const [],
       currentStage: WorkflowStage.estimating,
@@ -2205,6 +2376,24 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       installationNotes: '',
       installationVisitHistory: const [],
       value: 0,
+      commercialProposalNumber: '',
+      paymentType: '',
+      paymentMethod: '',
+      paymentObservation: '',
+      installmentValue: '',
+      installmentCount: '',
+      paymentDate: '',
+      rtValue: '',
+      integratorValue: '',
+      integratorName: '',
+      architectName: '',
+      proposalServices: const [],
+      isDanfClient: '',
+      danfInstallerName: '',
+      canHaveDanfPlate: '',
+      hasWhatsappGroup: '',
+      whatsappGroupMembers: const [],
+      whatsappGroupObservation: '',
       deadline: now.add(const Duration(days: 2)),
       progress: 2 / workflowStages.length,
       nextAction: 'Emitir PDF da ordem de serviço',
@@ -2303,6 +2492,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
         employeeEmails: const [],
         plannedItems: draft.plannedItems,
         completedItems: const [],
+        serviceTime: '',
         notes: draft.notes.trim(),
         createdAt: now,
       ),
@@ -2496,6 +2686,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       employeeEmails: order.installationAssignedEmployeeEmails,
       plannedItems: const [],
       completedItems: const [],
+      serviceTime: '',
       notes: report,
       createdAt: createdAt,
     );
@@ -2545,6 +2736,40 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
         left.minute == right.minute;
   }
 
+  Future<String?> _promptInstallationServiceTime({
+    required String initialValue,
+  }) async {
+    final controller = TextEditingController(text: initialValue);
+    final result = await showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: const Text('Tempo de serviço'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: 'Tempo de serviço',
+            hintText: 'Ex.: 2h 30min',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            onPressed: () =>
+                Navigator.of(context).pop(controller.text.trim()),
+            child: const Text('Salvar'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    return result;
+  }
+
   Future<void> _completeInstallation() async {
     final selected = _selectedOrder;
     if (selected == null) {
@@ -2572,9 +2797,31 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       return;
     }
 
+    var serviceTime = activeVisit.serviceTime.trim();
+    if (selected.isServiceOrder && serviceTime.isEmpty) {
+      final informedServiceTime = await _promptInstallationServiceTime(
+        initialValue: serviceTime,
+      );
+      if (informedServiceTime == null || informedServiceTime.trim().isEmpty) {
+        _showAppMessage(
+          'Informe o tempo de serviço para concluir a ordem de serviço.',
+          isError: true,
+        );
+        return;
+      }
+      serviceTime = informedServiceTime.trim();
+    }
+
     final now = DateTime.now();
+    final updatedVisits = List<InstallationVisitLog>.from(
+      selected.installationVisitHistory,
+    );
+    updatedVisits[activeVisitIndex] = activeVisit.copyWith(
+      serviceTime: serviceTime,
+    );
     final previewOrder = selected.copyWith(
       installationWorkflowStatus: InstallationWorkflowStatus.done,
+      installationVisitHistory: updatedVisits,
     );
     final completionReport = _installationReportEntry(
       order: selected,
@@ -2582,35 +2829,72 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       createdAt: now,
       report:
           'Conclusão registrada em ${_formatDateTime(now)}.'
+          '${serviceTime.isEmpty ? '' : ' Tempo de serviço: $serviceTime.'}'
           '${selected.installationNotes.trim().isEmpty ? '' : ' Observações: ${selected.installationNotes.trim()}'}',
     );
-    final updatedOrder = selected.copyWith(
+    final returnedToEstimatingOrder = selected.copyWith(
+      currentStage: WorkflowStage.estimating,
       installationWorkflowStatus: InstallationWorkflowStatus.done,
       installationVisitHistory: [
-        ...selected.installationVisitHistory,
+        ...updatedVisits,
         completionReport,
       ],
-      progress: _effectiveOrderProgress(previewOrder),
-      nextAction: _defaultNextActionForStage(
-        WorkflowStage.installation,
-        previewOrder,
-      ),
-      blocker: _installationWorkflowBlocker(InstallationWorkflowStatus.done),
-      history: Map<WorkflowStage, String>.from(selected.history)
-        ..[WorkflowStage.installation] =
-            'Instalação concluída em ${_formatDateTime(now)}',
     );
+    final updatedOrder = selected.isServiceOrder
+        ? selected.copyWith(
+            currentStage: WorkflowStage.estimating,
+            installationWorkflowStatus: InstallationWorkflowStatus.done,
+            installationVisitHistory: [
+              ...updatedVisits,
+              completionReport,
+            ],
+            progress: _effectiveOrderProgress(returnedToEstimatingOrder),
+            nextAction: 'OS Realizada',
+            blocker: 'Sem bloqueio. Ordem de serviço realizada na Instalação.',
+            history: Map<WorkflowStage, String>.from(selected.history)
+              ..[WorkflowStage.installation] =
+                  'Instalação concluída em ${_formatDateTime(now)}'
+              ..[WorkflowStage.estimating] =
+                  'OS realizada recebida da Instalação em ${_formatDateTime(now)}',
+          )
+        : selected.copyWith(
+            installationWorkflowStatus: InstallationWorkflowStatus.done,
+            installationVisitHistory: [
+              ...updatedVisits,
+              completionReport,
+            ],
+            progress: _effectiveOrderProgress(previewOrder),
+            nextAction: _defaultNextActionForStage(
+              WorkflowStage.installation,
+              previewOrder,
+            ),
+            blocker: _installationWorkflowBlocker(
+              InstallationWorkflowStatus.done,
+            ),
+            history: Map<WorkflowStage, String>.from(selected.history)
+              ..[WorkflowStage.installation] =
+                  'Instalação concluída em ${_formatDateTime(now)}',
+          );
 
     final savedOrder = await _runBusyTask(
       () => _repository.saveOrder(updatedOrder),
       busyMessage: 'Concluindo instalação...',
-      successMessage: 'Instalação concluída.',
+      successMessage: selected.isServiceOrder
+          ? 'Instalação concluída e OS enviada ao Orçamentista.'
+          : 'Instalação concluída.',
       errorPrefix: 'Não foi possível concluir a instalação',
     );
     if (savedOrder == null) {
       return;
     }
 
+    if (selected.isServiceOrder) {
+      setState(() {
+        _selectedViewKey = 'stage:${WorkflowStage.estimating.name}';
+        _stageWorkspaceSubtabs[WorkflowStage.estimating] = 0;
+        _selectedOrderCode = savedOrder.code;
+      });
+    }
     _mergeOrderLocally(savedOrder);
   }
 
@@ -2699,47 +2983,15 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     }
 
     final task = _engineeringChecklistTaskByKey(taskKey);
-    if (task == null || !task.supportsScheduling) {
-      _showAppMessage(
-        'Essa atividade da engenharia não aceita agendamento.',
-        isError: true,
-      );
-      return;
-    }
-
     final existingSchedule = selected.engineeringActivitySchedules[taskKey];
-    final draft = await showDialog<_EngineeringActivityScheduleDraft>(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => _EngineeringActivityScheduleDialog(
-        order: selected,
-        task: task,
-        initialDraft: _EngineeringActivityScheduleDraft(
-          scheduledAt:
-              existingSchedule?.scheduledAt ??
-              DateTime(
-                DateTime.now().year,
-                DateTime.now().month,
-                DateTime.now().day + 1,
-                8,
-              ),
-          notes: existingSchedule?.notes ?? '',
-        ),
-      ),
-    );
-
-    if (draft == null) {
+    final scheduled = await _pickEngineeringActivitySchedule(selected, taskKey);
+    if (scheduled == null || task == null) {
       return;
     }
 
-    final updatedSchedules =
-        Map<String, EngineeringTaskSchedule>.from(
-            selected.engineeringActivitySchedules,
-          )
-          ..[taskKey] = EngineeringTaskSchedule(
-            scheduledAt: draft.scheduledAt,
-            notes: draft.notes.trim(),
-          );
+    final updatedSchedules = Map<String, EngineeringTaskSchedule>.from(
+      selected.engineeringActivitySchedules,
+    )..[taskKey] = scheduled;
     final updatedStatuses = Map<String, EngineeringChecklistStatus>.from(
       selected.engineeringChecklistStatuses,
     );
@@ -2748,7 +3000,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     );
 
     final historyMessage =
-        '${task.label} agendada para ${_formatDateTime(draft.scheduledAt)}';
+        '${task.label} agendada para ${_formatDateTime(scheduled.scheduledAt)}';
     final updatedOrder = selected.copyWith(
       engineeringActivitySchedules: updatedSchedules,
       engineeringChecklistStatuses: updatedStatuses,
@@ -2779,8 +3031,52 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
             : 'Reagendou atividade da engenharia',
         area: 'Engenharia',
         details:
-            '${_displayOrderCode(savedOrder)} • ${task.label} • ${_formatDateTime(draft.scheduledAt)}',
+            '${_displayOrderCode(savedOrder)} • ${task.label} • ${_formatDateTime(scheduled.scheduledAt)}',
       ),
+    );
+  }
+
+  Future<EngineeringTaskSchedule?> _pickEngineeringActivitySchedule(
+    WorkflowOrder order,
+    String taskKey,
+  ) async {
+    final task = _engineeringChecklistTaskByKey(taskKey);
+    if (task == null || !task.supportsScheduling) {
+      _showAppMessage(
+        'Essa atividade da engenharia não aceita agendamento.',
+        isError: true,
+      );
+      return null;
+    }
+
+    final existingSchedule = order.engineeringActivitySchedules[taskKey];
+    final draft = await showDialog<_EngineeringActivityScheduleDraft>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => _EngineeringActivityScheduleDialog(
+        order: order,
+        task: task,
+        initialDraft: _EngineeringActivityScheduleDraft(
+          scheduledAt:
+              existingSchedule?.scheduledAt ??
+              DateTime(
+                DateTime.now().year,
+                DateTime.now().month,
+                DateTime.now().day + 1,
+                8,
+              ),
+          notes: existingSchedule?.notes ?? '',
+        ),
+      ),
+    );
+
+    if (draft == null) {
+      return null;
+    }
+
+    return EngineeringTaskSchedule(
+      scheduledAt: draft.scheduledAt,
+      notes: draft.notes.trim(),
     );
   }
 
@@ -2795,10 +3091,15 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
           _engineeringFlowSnapshot(order).currentTask?.label ??
               'Liberar ordem para montagem',
         WorkflowStage.assembly => switch (order.assemblyWorkflowStatus) {
-          AssemblyWorkflowStatus.waiting => 'Aguardando início da montagem',
+          AssemblyWorkflowStatus.waiting =>
+            _isAssemblyPreparationChecklistComplete(order)
+                ? 'Liberar para montagem'
+                : 'Dar baixa no checklist de preparação',
+          AssemblyWorkflowStatus.released => 'Liberado para montagem',
           AssemblyWorkflowStatus.doing => 'Executar montagem',
+          AssemblyWorkflowStatus.panelTesting => 'Realizar teste de painel',
           AssemblyWorkflowStatus.done =>
-            'Montagem concluída. Liberar para instalação',
+            'Painel concluído. Liberar para instalação',
         },
         WorkflowStage.installation => _installationNextAction(order),
         _ => stage.checklist.first,
@@ -2810,12 +3111,32 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
           'Liberar ordem para montagem';
     }
 
+    if (stage == WorkflowStage.finance) {
+      return _financeContractFlowSnapshot(order).currentTask?.label ??
+          'Fluxo de contrato concluído';
+    }
+
+    if (stage == WorkflowStage.estimating && !order.isServiceOrder) {
+      return _estimatingKanbanFlowSnapshot(order).currentTask?.label ??
+          'Orçamento concluído';
+    }
+
+    if (stage == WorkflowStage.relationship) {
+      return _relationshipKanbanFlowSnapshot(order).currentTask?.label ??
+          'Relacionamento concluído';
+    }
+
     if (stage == WorkflowStage.assembly) {
       return switch (order.assemblyWorkflowStatus) {
-        AssemblyWorkflowStatus.waiting => 'Aguardando início da montagem',
+        AssemblyWorkflowStatus.waiting =>
+          _isAssemblyPreparationChecklistComplete(order)
+              ? 'Liberar para montagem'
+              : 'Dar baixa no checklist de preparação',
+        AssemblyWorkflowStatus.released => 'Liberado para montagem',
         AssemblyWorkflowStatus.doing => 'Executar montagem',
+        AssemblyWorkflowStatus.panelTesting => 'Realizar teste de painel',
         AssemblyWorkflowStatus.done =>
-          'Montagem concluída. Liberar para instalação',
+          'Painel concluído. Liberar para instalação',
       };
     }
 
@@ -2826,12 +3147,22 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     return stage.checklist.first;
   }
 
-  String _assemblyWorkflowBlocker(AssemblyWorkflowStatus status) {
+  String _assemblyWorkflowBlocker(
+    WorkflowOrder order,
+    AssemblyWorkflowStatus status,
+  ) {
     return switch (status) {
-      AssemblyWorkflowStatus.waiting => 'Aguardando início da Montagem.',
+      AssemblyWorkflowStatus.waiting =>
+        _isAssemblyPreparationChecklistComplete(order)
+            ? 'Checklist concluído. Pedido pronto para ser liberado à montagem.'
+            : 'Checklist de preparação inicial pendente antes de liberar para Montagem.',
+      AssemblyWorkflowStatus.released =>
+        'Liberado para Montagem. Aguardando início da execução.',
       AssemblyWorkflowStatus.doing => 'Montagem em andamento.',
+      AssemblyWorkflowStatus.panelTesting =>
+        'Painel em teste. Validar funcionamento antes de concluir.',
       AssemblyWorkflowStatus.done =>
-        'Montagem concluída. Pronto para Instalação.',
+        'Painel concluído. Pronto para Instalação.',
     };
   }
 
@@ -2844,6 +3175,27 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       InstallationWorkflowStatus.doing => 'Instalação em andamento em campo.',
       InstallationWorkflowStatus.done => 'Instalação concluída.',
     };
+  }
+
+  String _financeContractWorkflowBlocker(WorkflowOrder order) {
+    final flowSnapshot = _financeContractFlowSnapshot(order);
+    return flowSnapshot.isComplete
+        ? 'Sem bloqueio. Fluxo de contrato concluído no Financeiro.'
+        : 'Kanban do contrato em ${flowSnapshot.currentTask!.label}.';
+  }
+
+  String _estimatingKanbanWorkflowBlocker(WorkflowOrder order) {
+    final flowSnapshot = _estimatingKanbanFlowSnapshot(order);
+    return flowSnapshot.isComplete
+        ? 'Sem bloqueio. Fluxo do Orçamentista concluído.'
+        : 'Kanban do Orçamentista em ${flowSnapshot.currentTask!.label}.';
+  }
+
+  String _relationshipKanbanWorkflowBlocker(WorkflowOrder order) {
+    final flowSnapshot = _relationshipKanbanFlowSnapshot(order);
+    return flowSnapshot.isComplete
+        ? 'Sem bloqueio. Fluxo de Relacionamento concluído.'
+        : 'Kanban do relacionamento em ${flowSnapshot.currentTask!.label}.';
   }
 
   String _installationNextAction(WorkflowOrder order) {
@@ -2881,23 +3233,26 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
 
   Future<void> _updateAssemblyWorkflowStatus(
     AssemblyWorkflowStatus status, {
+    WorkflowOrder? order,
     List<String>? assignedEmployeeEmails,
   }) async {
-    final selected = _selectedOrder;
-    if (selected == null) {
+    final sourceOrder = order ?? _selectedOrder;
+    if (sourceOrder == null) {
       return;
     }
 
     final now = DateTime.now();
-    final nextAssignedEmployeeEmails = status == AssemblyWorkflowStatus.waiting
+    final nextAssignedEmployeeEmails =
+        status == AssemblyWorkflowStatus.released ||
+            status == AssemblyWorkflowStatus.waiting
         ? const <String>[]
         : assignedEmployeeEmails ??
-              List<String>.from(selected.assemblyAssignedEmployeeEmails);
-    final previewOrder = selected.copyWith(
+              List<String>.from(sourceOrder.assemblyAssignedEmployeeEmails);
+    final previewOrder = sourceOrder.copyWith(
       assemblyWorkflowStatus: status,
       assemblyAssignedEmployeeEmails: nextAssignedEmployeeEmails,
     );
-    final updatedOrder = selected.copyWith(
+    final updatedOrder = sourceOrder.copyWith(
       assemblyWorkflowStatus: status,
       assemblyAssignedEmployeeEmails: nextAssignedEmployeeEmails,
       progress: _effectiveOrderProgress(previewOrder),
@@ -2905,8 +3260,8 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
         WorkflowStage.assembly,
         previewOrder,
       ),
-      blocker: _assemblyWorkflowBlocker(status),
-      history: Map<WorkflowStage, String>.from(selected.history)
+      blocker: _assemblyWorkflowBlocker(previewOrder, status),
+      history: Map<WorkflowStage, String>.from(sourceOrder.history)
         ..[WorkflowStage.assembly] =
             'Montagem marcada como ${status.title.toLowerCase()} em ${_formatDateTime(now)}',
     );
@@ -2930,6 +3285,126 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
             '${_displayOrderCode(savedOrder)} • ${savedOrder.assemblyWorkflowStatus.title}',
       ),
     );
+  }
+
+  Future<bool> _reviewAssemblyPreparationChecklist({
+    WorkflowOrder? order,
+    required bool requireCompletion,
+  }) async {
+    return _reviewAssemblyChecklist(
+      order: order,
+      sections: const [assemblyPreparationChecklistSection],
+      requireCompletion: requireCompletion,
+      dialogTitle: 'Checklist da montagem',
+      busyMessage: 'Salvando checklist da montagem...',
+      successMessage: requireCompletion
+          ? 'Checklist da preparação concluído.'
+          : 'Checklist da preparação atualizado.',
+    );
+  }
+
+  Future<bool> _reviewAssemblyExecutionChecklist({
+    WorkflowOrder? order,
+    required bool requireCompletion,
+  }) async {
+    return _reviewAssemblyChecklist(
+      order: order,
+      sections: assemblyExecutionChecklistSections,
+      requireCompletion: requireCompletion,
+      dialogTitle: 'Checklist de execução da montagem',
+      busyMessage: 'Salvando execução da montagem...',
+      successMessage: requireCompletion
+          ? 'Checklist da execução concluído.'
+          : 'Checklist da execução atualizado.',
+    );
+  }
+
+  Future<bool> _reviewAssemblyChecklist({
+    WorkflowOrder? order,
+    required List<AssemblyChecklistSection> sections,
+    required bool requireCompletion,
+    required String dialogTitle,
+    required String busyMessage,
+    required String successMessage,
+  }) async {
+    final sourceOrder = order ?? _selectedOrder;
+    if (sourceOrder == null) {
+      return false;
+    }
+
+    final sectionItems = sections.expand((section) => section.items).toSet();
+    final checklist = await showDialog<Map<String, bool>>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => _AssemblyChecklistDialog(
+        order: sourceOrder,
+        title: dialogTitle,
+        sections: sections,
+        initialChecklist: {
+          for (final item in sectionItems)
+            item: sourceOrder.assemblyPreparationChecklist[item] == true,
+        },
+        requireCompletion: requireCompletion,
+      ),
+    );
+    if (checklist == null) {
+      return false;
+    }
+
+    final normalizedChecklist = {
+      ...sourceOrder.assemblyPreparationChecklist,
+      for (final item in sectionItems) item: checklist[item] == true,
+    };
+    final previewOrder = sourceOrder.copyWith(
+      assemblyPreparationChecklist: normalizedChecklist,
+    );
+    final updatedOrder = sourceOrder.copyWith(
+      assemblyPreparationChecklist: normalizedChecklist,
+      progress: _effectiveOrderProgress(previewOrder),
+      nextAction: sourceOrder.currentStage == WorkflowStage.assembly
+          ? _defaultNextActionForStage(WorkflowStage.assembly, previewOrder)
+          : sourceOrder.nextAction,
+      blocker: sourceOrder.currentStage == WorkflowStage.assembly
+          ? _assemblyWorkflowBlocker(
+              previewOrder,
+              previewOrder.assemblyWorkflowStatus,
+            )
+          : sourceOrder.blocker,
+    );
+
+    final savedOrder = await _runBusyTask(
+      () => _repository.saveOrder(updatedOrder),
+      busyMessage: busyMessage,
+      successMessage: successMessage,
+      errorPrefix: 'Não foi possível salvar o checklist da montagem',
+    );
+    if (savedOrder == null) {
+      return false;
+    }
+
+    _mergeOrderLocally(savedOrder);
+    return requireCompletion
+        ? sectionItems.every(
+            (item) => savedOrder.assemblyPreparationChecklist[item] == true,
+          )
+        : true;
+  }
+
+  Future<void> _openAssemblyChecklistForSelectedOrder() async {
+    final selected = _selectedOrder;
+    if (selected == null) {
+      return;
+    }
+
+    if (selected.assemblyWorkflowStatus == AssemblyWorkflowStatus.doing ||
+        selected.assemblyWorkflowStatus ==
+            AssemblyWorkflowStatus.panelTesting ||
+        selected.assemblyWorkflowStatus == AssemblyWorkflowStatus.done) {
+      await _reviewAssemblyExecutionChecklist(requireCompletion: false);
+      return;
+    }
+
+    await _reviewAssemblyPreparationChecklist(requireCompletion: false);
   }
 
   Future<List<String>?> _pickAssemblyEmployees(WorkflowOrder order) async {
@@ -3156,12 +3631,23 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       client: primaryOrder.client,
       workName: draft.workName.trim(),
       address: draft.address.trim(),
+      workPostalCode: primaryOrder.workPostalCode,
+      workStreet: primaryOrder.workStreet,
+      workNumber: primaryOrder.workNumber,
+      workNeighborhood: primaryOrder.workNeighborhood,
+      workComplement: primaryOrder.workComplement,
       proposalFileName: draft.proposalFileName.trim(),
       proposalFilePath: draft.proposalFilePath,
       detailFileName: primaryOrder.detailFileName,
       detailFilePath: primaryOrder.detailFilePath,
       materialFileName: '',
       materialFilePath: null,
+      estimatingIncludedVisits: List<EstimatingIncludedVisitEntry>.from(
+        primaryOrder.estimatingIncludedVisits,
+      ),
+      estimatingMaterials: List<EstimatingMaterialEntry>.from(
+        primaryOrder.estimatingMaterials,
+      ),
       consolidatedProposalFileName: '',
       consolidatedProposalFilePath: null,
       contractFileName: '',
@@ -3176,6 +3662,10 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       engineeringDataFilePath: null,
       engineeringChecklistStatuses: const {},
       engineeringActivitySchedules: const {},
+      financeContractStatuses: const {},
+      estimatingKanbanStatuses: const {},
+      relationshipKanbanStatuses: const {},
+      assemblyPreparationChecklist: const {},
       assemblyWorkflowStatus: AssemblyWorkflowStatus.waiting,
       assemblyAssignedEmployeeEmails: const [],
       currentStage: WorkflowStage.customerRegistration,
@@ -3194,7 +3684,25 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       installationAssignedTeam: '',
       installationNotes: '',
       installationVisitHistory: const [],
-      value: 0,
+      value: primaryOrder.value,
+      commercialProposalNumber: primaryOrder.commercialProposalNumber,
+      paymentType: primaryOrder.paymentType,
+      paymentMethod: primaryOrder.paymentMethod,
+      paymentObservation: primaryOrder.paymentObservation,
+      installmentValue: primaryOrder.installmentValue,
+      installmentCount: primaryOrder.installmentCount,
+      paymentDate: primaryOrder.paymentDate,
+      rtValue: primaryOrder.rtValue,
+      integratorValue: primaryOrder.integratorValue,
+      integratorName: primaryOrder.integratorName,
+      architectName: primaryOrder.architectName,
+      proposalServices: primaryOrder.proposalServices,
+      isDanfClient: primaryOrder.isDanfClient,
+      danfInstallerName: primaryOrder.danfInstallerName,
+      canHaveDanfPlate: primaryOrder.canHaveDanfPlate,
+      hasWhatsappGroup: primaryOrder.hasWhatsappGroup,
+      whatsappGroupMembers: primaryOrder.whatsappGroupMembers,
+      whatsappGroupObservation: primaryOrder.whatsappGroupObservation,
       deadline: now.add(const Duration(days: 1)),
       progress: 1 / workflowStages.length,
       nextAction: WorkflowStage.customerRegistration.checklist.first,
@@ -3251,10 +3759,9 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
         return;
       }
 
-      if (!selected.isServiceOrder &&
-          selected.materialFileName.trim().isEmpty) {
+      if (!selected.isServiceOrder && !_hasEstimatingWorksheetData(selected)) {
         _showAppMessage(
-          'Adicione o arquivo Materiais no Orçamentista antes de avançar a etapa.',
+          'Preencha a lista de visitas e materiais no Orçamentista antes de avançar a etapa.',
           isError: true,
         );
         return;
@@ -3286,6 +3793,21 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     if (selected.currentStage == WorkflowStage.assembly) {
       if (direction > 0) {
         if (selected.assemblyWorkflowStatus == AssemblyWorkflowStatus.waiting) {
+          final checklistCompleted = await _reviewAssemblyPreparationChecklist(
+            requireCompletion: true,
+          );
+          if (!checklistCompleted) {
+            _showAppMessage(
+              'Conclua o checklist da montagem antes de liberar o pedido.',
+              isError: true,
+            );
+            return;
+          }
+          await _updateAssemblyWorkflowStatus(AssemblyWorkflowStatus.released);
+          return;
+        }
+        if (selected.assemblyWorkflowStatus ==
+            AssemblyWorkflowStatus.released) {
           final assignedEmployeeEmails = await _pickAssemblyEmployees(selected);
           if (assignedEmployeeEmails == null ||
               assignedEmployeeEmails.isEmpty) {
@@ -3298,7 +3820,24 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
           return;
         }
         if (selected.assemblyWorkflowStatus == AssemblyWorkflowStatus.doing) {
-          await _completeAssemblyAndAdvanceToInstallation();
+          final checklistCompleted = await _reviewAssemblyExecutionChecklist(
+            requireCompletion: true,
+          );
+          if (!checklistCompleted) {
+            _showAppMessage(
+              'Conclua o checklist de execução antes de finalizar a montagem.',
+              isError: true,
+            );
+            return;
+          }
+          await _updateAssemblyWorkflowStatus(
+            AssemblyWorkflowStatus.panelTesting,
+          );
+          return;
+        }
+        if (selected.assemblyWorkflowStatus ==
+            AssemblyWorkflowStatus.panelTesting) {
+          await _updateAssemblyWorkflowStatus(AssemblyWorkflowStatus.done);
           return;
         }
         if (selected.assemblyWorkflowStatus == AssemblyWorkflowStatus.done) {
@@ -3307,10 +3846,22 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
         }
       } else {
         if (selected.assemblyWorkflowStatus == AssemblyWorkflowStatus.done) {
+          await _updateAssemblyWorkflowStatus(
+            AssemblyWorkflowStatus.panelTesting,
+          );
+          return;
+        }
+        if (selected.assemblyWorkflowStatus ==
+            AssemblyWorkflowStatus.panelTesting) {
           await _updateAssemblyWorkflowStatus(AssemblyWorkflowStatus.doing);
           return;
         }
         if (selected.assemblyWorkflowStatus == AssemblyWorkflowStatus.doing) {
+          await _updateAssemblyWorkflowStatus(AssemblyWorkflowStatus.released);
+          return;
+        }
+        if (selected.assemblyWorkflowStatus ==
+            AssemblyWorkflowStatus.released) {
           await _updateAssemblyWorkflowStatus(AssemblyWorkflowStatus.waiting);
           return;
         }
@@ -3443,7 +3994,16 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       progress: _effectiveOrderProgress(previewOrder),
       nextAction: _defaultNextActionForStage(nextStage, previewOrder),
       blocker: nextStage == WorkflowStage.assembly
-          ? _assemblyWorkflowBlocker(AssemblyWorkflowStatus.waiting)
+          ? _assemblyWorkflowBlocker(
+              previewOrder,
+              AssemblyWorkflowStatus.waiting,
+            )
+          : nextStage == WorkflowStage.estimating && !previewOrder.isServiceOrder
+          ? _estimatingKanbanWorkflowBlocker(previewOrder)
+          : nextStage == WorkflowStage.relationship
+          ? _relationshipKanbanWorkflowBlocker(previewOrder)
+          : nextStage == WorkflowStage.finance
+          ? _financeContractWorkflowBlocker(previewOrder)
           : nextStage == WorkflowStage.installation
           ? _installationWorkflowBlocker(InstallationWorkflowStatus.waiting)
           : nextIndex > currentIndex
@@ -3480,6 +4040,16 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
   Future<void> _routeSelectedOrderToStage(WorkflowStage targetStage) async {
     final selected = _selectedOrder;
     if (selected == null) {
+      return;
+    }
+
+    if (selected.currentStage == WorkflowStage.relationship &&
+        !selected.isServiceOrder &&
+        !_relationshipKanbanFlowSnapshot(selected).isComplete) {
+      _showAppMessage(
+        'Conclua o kanban do Relacionamento antes de encaminhar o pedido.',
+        isError: true,
+      );
       return;
     }
 
@@ -3545,7 +4115,17 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       progress: _effectiveOrderProgress(previewOrder),
       nextAction: _defaultNextActionForStage(targetStage, previewOrder),
       blocker: targetStage == WorkflowStage.assembly
-          ? _assemblyWorkflowBlocker(AssemblyWorkflowStatus.waiting)
+          ? _assemblyWorkflowBlocker(
+              previewOrder,
+              AssemblyWorkflowStatus.waiting,
+            )
+          : targetStage == WorkflowStage.estimating &&
+                !previewOrder.isServiceOrder
+          ? _estimatingKanbanWorkflowBlocker(previewOrder)
+          : targetStage == WorkflowStage.relationship
+          ? _relationshipKanbanWorkflowBlocker(previewOrder)
+          : targetStage == WorkflowStage.finance
+          ? _financeContractWorkflowBlocker(previewOrder)
           : targetStage == WorkflowStage.installation
           ? _installationWorkflowBlocker(InstallationWorkflowStatus.waiting)
           : 'Encaminhado para ${targetStage.title.toLowerCase()}.',
@@ -3581,59 +4161,64 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       return;
     }
 
-    try {
-      final result = await FilePicker.platform.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: const ['pdf', 'xls', 'xlsx'],
-        withData: false,
-      );
-
-      if (result == null || result.files.isEmpty) {
-        return;
-      }
-
-      final fileName = result.files.single.name;
-      final now = DateTime.now();
-      final updatedOrder = selected.copyWith(
-        materialFileName: fileName,
-        materialFilePath: result.files.single.path,
-        history: Map<WorkflowStage, String>.from(selected.history)
-          ..[WorkflowStage.estimating] =
-              'Arquivo Materiais anexado em ${_formatDateTime(now)}',
-      );
-
-      final savedOrder = await _runBusyTask(
-        () => _repository.saveOrder(updatedOrder),
-        busyMessage: 'Enviando arquivo Materiais...',
-        successMessage: 'Arquivo Materiais salvo no Firebase.',
-        errorPrefix: 'Não foi possível salvar o arquivo Materiais',
-      );
-      if (savedOrder == null) {
-        return;
-      }
-
-      _mergeOrderLocally(savedOrder);
-      _showDriveUploadConfigurationWarningIfNeeded(savedOrder);
-      unawaited(
-        _appendPlatformLog(
-          action: 'Anexou arquivo Materiais',
-          area: 'Orçamentista',
-          details: '${savedOrder.code} • ${savedOrder.materialFileName}',
-        ),
-      );
-    } on MissingPluginException {
-      _showWorkflowFilePickerUnavailableMessage();
-    } catch (error) {
-      final message = error.toString();
-      if (message.contains('LateInitializationError') ||
-          message.contains('LateError') ||
-          error is UnimplementedError) {
-        _showWorkflowFilePickerUnavailableMessage();
-        return;
-      }
-
-      rethrow;
+    final draft = await showDialog<_EstimatingWorksheetDraft>(
+      context: context,
+      builder: (context) => _EstimatingWorksheetDialog(order: selected),
+    );
+    if (draft == null) {
+      return;
     }
+
+    final now = DateTime.now();
+    final updatedEstimatingStatuses = <String, EngineeringChecklistStatus>{
+      'waiting': EngineeringChecklistStatus.done,
+      'doing': _hasEstimatingWorksheetData(
+            selected.copyWith(
+              estimatingIncludedVisits: draft.includedVisits,
+              estimatingMaterials: draft.materials,
+            ),
+          )
+          ? EngineeringChecklistStatus.done
+          : EngineeringChecklistStatus.notStarted,
+    };
+    final updatedOrder = selected.copyWith(
+      estimatingIncludedVisits: draft.includedVisits,
+      estimatingMaterials: draft.materials,
+      estimatingKanbanStatuses: updatedEstimatingStatuses,
+      history: Map<WorkflowStage, String>.from(selected.history)
+        ..[WorkflowStage.estimating] =
+            'Levantamento do Orçamentista atualizado em ${_formatDateTime(now)}',
+      nextAction:
+          _estimatingKanbanFlowSnapshotFromStatuses(updatedEstimatingStatuses)
+              .currentTask
+              ?.label ??
+          'Orçamento concluído',
+      blocker:
+          _estimatingKanbanFlowSnapshotFromStatuses(updatedEstimatingStatuses)
+              .isComplete
+          ? 'Sem bloqueio. Fluxo do Orçamentista concluído.'
+          : 'Kanban do Orçamentista em ${_estimatingKanbanFlowSnapshotFromStatuses(updatedEstimatingStatuses).currentTask!.label}.',
+    );
+
+    final savedOrder = await _runBusyTask(
+      () => _repository.saveOrder(updatedOrder),
+      busyMessage: 'Salvando levantamento do Orçamentista...',
+      successMessage: 'Levantamento do Orçamentista salvo.',
+      errorPrefix: 'Não foi possível salvar o levantamento do Orçamentista',
+    );
+    if (savedOrder == null) {
+      return;
+    }
+
+    _mergeOrderLocally(savedOrder);
+    unawaited(
+      _appendPlatformLog(
+        action: 'Atualizou levantamento do Orçamentista',
+        area: 'Orçamentista',
+        details:
+            '${savedOrder.code} • ${savedOrder.estimatingMaterials.length} materiais',
+      ),
+    );
   }
 
   Future<void> _attachConsolidatedProposalToSelectedOrder() async {
@@ -3829,15 +4414,242 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     );
   }
 
+  bool _canMoveEngineeringOrderToTarget(
+    WorkflowOrder order,
+    String? targetTaskKey,
+  ) {
+    if (order.currentStage != WorkflowStage.engineering) {
+      return false;
+    }
+
+    final snapshot = _engineeringFlowSnapshot(order);
+    final currentTask = snapshot.currentTask;
+    if (currentTask == null) {
+      return false;
+    }
+
+    final currentIndex = engineeringChecklistTasks.indexWhere(
+      (task) => task.key == currentTask.key,
+    );
+    if (currentIndex == -1) {
+      return false;
+    }
+
+    if (targetTaskKey == null) {
+      return currentIndex == engineeringChecklistTasks.length - 1;
+    }
+
+    final targetIndex = engineeringChecklistTasks.indexWhere(
+      (task) => task.key == targetTaskKey,
+    );
+    if (targetIndex == -1) {
+      return false;
+    }
+
+    return targetIndex == currentIndex + 1;
+  }
+
+  Future<void> _moveEngineeringOrderToKanbanColumn(
+    WorkflowOrder order,
+    String? targetTaskKey,
+  ) async {
+    if (!_canMoveEngineeringOrderToTarget(order, targetTaskKey)) {
+      return;
+    }
+
+    final updatedStatuses = <String, EngineeringChecklistStatus>{};
+    final updatedSchedules = Map<String, EngineeringTaskSchedule>.from(
+      order.engineeringActivitySchedules,
+    );
+    final targetIndex = targetTaskKey == null
+        ? engineeringChecklistTasks.length
+        : engineeringChecklistTasks.indexWhere(
+            (task) => task.key == targetTaskKey,
+          );
+    for (var index = 0; index < engineeringChecklistTasks.length; index++) {
+      updatedStatuses[engineeringChecklistTasks[index].key] =
+          index < targetIndex
+          ? EngineeringChecklistStatus.done
+          : EngineeringChecklistStatus.notStarted;
+    }
+
+    final targetTask = targetTaskKey == null
+        ? null
+        : _engineeringChecklistTaskByKey(targetTaskKey);
+    EngineeringTaskSchedule? scheduledTarget;
+    if (targetTask != null && targetTask.supportsScheduling) {
+      scheduledTarget = await _pickEngineeringActivitySchedule(
+        order,
+        targetTask.key,
+      );
+      if (scheduledTarget == null) {
+        return;
+      }
+      updatedSchedules[targetTask.key] = scheduledTarget;
+    }
+
+    final flowSnapshot = _engineeringFlowSnapshotFromStatuses(updatedStatuses);
+    final now = DateTime.now();
+    final historyMessage = flowSnapshot.isComplete
+        ? 'Kanban da engenharia concluído em ${_formatDateTime(now)}'
+        : scheduledTarget != null
+        ? '${flowSnapshot.currentTask!.label} agendada para ${_formatDateTime(scheduledTarget.scheduledAt)}'
+        : 'Kanban da engenharia movido para ${flowSnapshot.currentTask!.label} em ${_formatDateTime(now)}';
+    final updatedOrder = order.copyWith(
+      engineeringChecklistStatuses: updatedStatuses,
+      engineeringActivitySchedules: updatedSchedules,
+      progress: _effectiveOrderProgress(
+        order.copyWith(engineeringChecklistStatuses: updatedStatuses),
+      ),
+      nextAction: scheduledTarget != null
+          ? historyMessage
+          : (flowSnapshot.currentTask?.label ?? 'Liberar ordem para montagem'),
+      blocker: flowSnapshot.isComplete
+          ? 'Sem bloqueio. Engenharia concluída e pronta para Montagem.'
+          : scheduledTarget != null
+          ? 'Aguardando execução de atividade agendada pela Engenharia.'
+          : 'Kanban da engenharia em ${flowSnapshot.currentTask!.label}.',
+      history: Map<WorkflowStage, String>.from(order.history)
+        ..[WorkflowStage.engineering] = historyMessage,
+    );
+
+    final savedOrder = await _runBusyTask(
+      () => _repository.saveOrder(updatedOrder),
+      busyMessage: 'Movendo card da engenharia...',
+      successMessage: 'Kanban da engenharia atualizado.',
+      errorPrefix: 'Não foi possível mover o card da engenharia',
+    );
+    if (savedOrder == null) {
+      return;
+    }
+
+    _mergeOrderLocally(savedOrder);
+    if (_selectedOrderCode == savedOrder.code) {
+      setState(() {
+        _selectedOrderCode = savedOrder.code;
+      });
+    }
+    unawaited(
+      _appendPlatformLog(
+        action: 'Moveu card no kanban da engenharia',
+        area: 'Engenharia',
+        details:
+            '${_displayOrderCode(savedOrder)} • ${flowSnapshot.currentTask?.label ?? 'Concluído'}',
+      ),
+    );
+  }
+
+  bool _canMoveAssemblyOrderToTarget(
+    WorkflowOrder order,
+    AssemblyWorkflowStatus targetStatus,
+  ) {
+    if (order.currentStage != WorkflowStage.assembly) {
+      return false;
+    }
+
+    final workflow = AssemblyWorkflowStatus.values;
+    final currentIndex = workflow.indexOf(order.assemblyWorkflowStatus);
+    final targetIndex = workflow.indexOf(targetStatus);
+    if (currentIndex == -1 || targetIndex == -1) {
+      return false;
+    }
+
+    return targetIndex == currentIndex + 1;
+  }
+
+  Future<void> _moveAssemblyOrderToKanbanColumn(
+    WorkflowOrder order,
+    AssemblyWorkflowStatus targetStatus,
+  ) async {
+    if (!_canMoveAssemblyOrderToTarget(order, targetStatus)) {
+      return;
+    }
+
+    if (targetStatus == AssemblyWorkflowStatus.released) {
+      final checklistCompleted = await _reviewAssemblyPreparationChecklist(
+        order: order,
+        requireCompletion: true,
+      );
+      if (!checklistCompleted) {
+        _showAppMessage(
+          'Conclua o checklist da montagem antes de liberar o pedido.',
+          isError: true,
+        );
+        return;
+      }
+      await _updateAssemblyWorkflowStatus(
+        AssemblyWorkflowStatus.released,
+        order: order,
+      );
+      return;
+    }
+
+    if (targetStatus == AssemblyWorkflowStatus.doing) {
+      final assignedEmployeeEmails = await _pickAssemblyEmployees(order);
+      if (assignedEmployeeEmails == null || assignedEmployeeEmails.isEmpty) {
+        return;
+      }
+      await _updateAssemblyWorkflowStatus(
+        AssemblyWorkflowStatus.doing,
+        order: order,
+        assignedEmployeeEmails: assignedEmployeeEmails,
+      );
+      return;
+    }
+
+    if (targetStatus == AssemblyWorkflowStatus.panelTesting) {
+      final checklistCompleted = await _reviewAssemblyExecutionChecklist(
+        order: order,
+        requireCompletion: true,
+      );
+      if (!checklistCompleted) {
+        _showAppMessage(
+          'Conclua o checklist de execução antes de enviar para teste.',
+          isError: true,
+        );
+        return;
+      }
+      await _updateAssemblyWorkflowStatus(
+        AssemblyWorkflowStatus.panelTesting,
+        order: order,
+      );
+      return;
+    }
+
+    if (targetStatus == AssemblyWorkflowStatus.done) {
+      await _updateAssemblyWorkflowStatus(
+        AssemblyWorkflowStatus.done,
+        order: order,
+      );
+    }
+  }
+
   Future<void> _attachContractToSelectedOrder() async {
     await _attachFileToSelectedOrder(
       logAction: 'Anexou contrato',
       logArea: 'Financeiro',
       onUpdate: (selected, file) {
         final now = DateTime.now();
+        final updatedStatuses = Map<String, EngineeringChecklistStatus>.from(
+          selected.financeContractStatuses,
+        )
+          ..['waiting'] = EngineeringChecklistStatus.done
+          ..['generate_contract'] = EngineeringChecklistStatus.done;
+        final flowSnapshot = _financeContractFlowSnapshotFromStatuses(
+          updatedStatuses,
+        );
         return selected.copyWith(
           contractFileName: file.name,
           contractFilePath: file.path,
+          financeContractStatuses: updatedStatuses,
+          progress: _effectiveOrderProgress(
+            selected.copyWith(financeContractStatuses: updatedStatuses),
+          ),
+          nextAction:
+              flowSnapshot.currentTask?.label ?? 'Contrato pronto para seguir',
+          blocker: flowSnapshot.isComplete
+              ? 'Sem bloqueio. Fluxo de contrato concluído no Financeiro.'
+              : 'Kanban do contrato em ${flowSnapshot.currentTask!.label}.',
           history: Map<WorkflowStage, String>.from(selected.history)
             ..[WorkflowStage.finance] =
                 'Contrato anexado em ${_formatDateTime(now)}',
@@ -3876,7 +4688,45 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
 
     final approved = !selected.financeClientApproved;
     final now = DateTime.now();
+    final actorLabel = _currentOrderOwnerLabel();
+    final targetStage = approved
+        ? WorkflowStage.relationship
+        : selected.currentStage;
+    final actorEmail = (_currentUserEmail ?? _currentWorkspaceProfile.email)
+        .trim()
+        .toLowerCase();
+    final relationshipMentionEmails = approved
+        ? _workspaceProfiles
+              .where(
+                (profile) =>
+                    profile.allowedStages.contains(WorkflowStage.relationship),
+              )
+              .map((profile) => profile.email.trim().toLowerCase())
+              .where((email) => email.isNotEmpty && email != actorEmail)
+              .toSet()
+              .toList(growable: false)
+        : const <String>[];
+    final approvalNotification = approved
+        ? OrderConversationMessage(
+            id: DateTime.now().microsecondsSinceEpoch.toString(),
+            authorEmail: actorEmail,
+            authorName: actorLabel.isEmpty ? 'Sistema' : actorLabel,
+            message: 'Ordem de serviço aprovada.',
+            createdAt: now,
+            mentionedUserEmails: relationshipMentionEmails,
+            readByUserEmails: actorEmail.isEmpty ? const [] : [actorEmail],
+          )
+        : null;
+    final updatedHistory = Map<WorkflowStage, String>.from(selected.history)
+      ..[WorkflowStage.finance] = approved
+          ? 'Cliente aprovado no Financeiro em ${_formatDateTime(now)}'
+          : 'Aprovação do cliente removida em ${_formatDateTime(now)}';
+    if (approved) {
+      updatedHistory[WorkflowStage.relationship] =
+          'Retornou do Financeiro em ${_formatDateTime(now)}';
+    }
     final updatedOrder = selected.copyWith(
+      currentStage: targetStage,
       financeClientApproved: approved,
       nextAction: approved
           ? 'Retornar ao Relacionamento para encaminhamento'
@@ -3884,10 +4734,24 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       blocker: approved
           ? 'Sem bloqueio. Cliente aprovado no Financeiro.'
           : 'Aguardando confirmação do cliente no Financeiro.',
-      history: Map<WorkflowStage, String>.from(selected.history)
-        ..[WorkflowStage.finance] = approved
-            ? 'Cliente aprovado no Financeiro em ${_formatDateTime(now)}'
-            : 'Aprovação do cliente removida em ${_formatDateTime(now)}',
+      owner: approved ? actorLabel : selected.owner,
+      stageOwners: approved
+          ? _updatedStageOwnersForAction(
+              selected,
+              WorkflowStage.finance,
+              actorLabel,
+            )
+          : selected.stageOwners,
+      progress: _effectiveOrderProgress(
+        selected.copyWith(
+          currentStage: targetStage,
+          financeClientApproved: approved,
+        ),
+      ),
+      conversationMessages: approvalNotification == null
+          ? selected.conversationMessages
+          : [...selected.conversationMessages, approvalNotification],
+      history: updatedHistory,
     );
 
     final savedOrder = await _runBusyTask(
@@ -3904,6 +4768,11 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       return;
     }
 
+    if (approved) {
+      setState(() {
+        _selectedViewKey = 'stage:${WorkflowStage.relationship.name}';
+      });
+    }
     _mergeOrderLocally(savedOrder);
     unawaited(
       _appendPlatformLog(
@@ -3912,6 +4781,381 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
             : 'Removeu aprovação da OS',
         area: 'Financeiro',
         details: '${savedOrder.code} • ${savedOrder.client.name}',
+      ),
+    );
+  }
+
+  Future<void> _updateFinanceContractStatus(
+    String taskKey,
+    EngineeringChecklistStatus status,
+  ) async {
+    final selected = _selectedOrder;
+    if (selected == null || selected.currentStage != WorkflowStage.finance) {
+      return;
+    }
+
+    final updatedStatuses = Map<String, EngineeringChecklistStatus>.from(
+      selected.financeContractStatuses,
+    );
+    final taskIndex = financeContractTasks.indexWhere(
+      (task) => task.key == taskKey,
+    );
+    if (taskIndex == -1) {
+      return;
+    }
+
+    final task = financeContractTasks[taskIndex];
+    if (status == EngineeringChecklistStatus.done) {
+      updatedStatuses[taskKey] = EngineeringChecklistStatus.done;
+    } else {
+      for (var index = taskIndex; index < financeContractTasks.length; index++) {
+        updatedStatuses[financeContractTasks[index].key] =
+            EngineeringChecklistStatus.notStarted;
+      }
+    }
+
+    final flowSnapshot = _financeContractFlowSnapshotFromStatuses(
+      updatedStatuses,
+    );
+    final now = DateTime.now();
+    final historyMessage = status == EngineeringChecklistStatus.done
+        ? flowSnapshot.isComplete
+              ? 'Kanban do contrato concluído em ${_formatDateTime(now)}'
+              : '${task.label} concluída. Próxima etapa: ${flowSnapshot.currentTask!.label}'
+        : '${task.label} reaberta em ${_formatDateTime(now)}';
+    final nextStage = flowSnapshot.isComplete
+        ? WorkflowStage.relationship
+        : selected.currentStage;
+    final previewOrder = selected.copyWith(
+      currentStage: nextStage,
+      financeContractStatuses: updatedStatuses,
+    );
+    final updatedHistory = Map<WorkflowStage, String>.from(selected.history)
+      ..[WorkflowStage.finance] = historyMessage;
+    if (flowSnapshot.isComplete) {
+      updatedHistory[WorkflowStage.relationship] =
+          'Recebido do Financeiro em ${_formatDateTime(now)}';
+    }
+    final updatedOrder = selected.copyWith(
+      currentStage: nextStage,
+      financeContractStatuses: updatedStatuses,
+      progress: _effectiveOrderProgress(previewOrder),
+      nextAction: flowSnapshot.isComplete
+          ? _defaultNextActionForStage(WorkflowStage.relationship, previewOrder)
+          : (flowSnapshot.currentTask?.label ?? 'Fluxo de contrato concluído'),
+      blocker: flowSnapshot.isComplete
+          ? _relationshipKanbanWorkflowBlocker(previewOrder)
+          : 'Kanban do contrato em ${flowSnapshot.currentTask!.label}.',
+      history: updatedHistory,
+    );
+
+    final savedOrder = await _runBusyTask(
+      () => _repository.saveOrder(updatedOrder),
+      busyMessage: 'Atualizando kanban do contrato...',
+      successMessage: 'Kanban do contrato atualizado.',
+      errorPrefix: 'Não foi possível atualizar o kanban do contrato',
+    );
+    if (savedOrder == null) {
+      return;
+    }
+
+    _mergeOrderLocally(savedOrder);
+    if (flowSnapshot.isComplete) {
+      setState(() {
+        _selectedViewKey = 'stage:${WorkflowStage.relationship.name}';
+        _stageWorkspaceSubtabs[WorkflowStage.relationship] = 0;
+        _selectedOrderCode = savedOrder.code;
+      });
+    }
+    unawaited(
+      _appendPlatformLog(
+        action: status == EngineeringChecklistStatus.done
+            ? 'Avançou kanban do contrato'
+            : 'Reabriu etapa do contrato',
+        area: 'Financeiro',
+        details:
+            '${_displayOrderCode(savedOrder)} • ${task.label}${status == EngineeringChecklistStatus.done ? ' concluída' : ' reaberta'}',
+      ),
+    );
+  }
+
+  Future<void> _updateRelationshipKanbanStatus(
+    String taskKey,
+    EngineeringChecklistStatus status,
+  ) async {
+    final selected = _selectedOrder;
+    if (selected == null || selected.currentStage != WorkflowStage.relationship) {
+      return;
+    }
+
+    final updatedStatuses = Map<String, EngineeringChecklistStatus>.from(
+      selected.relationshipKanbanStatuses,
+    );
+    final taskIndex = relationshipKanbanTasks.indexWhere(
+      (task) => task.key == taskKey,
+    );
+    if (taskIndex == -1) {
+      return;
+    }
+
+    final task = relationshipKanbanTasks[taskIndex];
+    if (status == EngineeringChecklistStatus.done) {
+      updatedStatuses[taskKey] = EngineeringChecklistStatus.done;
+    } else {
+      for (
+        var index = taskIndex;
+        index < relationshipKanbanTasks.length;
+        index++
+      ) {
+        updatedStatuses[relationshipKanbanTasks[index].key] =
+            EngineeringChecklistStatus.notStarted;
+      }
+    }
+
+    final flowSnapshot = _relationshipKanbanFlowSnapshotFromStatuses(
+      updatedStatuses,
+    );
+    final now = DateTime.now();
+    final historyMessage = status == EngineeringChecklistStatus.done
+        ? flowSnapshot.isComplete
+              ? 'Kanban do relacionamento concluído em ${_formatDateTime(now)}'
+              : '${task.label} concluída. Próxima etapa: ${flowSnapshot.currentTask!.label}'
+        : '${task.label} reaberta em ${_formatDateTime(now)}';
+    final updatedOrder = selected.copyWith(
+      relationshipKanbanStatuses: updatedStatuses,
+      progress: _effectiveOrderProgress(
+        selected.copyWith(relationshipKanbanStatuses: updatedStatuses),
+      ),
+      nextAction:
+          flowSnapshot.currentTask?.label ?? 'Relacionamento concluído',
+      blocker: flowSnapshot.isComplete
+          ? 'Sem bloqueio. Fluxo de Relacionamento concluído.'
+          : 'Kanban do relacionamento em ${flowSnapshot.currentTask!.label}.',
+      history: Map<WorkflowStage, String>.from(selected.history)
+        ..[WorkflowStage.relationship] = historyMessage,
+    );
+
+    final savedOrder = await _runBusyTask(
+      () => _repository.saveOrder(updatedOrder),
+      busyMessage: 'Atualizando kanban do relacionamento...',
+      successMessage: 'Kanban do relacionamento atualizado.',
+      errorPrefix: 'Não foi possível atualizar o kanban do relacionamento',
+    );
+    if (savedOrder == null) {
+      return;
+    }
+
+    _mergeOrderLocally(savedOrder);
+    unawaited(
+      _appendPlatformLog(
+        action: status == EngineeringChecklistStatus.done
+            ? 'Avançou kanban do relacionamento'
+            : 'Reabriu etapa do relacionamento',
+        area: 'Relacionamento',
+        details:
+            '${_displayOrderCode(savedOrder)} • ${task.label}${status == EngineeringChecklistStatus.done ? ' concluída' : ' reaberta'}',
+      ),
+    );
+  }
+
+  bool _canMoveFinanceOrderToTarget(
+    WorkflowOrder order,
+    String? targetTaskKey,
+  ) {
+    if (order.currentStage != WorkflowStage.finance || order.isServiceOrder) {
+      return false;
+    }
+
+    final snapshot = _financeContractFlowSnapshot(order);
+    final currentTask = snapshot.currentTask;
+    if (currentTask == null) {
+      return false;
+    }
+
+    final currentIndex = financeContractTasks.indexWhere(
+      (task) => task.key == currentTask.key,
+    );
+    if (currentIndex == -1) {
+      return false;
+    }
+
+    if (targetTaskKey == null) {
+      return currentIndex == financeContractTasks.length - 1;
+    }
+
+    final targetIndex = financeContractTasks.indexWhere(
+      (task) => task.key == targetTaskKey,
+    );
+    if (targetIndex == -1) {
+      return false;
+    }
+
+    return targetIndex == currentIndex + 1;
+  }
+
+  Future<void> _moveFinanceOrderToKanbanColumn(
+    WorkflowOrder order,
+    String? targetTaskKey,
+  ) async {
+    if (!_canMoveFinanceOrderToTarget(order, targetTaskKey)) {
+      return;
+    }
+
+    final updatedStatuses = <String, EngineeringChecklistStatus>{};
+    final targetIndex = targetTaskKey == null
+        ? financeContractTasks.length
+        : financeContractTasks.indexWhere((task) => task.key == targetTaskKey);
+    for (var index = 0; index < financeContractTasks.length; index++) {
+      updatedStatuses[financeContractTasks[index].key] =
+          index < targetIndex
+          ? EngineeringChecklistStatus.done
+          : EngineeringChecklistStatus.notStarted;
+    }
+
+    final flowSnapshot = _financeContractFlowSnapshotFromStatuses(
+      updatedStatuses,
+    );
+    final now = DateTime.now();
+    final historyMessage = flowSnapshot.isComplete
+        ? 'Kanban do contrato concluído em ${_formatDateTime(now)}'
+        : 'Kanban do contrato movido para ${flowSnapshot.currentTask!.label} em ${_formatDateTime(now)}';
+    final nextStage = flowSnapshot.isComplete
+        ? WorkflowStage.relationship
+        : order.currentStage;
+    final previewOrder = order.copyWith(
+      currentStage: nextStage,
+      financeContractStatuses: updatedStatuses,
+    );
+    final updatedHistory = Map<WorkflowStage, String>.from(order.history)
+      ..[WorkflowStage.finance] = historyMessage;
+    if (flowSnapshot.isComplete) {
+      updatedHistory[WorkflowStage.relationship] =
+          'Recebido do Financeiro em ${_formatDateTime(now)}';
+    }
+    final updatedOrder = order.copyWith(
+      currentStage: nextStage,
+      financeContractStatuses: updatedStatuses,
+      progress: _effectiveOrderProgress(previewOrder),
+      nextAction: flowSnapshot.isComplete
+          ? _defaultNextActionForStage(WorkflowStage.relationship, previewOrder)
+          : (flowSnapshot.currentTask?.label ?? 'Fluxo de contrato concluído'),
+      blocker: flowSnapshot.isComplete
+          ? _relationshipKanbanWorkflowBlocker(previewOrder)
+          : 'Kanban do contrato em ${flowSnapshot.currentTask!.label}.',
+      history: updatedHistory,
+    );
+
+    final savedOrder = await _runBusyTask(
+      () => _repository.saveOrder(updatedOrder),
+      busyMessage: 'Movendo card do Financeiro...',
+      successMessage: 'Kanban do Financeiro atualizado.',
+      errorPrefix: 'Não foi possível mover o card do Financeiro',
+    );
+    if (savedOrder == null) {
+      return;
+    }
+
+    _mergeOrderLocally(savedOrder);
+    if (_selectedOrderCode == savedOrder.code && flowSnapshot.isComplete) {
+      setState(() {
+        _selectedViewKey = 'stage:${WorkflowStage.relationship.name}';
+        _stageWorkspaceSubtabs[WorkflowStage.relationship] = 0;
+        _selectedOrderCode = savedOrder.code;
+      });
+    }
+    unawaited(
+      _appendPlatformLog(
+        action: 'Moveu card no kanban do Financeiro',
+        area: 'Financeiro',
+        details:
+            '${_displayOrderCode(savedOrder)} • ${flowSnapshot.currentTask?.label ?? 'Concluído'}',
+      ),
+    );
+  }
+
+  bool _canMoveRelationshipOrderToTarget(
+    WorkflowOrder order,
+    String targetTaskKey,
+  ) {
+    if (order.currentStage != WorkflowStage.relationship || order.isServiceOrder) {
+      return false;
+    }
+
+    final snapshot = _relationshipKanbanFlowSnapshot(order);
+    final currentTask = snapshot.currentTask;
+    if (currentTask == null) {
+      return false;
+    }
+
+    final currentIndex = relationshipKanbanTasks.indexWhere(
+      (task) => task.key == currentTask.key,
+    );
+    final targetIndex = relationshipKanbanTasks.indexWhere(
+      (task) => task.key == targetTaskKey,
+    );
+    if (currentIndex == -1 || targetIndex == -1) {
+      return false;
+    }
+
+    return targetIndex == currentIndex + 1;
+  }
+
+  Future<void> _moveRelationshipOrderToKanbanColumn(
+    WorkflowOrder order,
+    String targetTaskKey,
+  ) async {
+    if (!_canMoveRelationshipOrderToTarget(order, targetTaskKey)) {
+      return;
+    }
+
+    final updatedStatuses = <String, EngineeringChecklistStatus>{};
+    final targetIndex = relationshipKanbanTasks.indexWhere(
+      (task) => task.key == targetTaskKey,
+    );
+    for (var index = 0; index < relationshipKanbanTasks.length; index++) {
+      updatedStatuses[relationshipKanbanTasks[index].key] =
+          index < targetIndex
+          ? EngineeringChecklistStatus.done
+          : EngineeringChecklistStatus.notStarted;
+    }
+
+    final flowSnapshot = _relationshipKanbanFlowSnapshotFromStatuses(
+      updatedStatuses,
+    );
+    final now = DateTime.now();
+    final historyMessage =
+        'Kanban do relacionamento movido para ${flowSnapshot.currentTask!.label} em ${_formatDateTime(now)}';
+    final updatedOrder = order.copyWith(
+      relationshipKanbanStatuses: updatedStatuses,
+      progress: _effectiveOrderProgress(
+        order.copyWith(relationshipKanbanStatuses: updatedStatuses),
+      ),
+      nextAction:
+          flowSnapshot.currentTask?.label ?? 'Relacionamento concluído',
+      blocker: flowSnapshot.isComplete
+          ? 'Sem bloqueio. Fluxo de Relacionamento concluído.'
+          : 'Kanban do relacionamento em ${flowSnapshot.currentTask!.label}.',
+      history: Map<WorkflowStage, String>.from(order.history)
+        ..[WorkflowStage.relationship] = historyMessage,
+    );
+
+    final savedOrder = await _runBusyTask(
+      () => _repository.saveOrder(updatedOrder),
+      busyMessage: 'Movendo card do Relacionamento...',
+      successMessage: 'Kanban do Relacionamento atualizado.',
+      errorPrefix: 'Não foi possível mover o card do Relacionamento',
+    );
+    if (savedOrder == null) {
+      return;
+    }
+
+    _mergeOrderLocally(savedOrder);
+    unawaited(
+      _appendPlatformLog(
+        action: 'Moveu card no kanban do Relacionamento',
+        area: 'Relacionamento',
+        details:
+            '${_displayOrderCode(savedOrder)} • ${flowSnapshot.currentTask?.label ?? 'Concluído'}',
       ),
     );
   }
@@ -4058,16 +5302,10 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
         order.client.name.toLowerCase().contains(query) ||
         order.workName.toLowerCase().contains(query) ||
         order.client.phone.toLowerCase().contains(query) ||
+        order.client.postalCode.toLowerCase().contains(query) ||
+        order.client.street.toLowerCase().contains(query) ||
+        order.client.neighborhood.toLowerCase().contains(query) ||
         order.address.toLowerCase().contains(query);
-  }
-
-  String _cityFromAddress(String address) {
-    final parts = address.split(',');
-    if (parts.length >= 2) {
-      return '${parts[parts.length - 2].trim()}, ${parts.last.trim()}';
-    }
-
-    return address;
   }
 
   String _currentOrderOwnerLabel() {
@@ -7243,6 +8481,7 @@ class _StageWorkspaceSection extends StatelessWidget {
     required this.onAdvanceOrder,
     required this.onReturnOrder,
     required this.onSendToEngineering,
+    required this.onSendToAssembly,
     required this.onSendToInstallation,
     this.onAttachMaterials,
     this.onAttachElectricalProject,
@@ -7255,8 +8494,19 @@ class _StageWorkspaceSection extends StatelessWidget {
     this.onToggleFinanceClientApproval,
     this.onScheduleInstallation,
     this.onToggleInstallationExecutionItem,
+    this.onOpenAssemblyPreparationChecklist,
     this.onScheduleEngineeringActivity,
     this.onUpdateEngineeringChecklistStatus,
+    this.onUpdateFinanceContractStatus,
+    this.onUpdateRelationshipKanbanStatus,
+    this.onMoveAssemblyKanbanOrder,
+    this.canAcceptAssemblyKanbanDrop,
+    this.onMoveEngineeringKanbanOrder,
+    this.canAcceptEngineeringKanbanDrop,
+    this.onMoveFinanceKanbanOrder,
+    this.canAcceptFinanceKanbanDrop,
+    this.onMoveRelationshipKanbanOrder,
+    this.canAcceptRelationshipKanbanDrop,
     this.onCreateServiceOrder,
     this.onCreateAdditionalProposal,
     this.onCreateOrder,
@@ -7288,6 +8538,7 @@ class _StageWorkspaceSection extends StatelessWidget {
   final Future<void> Function() onAdvanceOrder;
   final Future<void> Function() onReturnOrder;
   final Future<void> Function() onSendToEngineering;
+  final Future<void> Function() onSendToAssembly;
   final Future<void> Function() onSendToInstallation;
   final Future<void> Function()? onAttachMaterials;
   final Future<void> Function()? onAttachElectricalProject;
@@ -7301,12 +8552,42 @@ class _StageWorkspaceSection extends StatelessWidget {
   final Future<void> Function()? onScheduleInstallation;
   final Future<void> Function(int visitIndex, String item)?
   onToggleInstallationExecutionItem;
+  final Future<void> Function()? onOpenAssemblyPreparationChecklist;
   final Future<void> Function(String taskKey)? onScheduleEngineeringActivity;
   final Future<void> Function(
     String taskKey,
     EngineeringChecklistStatus status,
   )?
   onUpdateEngineeringChecklistStatus;
+  final Future<void> Function(
+    String taskKey,
+    EngineeringChecklistStatus status,
+  )?
+  onUpdateFinanceContractStatus;
+  final Future<void> Function(
+    String taskKey,
+    EngineeringChecklistStatus status,
+  )?
+  onUpdateRelationshipKanbanStatus;
+  final Future<void> Function(
+    WorkflowOrder order,
+    AssemblyWorkflowStatus target,
+  )?
+  onMoveAssemblyKanbanOrder;
+  final bool Function(WorkflowOrder order, AssemblyWorkflowStatus target)?
+  canAcceptAssemblyKanbanDrop;
+  final Future<void> Function(WorkflowOrder order, String? targetTaskKey)?
+  onMoveEngineeringKanbanOrder;
+  final bool Function(WorkflowOrder order, String? targetTaskKey)?
+  canAcceptEngineeringKanbanDrop;
+  final Future<void> Function(WorkflowOrder order, String? targetTaskKey)?
+  onMoveFinanceKanbanOrder;
+  final bool Function(WorkflowOrder order, String? targetTaskKey)?
+  canAcceptFinanceKanbanDrop;
+  final Future<void> Function(WorkflowOrder order, String targetTaskKey)?
+  onMoveRelationshipKanbanOrder;
+  final bool Function(WorkflowOrder order, String targetTaskKey)?
+  canAcceptRelationshipKanbanDrop;
   final Future<void> Function()? onCreateServiceOrder;
   final Future<void> Function()? onCreateAdditionalProposal;
   final Future<void> Function()? onCreateOrder;
@@ -7442,7 +8723,31 @@ class _StageWorkspaceSection extends StatelessWidget {
         : completedOwnerEntries
               .where((entry) => entry.key == currentProfileOwnerLabel)
               .toList(growable: false);
+    final estimatingCompletedHistoryOrders = <WorkflowOrder>[];
     final assemblyCompletedHistoryOrders = <WorkflowOrder>[];
+    final relationshipCompletedHistoryOrders = <WorkflowOrder>[];
+    final financeApprovedServiceOrdersHistory = <WorkflowOrder>[];
+    final relationshipServiceOrderSource = orders
+        .where((order) => order.isServiceOrder)
+        .toList(growable: false);
+    final installationServiceOrderSource = orders
+        .where(
+          (order) =>
+              order.isServiceOrder &&
+              workflowStages.indexOf(order.currentStage) >=
+                  workflowStages.indexOf(WorkflowStage.installation),
+        )
+        .toList(growable: false);
+    if (stage == WorkflowStage.estimating) {
+      final seenCodes = <String>{};
+      for (final entry in visibleCompletedOwnerEntries) {
+        for (final order in entry.value) {
+          if (seenCodes.add(order.code)) {
+            estimatingCompletedHistoryOrders.add(order);
+          }
+        }
+      }
+    }
     if (stage == WorkflowStage.assembly) {
       final seenCodes = <String>{};
       for (final order in currentKanbanOrders) {
@@ -7461,6 +8766,211 @@ class _StageWorkspaceSection extends StatelessWidget {
         }
       }
     }
+    if (stage == WorkflowStage.relationship) {
+      final seenCodes = <String>{};
+      for (final entry in visibleCompletedOwnerEntries) {
+        for (final order in entry.value) {
+          if (seenCodes.add(order.code)) {
+            relationshipCompletedHistoryOrders.add(order);
+          }
+        }
+      }
+    }
+    if (stage == WorkflowStage.finance) {
+      final seenCodes = <String>{};
+      for (final order in currentKanbanOrders) {
+        if (!order.isServiceOrder || !order.financeClientApproved) {
+          continue;
+        }
+        if (seenCodes.add(order.code)) {
+          financeApprovedServiceOrdersHistory.add(order);
+        }
+      }
+      for (final entry in visibleCompletedOwnerEntries) {
+        for (final order in entry.value) {
+          if (!order.isServiceOrder || !order.financeClientApproved) {
+            continue;
+          }
+          if (seenCodes.add(order.code)) {
+            financeApprovedServiceOrdersHistory.add(order);
+          }
+        }
+      }
+    }
+    final financeServiceOrderKanbanColumns =
+        stage == WorkflowStage.finance && showingWorkQueue
+        ? <_OrdersKanbanColumnData>[
+            _OrdersKanbanColumnData(
+              title: 'Aguardando aprovação',
+              subtitle:
+                  '${currentKanbanOrders.where((order) => order.isServiceOrder && !order.financeClientApproved).length} ordens de serviço',
+              accent: const Color(0xFFB45309),
+              icon: Icons.hourglass_bottom_rounded,
+              emptyMessage:
+                  'Nenhuma ordem de serviço aguardando aprovação no Financeiro.',
+              orders: currentKanbanOrders
+                  .where(
+                    (order) =>
+                        order.isServiceOrder && !order.financeClientApproved,
+                  )
+                  .toList(growable: false),
+            ),
+            _OrdersKanbanColumnData(
+              title: 'Aprovadas',
+              subtitle:
+                  '${financeApprovedServiceOrdersHistory.length} ordens de serviço',
+              accent: const Color(0xFF15803D),
+              icon: Icons.task_alt_rounded,
+              emptyMessage:
+                  'Nenhuma ordem de serviço aprovada no Financeiro.',
+              orders: financeApprovedServiceOrdersHistory,
+            ),
+          ]
+        : const <_OrdersKanbanColumnData>[];
+    final estimatingServiceOrderKanbanColumns =
+        stage == WorkflowStage.estimating && showingWorkQueue
+        ? <_OrdersKanbanColumnData>[
+            _OrdersKanbanColumnData(
+              title: 'Aguardando',
+              subtitle:
+                  '${relationshipServiceOrderSource.where((order) => !order.financeClientApproved && workflowStages.indexOf(order.currentStage) <= workflowStages.indexOf(WorkflowStage.finance)).length} ordens de serviço',
+              accent: const Color(0xFFB45309),
+              icon: Icons.assignment_outlined,
+              emptyMessage: 'Nenhuma ordem de serviço criada aguardando aprovação.',
+              orders: relationshipServiceOrderSource
+                  .where(
+                    (order) =>
+                        !order.financeClientApproved &&
+                        workflowStages.indexOf(order.currentStage) <=
+                            workflowStages.indexOf(WorkflowStage.finance),
+                  )
+                  .toList(growable: false),
+            ),
+            _OrdersKanbanColumnData(
+              title: 'Enviado ao Financeiro',
+              subtitle:
+                  '${relationshipServiceOrderSource.where((order) => order.currentStage == WorkflowStage.finance).length} ordens de serviço',
+              accent: const Color(0xFF2563EB),
+              icon: Icons.forward_to_inbox_outlined,
+              emptyMessage: 'Nenhuma ordem de serviço enviada ao Financeiro.',
+              orders: relationshipServiceOrderSource
+                  .where((order) => order.currentStage == WorkflowStage.finance)
+                  .toList(growable: false),
+            ),
+            _OrdersKanbanColumnData(
+              title: 'OS Realizada',
+              subtitle:
+                  '${relationshipServiceOrderSource.where((order) => order.financeClientApproved && order.currentStage == WorkflowStage.relationship).length} ordens de serviço',
+              accent: const Color(0xFF15803D),
+              icon: Icons.verified_outlined,
+              emptyMessage:
+                  'Nenhuma ordem de serviço em retorno da Instalação.',
+              orders: relationshipServiceOrderSource
+                  .where(
+                    (order) =>
+                        order.financeClientApproved &&
+                        order.currentStage == WorkflowStage.estimating,
+                  )
+                  .toList(growable: false),
+            ),
+            _OrdersKanbanColumnData(
+              title: 'Concluido',
+              subtitle:
+                  '${relationshipServiceOrderSource.where((order) => order.financeClientApproved && workflowStages.indexOf(order.currentStage) > workflowStages.indexOf(WorkflowStage.estimating)).length} ordens de serviço',
+              accent: const Color(0xFF2563EB),
+              icon: Icons.task_alt_rounded,
+              emptyMessage: 'Nenhuma ordem de serviço concluída no Orçamentista.',
+              orders: relationshipServiceOrderSource
+                  .where(
+                    (order) =>
+                        order.financeClientApproved &&
+                        workflowStages.indexOf(order.currentStage) >
+                            workflowStages.indexOf(WorkflowStage.estimating),
+                  )
+                  .toList(growable: false),
+            ),
+          ]
+        : const <_OrdersKanbanColumnData>[];
+    final relationshipServiceOrderKanbanColumns =
+        stage == WorkflowStage.relationship && showingWorkQueue
+        ? <_OrdersKanbanColumnData>[
+            _OrdersKanbanColumnData(
+              title: 'Solicitada OS',
+              subtitle:
+                  '${relationshipServiceOrderSource.where((order) => !order.financeClientApproved && workflowStages.indexOf(order.currentStage) <= workflowStages.indexOf(WorkflowStage.finance)).length} ordens de serviço',
+              accent: const Color(0xFFB45309),
+              icon: Icons.assignment_outlined,
+              emptyMessage: 'Nenhuma OS criada aguardando aprovação.',
+              orders: relationshipServiceOrderSource
+                  .where(
+                    (order) =>
+                        !order.financeClientApproved &&
+                        workflowStages.indexOf(order.currentStage) <=
+                            workflowStages.indexOf(WorkflowStage.finance),
+                  )
+                  .toList(growable: false),
+            ),
+            _OrdersKanbanColumnData(
+              title: 'OS Aprovadas',
+              subtitle:
+                  '${relationshipServiceOrderSource.where((order) => order.financeClientApproved && order.currentStage == WorkflowStage.relationship).length} ordens de serviço',
+              accent: const Color(0xFF15803D),
+              icon: Icons.verified_outlined,
+              emptyMessage: 'Nenhuma OS aprovada no Relacionamento.',
+              orders: relationshipServiceOrderSource
+                  .where(
+                    (order) =>
+                        order.financeClientApproved &&
+                        order.currentStage == WorkflowStage.relationship,
+                  )
+                  .toList(growable: false),
+            ),
+            _OrdersKanbanColumnData(
+              title: 'OS Concluídas',
+              subtitle:
+                  '${relationshipServiceOrderSource.where((order) => order.financeClientApproved && workflowStages.indexOf(order.currentStage) > workflowStages.indexOf(WorkflowStage.relationship)).length} ordens de serviço',
+              accent: const Color(0xFF2563EB),
+              icon: Icons.task_alt_rounded,
+              emptyMessage: 'Nenhuma OS concluída no Relacionamento.',
+              orders: relationshipServiceOrderSource
+                  .where(
+                    (order) =>
+                        order.financeClientApproved &&
+                        workflowStages.indexOf(order.currentStage) >
+                            workflowStages.indexOf(WorkflowStage.relationship),
+                  )
+                  .toList(growable: false),
+            ),
+          ]
+        : const <_OrdersKanbanColumnData>[];
+    final installationServiceOrderKanbanColumns =
+        stage == WorkflowStage.installation && showingWorkQueue
+        ? <_OrdersKanbanColumnData>[
+            for (final status in InstallationWorkflowStatus.values)
+              _OrdersKanbanColumnData(
+                title: status.title,
+                subtitle:
+                    '${installationServiceOrderSource.where((order) => order.installationWorkflowStatus == status).length} ${status.title.toLowerCase()}',
+                accent: status.color,
+                icon: switch (status) {
+                  InstallationWorkflowStatus.waiting =>
+                    Icons.hourglass_bottom_rounded,
+                  InstallationWorkflowStatus.scheduled =>
+                    Icons.event_available_outlined,
+                  InstallationWorkflowStatus.doing =>
+                    Icons.home_repair_service_outlined,
+                  InstallationWorkflowStatus.done => Icons.task_alt_rounded,
+                },
+                emptyMessage:
+                    'Nenhuma ordem de serviço com instalação ${status.title.toLowerCase()}.',
+                orders: installationServiceOrderSource
+                    .where(
+                      (order) => order.installationWorkflowStatus == status,
+                    )
+                    .toList(growable: false),
+              ),
+          ]
+        : const <_OrdersKanbanColumnData>[];
     final kanbanColumns = stage == WorkflowStage.assembly && showingWorkQueue
         ? <_OrdersKanbanColumnData>[
             _OrdersKanbanColumnData(
@@ -7470,11 +8980,28 @@ class _StageWorkspaceSection extends StatelessWidget {
               accent: AssemblyWorkflowStatus.waiting.color,
               icon: Icons.hourglass_bottom_rounded,
               emptyMessage: 'Nenhum pedido aguardando início na montagem.',
+              assemblyTargetStatus: AssemblyWorkflowStatus.waiting,
               orders: currentKanbanOrders
                   .where(
                     (order) =>
                         order.assemblyWorkflowStatus ==
                         AssemblyWorkflowStatus.waiting,
+                  )
+                  .toList(growable: false),
+            ),
+            _OrdersKanbanColumnData(
+              title: 'Liberado para Montagem',
+              subtitle:
+                  '${currentKanbanOrders.where((order) => order.assemblyWorkflowStatus == AssemblyWorkflowStatus.released).length} liberados',
+              accent: AssemblyWorkflowStatus.released.color,
+              icon: Icons.move_to_inbox_outlined,
+              emptyMessage: 'Nenhum pedido liberado para a montagem.',
+              assemblyTargetStatus: AssemblyWorkflowStatus.released,
+              orders: currentKanbanOrders
+                  .where(
+                    (order) =>
+                        order.assemblyWorkflowStatus ==
+                        AssemblyWorkflowStatus.released,
                   )
                   .toList(growable: false),
             ),
@@ -7485,6 +9012,7 @@ class _StageWorkspaceSection extends StatelessWidget {
               accent: AssemblyWorkflowStatus.doing.color,
               icon: Icons.precision_manufacturing_outlined,
               emptyMessage: 'Nenhum pedido em produção na montagem.',
+              assemblyTargetStatus: AssemblyWorkflowStatus.doing,
               orders: currentKanbanOrders
                   .where(
                     (order) =>
@@ -7494,11 +9022,28 @@ class _StageWorkspaceSection extends StatelessWidget {
                   .toList(growable: false),
             ),
             _OrdersKanbanColumnData(
+              title: 'Teste de painel',
+              subtitle:
+                  '${currentKanbanOrders.where((order) => order.assemblyWorkflowStatus == AssemblyWorkflowStatus.panelTesting).length} em teste',
+              accent: AssemblyWorkflowStatus.panelTesting.color,
+              icon: Icons.science_outlined,
+              emptyMessage: 'Nenhum painel em teste.',
+              assemblyTargetStatus: AssemblyWorkflowStatus.panelTesting,
+              orders: currentKanbanOrders
+                  .where(
+                    (order) =>
+                        order.assemblyWorkflowStatus ==
+                        AssemblyWorkflowStatus.panelTesting,
+                  )
+                  .toList(growable: false),
+            ),
+            _OrdersKanbanColumnData(
               title: 'Concluído',
               subtitle: '${assemblyCompletedHistoryOrders.length} no histórico',
               accent: AssemblyWorkflowStatus.done.color,
               icon: Icons.task_alt_rounded,
               emptyMessage: 'Nenhuma conclusão registrada na montagem.',
+              assemblyTargetStatus: AssemblyWorkflowStatus.done,
               orders: assemblyCompletedHistoryOrders,
             ),
           ]
@@ -7508,7 +9053,7 @@ class _StageWorkspaceSection extends StatelessWidget {
               _OrdersKanbanColumnData(
                 title: status.title,
                 subtitle:
-                    '${currentKanbanOrders.where((order) => order.installationWorkflowStatus == status).length} ${status.title.toLowerCase()}',
+                    '${currentKanbanOrders.where((order) => !order.isServiceOrder && order.installationWorkflowStatus == status).length} ${status.title.toLowerCase()}',
                 accent: status.color,
                 icon: switch (status) {
                   InstallationWorkflowStatus.waiting =>
@@ -7523,10 +9068,183 @@ class _StageWorkspaceSection extends StatelessWidget {
                     'Nenhum pedido com instalação ${status.title.toLowerCase()}.',
                 orders: currentKanbanOrders
                     .where(
-                      (order) => order.installationWorkflowStatus == status,
+                      (order) =>
+                          !order.isServiceOrder &&
+                          order.installationWorkflowStatus == status,
                     )
                     .toList(growable: false),
               ),
+          ]
+        : stage == WorkflowStage.estimating && showingWorkQueue
+        ? <_OrdersKanbanColumnData>[
+            for (final task in estimatingKanbanTasks)
+              _OrdersKanbanColumnData(
+                title: task.label,
+                subtitle:
+                    '${currentKanbanOrders.where((order) => !order.isServiceOrder && _estimatingKanbanFlowSnapshot(order).currentTask?.key == task.key).length} clientes',
+                accent: task.key == 'waiting'
+                    ? const Color(0xFFB45309)
+                    : WorkflowStage.estimating.color,
+                icon: switch (task.key) {
+                  'waiting' => Icons.hourglass_bottom_rounded,
+                  'doing' => Icons.play_circle_outline_rounded,
+                  _ => Icons.task_alt_outlined,
+                },
+                emptyMessage:
+                    'Nenhum cliente aguardando ${task.label.toLowerCase()}.',
+                orders: currentKanbanOrders
+                    .where(
+                      (order) =>
+                          !order.isServiceOrder &&
+                          _estimatingKanbanFlowSnapshot(order).currentTask?.key ==
+                              task.key,
+                    )
+                    .toList(growable: false),
+              ),
+            _OrdersKanbanColumnData(
+              title: 'Concluido',
+              subtitle:
+                  '${estimatingCompletedHistoryOrders.length + currentKanbanOrders.where((order) => !order.isServiceOrder && _estimatingKanbanFlowSnapshot(order).isComplete).length} no histórico',
+              accent: const Color(0xFF15803D),
+              icon: Icons.task_alt_rounded,
+              emptyMessage: 'Nenhum cliente concluído no Orçamentista.',
+              orders: [
+                ...currentKanbanOrders.where(
+                  (order) =>
+                      !order.isServiceOrder &&
+                      _estimatingKanbanFlowSnapshot(order).isComplete,
+                ),
+                ...estimatingCompletedHistoryOrders,
+              ],
+            ),
+          ]
+        : stage == WorkflowStage.finance && showingWorkQueue
+        ? <_OrdersKanbanColumnData>[
+            for (final task in financeContractTasks)
+              _OrdersKanbanColumnData(
+                title: task.label,
+                subtitle:
+                    '${currentKanbanOrders.where((order) => !order.isServiceOrder && _financeContractFlowSnapshot(order).currentTask?.key == task.key).length} clientes',
+                accent: task.key == 'waiting'
+                    ? const Color(0xFFB45309)
+                    : WorkflowStage.finance.color,
+                icon: switch (task.key) {
+                  'waiting' => Icons.hourglass_bottom_rounded,
+                  'generate_contract' => Icons.description_outlined,
+                  'contract_sent' => Icons.send_outlined,
+                  'signed_contract_received' =>
+                    Icons.assignment_turned_in_outlined,
+                  'registered_accounts_receivable' =>
+                    Icons.account_balance_wallet_outlined,
+                  _ => Icons.task_alt_outlined,
+                },
+                emptyMessage:
+                    'Nenhum cliente aguardando ${task.label.toLowerCase()}.',
+                financeTargetTaskKey: task.key,
+                orders: currentKanbanOrders
+                    .where(
+                      (order) =>
+                          !order.isServiceOrder &&
+                          _financeContractFlowSnapshot(order).currentTask?.key ==
+                          task.key,
+                    )
+                    .toList(growable: false),
+              ),
+            _OrdersKanbanColumnData(
+              title: 'Concluído',
+              subtitle:
+                  '${currentKanbanOrders.where((order) => !order.isServiceOrder && _financeContractFlowSnapshot(order).isComplete).length} clientes',
+              accent: const Color(0xFF15803D),
+              icon: Icons.task_alt_rounded,
+              emptyMessage: 'Nenhum contrato concluído no Financeiro.',
+              isFinanceCompletionTarget: true,
+              orders: currentKanbanOrders
+                  .where(
+                    (order) =>
+                        !order.isServiceOrder &&
+                        _financeContractFlowSnapshot(order).isComplete,
+                  )
+                  .toList(growable: false),
+            ),
+          ]
+        : stage == WorkflowStage.relationship && showingWorkQueue
+        ? <_OrdersKanbanColumnData>[
+            for (final task in relationshipKanbanTasks)
+              _OrdersKanbanColumnData(
+                title: task.label,
+                subtitle:
+                    '${currentKanbanOrders.where((order) => !order.isServiceOrder && _relationshipKanbanFlowSnapshot(order).currentTask?.key == task.key).length} clientes',
+                accent: WorkflowStage.relationship.color,
+                icon: switch (task.key) {
+                  'in_progress' => Icons.play_circle_outline_rounded,
+                  'create_omie_material_order' => Icons.inventory_2_outlined,
+                  'update_worksheet' => Icons.table_chart_outlined,
+                  'create_whatsapp_group' => Icons.groups_outlined,
+                  _ => Icons.task_alt_outlined,
+                },
+                emptyMessage:
+                    'Nenhum cliente aguardando ${task.label.toLowerCase()}.',
+                relationshipTargetTaskKey: task.key,
+                orders: currentKanbanOrders
+                    .where(
+                      (order) =>
+                          !order.isServiceOrder &&
+                          _relationshipKanbanFlowSnapshot(order)
+                                  .currentTask
+                                  ?.key ==
+                              task.key,
+                    )
+                    .toList(growable: false),
+              ),
+            _OrdersKanbanColumnData(
+              title: 'Concluido',
+              subtitle:
+                  '${relationshipCompletedHistoryOrders.length + currentKanbanOrders.where((order) => !order.isServiceOrder && _relationshipKanbanFlowSnapshot(order).isComplete).length} no histórico',
+              accent: const Color(0xFF15803D),
+              icon: Icons.task_alt_rounded,
+              emptyMessage: 'Nenhum cliente concluído no Relacionamento.',
+              orders: [
+                ...currentKanbanOrders.where(
+                  (order) =>
+                      !order.isServiceOrder &&
+                      _relationshipKanbanFlowSnapshot(order).isComplete,
+                ),
+                ...relationshipCompletedHistoryOrders,
+              ],
+            ),
+          ]
+        : stage == WorkflowStage.engineering && showingWorkQueue
+        ? <_OrdersKanbanColumnData>[
+            for (final task in engineeringChecklistTasks)
+              _OrdersKanbanColumnData(
+                title: task.label,
+                subtitle:
+                    '${currentKanbanOrders.where((order) => _engineeringFlowSnapshot(order).currentTask?.key == task.key).length} clientes',
+                accent: _engineeringTaskAccent(task.key),
+                icon: _engineeringTaskIcon(task.key),
+                emptyMessage:
+                    'Nenhum cliente aguardando ${task.label.toLowerCase()}.',
+                engineeringTargetTaskKey: task.key,
+                orders: currentKanbanOrders
+                    .where(
+                      (order) =>
+                          _engineeringFlowSnapshot(order).currentTask?.key ==
+                          task.key,
+                    )
+                    .toList(growable: false),
+              ),
+            _OrdersKanbanColumnData(
+              title: 'Concluído',
+              subtitle:
+                  '${currentKanbanOrders.where((order) => _engineeringFlowSnapshot(order).isComplete).length} clientes',
+              accent: const Color(0xFF10B981),
+              icon: Icons.task_alt_rounded,
+              emptyMessage: 'Nenhum cliente com a engenharia concluída.',
+              isEngineeringCompletionTarget: true,
+              orders: currentKanbanOrders
+                  .where((order) => _engineeringFlowSnapshot(order).isComplete)
+                  .toList(growable: false),
+            ),
           ]
         : <_OrdersKanbanColumnData>[
             if (currentKanbanOrders.isNotEmpty || !showingRegisteredCatalog)
@@ -7742,7 +9460,7 @@ class _StageWorkspaceSection extends StatelessWidget {
             accent: stage.color,
             title: 'Criar cadastro',
             description:
-                'Cadastre a obra, telefone, endereço e os arquivos iniciais de proposta e detalhes.',
+                'Cadastre a obra, telefone, endereço e os dados iniciais do cliente.',
             headerTrailing: isMedium
                 ? FilledButton.icon(
                     onPressed: () async {
@@ -7840,408 +9558,162 @@ class _StageWorkspaceSection extends StatelessWidget {
             },
           ),
           const SizedBox(height: 20),
-          _StageOrdersKanbanBoard(
-            columns: kanbanColumns,
-            allOrders: orders,
-            selectedOrderCode: selectedOrder?.code,
-            onOrderSelected: handleOrderTap,
-            onOpenOrderConversation: handleOpenConversation,
-            workspaceProfiles: workspaceProfiles,
-          ),
+          if (stage == WorkflowStage.finance && showingWorkQueue) ...[
+            const Text(
+              'Contratos',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+            ),
+            const SizedBox(height: 8),
+            _StageOrdersKanbanBoard(
+              columns: kanbanColumns,
+              allOrders: orders,
+              selectedOrderCode: selectedOrder?.code,
+              onOrderSelected: handleOrderTap,
+              onOpenOrderConversation: handleOpenConversation,
+              workspaceProfiles: workspaceProfiles,
+              onMoveFinanceKanbanOrder: onMoveFinanceKanbanOrder,
+              canAcceptFinanceKanbanDrop: canAcceptFinanceKanbanDrop,
+            ),
+            const SizedBox(height: 20),
+            const Text(
+              'Ordens de serviço',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+            ),
+            const SizedBox(height: 8),
+            _StageOrdersKanbanBoard(
+              columns: financeServiceOrderKanbanColumns,
+              allOrders: orders,
+              selectedOrderCode: selectedOrder?.code,
+              onOrderSelected: handleOrderTap,
+              onOpenOrderConversation: handleOpenConversation,
+              workspaceProfiles: workspaceProfiles,
+            ),
+          ] else if (stage == WorkflowStage.installation &&
+              showingWorkQueue) ...[
+            const Text(
+              'Pedidos',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+            ),
+            const SizedBox(height: 8),
+            _StageOrdersKanbanBoard(
+              columns: kanbanColumns,
+              allOrders: orders,
+              selectedOrderCode: selectedOrder?.code,
+              onOrderSelected: handleOrderTap,
+              onOpenOrderConversation: handleOpenConversation,
+              workspaceProfiles: workspaceProfiles,
+            ),
+            const SizedBox(height: 20),
+            const Text(
+              'Ordens de serviço',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+            ),
+            const SizedBox(height: 8),
+            _StageOrdersKanbanBoard(
+              columns: installationServiceOrderKanbanColumns,
+              allOrders: orders,
+              selectedOrderCode: selectedOrder?.code,
+              onOrderSelected: handleOrderTap,
+              onOpenOrderConversation: handleOpenConversation,
+              workspaceProfiles: workspaceProfiles,
+            ),
+          ] else if (stage == WorkflowStage.estimating && showingWorkQueue) ...[
+            const Text(
+              'Pedidos',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+            ),
+            const SizedBox(height: 8),
+            _StageOrdersKanbanBoard(
+              columns: kanbanColumns,
+              allOrders: orders,
+              selectedOrderCode: selectedOrder?.code,
+              onOrderSelected: handleOrderTap,
+              onOpenOrderConversation: handleOpenConversation,
+              workspaceProfiles: workspaceProfiles,
+            ),
+            const SizedBox(height: 20),
+            const Text(
+              'Ordens de serviço',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+            ),
+            const SizedBox(height: 8),
+            _StageOrdersKanbanBoard(
+              columns: estimatingServiceOrderKanbanColumns,
+              allOrders: orders,
+              selectedOrderCode: selectedOrder?.code,
+              onOrderSelected: handleOrderTap,
+              onOpenOrderConversation: handleOpenConversation,
+              workspaceProfiles: workspaceProfiles,
+            ),
+          ] else if (stage == WorkflowStage.relationship && showingWorkQueue) ...[
+            const Text(
+              'Pedidos',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+            ),
+            const SizedBox(height: 8),
+            _StageOrdersKanbanBoard(
+              columns: kanbanColumns,
+              allOrders: orders,
+              selectedOrderCode: selectedOrder?.code,
+              onOrderSelected: handleOrderTap,
+              onOpenOrderConversation: handleOpenConversation,
+              workspaceProfiles: workspaceProfiles,
+              onMoveRelationshipKanbanOrder: onMoveRelationshipKanbanOrder,
+              canAcceptRelationshipKanbanDrop:
+                  canAcceptRelationshipKanbanDrop,
+            ),
+            const SizedBox(height: 20),
+            const Text(
+              'Ordens de serviço',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+            ),
+            const SizedBox(height: 8),
+            _StageOrdersKanbanBoard(
+              columns: relationshipServiceOrderKanbanColumns,
+              allOrders: orders,
+              selectedOrderCode: selectedOrder?.code,
+              onOrderSelected: handleOrderTap,
+              onOpenOrderConversation: handleOpenConversation,
+              workspaceProfiles: workspaceProfiles,
+            ),
+          ] else
+            _StageOrdersKanbanBoard(
+              columns: kanbanColumns,
+              allOrders: orders,
+              selectedOrderCode: selectedOrder?.code,
+              onOrderSelected: handleOrderTap,
+              onOpenOrderConversation: handleOpenConversation,
+              workspaceProfiles: workspaceProfiles,
+              onMoveAssemblyKanbanOrder: stage == WorkflowStage.assembly
+                  ? onMoveAssemblyKanbanOrder
+                  : null,
+              canAcceptAssemblyKanbanDrop: stage == WorkflowStage.assembly
+                  ? canAcceptAssemblyKanbanDrop
+                  : null,
+              onMoveEngineeringKanbanOrder: stage == WorkflowStage.engineering
+                  ? onMoveEngineeringKanbanOrder
+                  : null,
+              canAcceptEngineeringKanbanDrop:
+                  stage == WorkflowStage.engineering
+                  ? canAcceptEngineeringKanbanDrop
+                  : null,
+              onMoveFinanceKanbanOrder: stage == WorkflowStage.finance
+                  ? onMoveFinanceKanbanOrder
+                  : null,
+              canAcceptFinanceKanbanDrop: stage == WorkflowStage.finance
+                  ? canAcceptFinanceKanbanDrop
+                  : null,
+              onMoveRelationshipKanbanOrder:
+                  stage == WorkflowStage.relationship
+                  ? onMoveRelationshipKanbanOrder
+                  : null,
+              canAcceptRelationshipKanbanDrop:
+                  stage == WorkflowStage.relationship
+                  ? canAcceptRelationshipKanbanDrop
+                  : null,
+            ),
         ],
       ],
-    );
-  }
-}
-
-class _CustomerRegistrationSubtabs extends StatelessWidget {
-  const _CustomerRegistrationSubtabs({
-    required this.selectedIndex,
-    required this.onSelected,
-  });
-
-  final int selectedIndex;
-  final ValueChanged<int> onSelected;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(8),
-      decoration: BoxDecoration(
-        color: const Color(0xFFF7FAF9),
-        borderRadius: BorderRadius.circular(22),
-        border: Border.all(color: const Color(0xFFDCE5E1)),
-      ),
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          final useColumn = constraints.maxWidth < 560;
-
-          if (useColumn) {
-            return Column(
-              children: [
-                _CustomerRegistrationSubtabButton(
-                  label: 'Cadastro em andamento',
-                  selected: selectedIndex == 0,
-                  onTap: () => onSelected(0),
-                ),
-                const SizedBox(height: 10),
-                _CustomerRegistrationSubtabButton(
-                  label: 'Clientes cadastrados',
-                  selected: selectedIndex == 1,
-                  onTap: () => onSelected(1),
-                ),
-              ],
-            );
-          }
-
-          return Row(
-            children: [
-              Expanded(
-                child: _CustomerRegistrationSubtabButton(
-                  label: 'Cadastro em andamento',
-                  selected: selectedIndex == 0,
-                  onTap: () => onSelected(0),
-                ),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: _CustomerRegistrationSubtabButton(
-                  label: 'Clientes cadastrados',
-                  selected: selectedIndex == 1,
-                  onTap: () => onSelected(1),
-                ),
-              ),
-            ],
-          );
-        },
-      ),
-    );
-  }
-}
-
-class _StageWorkspaceSubtabs extends StatelessWidget {
-  const _StageWorkspaceSubtabs({
-    required this.selectedIndex,
-    required this.accentColor,
-    this.showCalendarTab = false,
-    required this.onSelected,
-  });
-
-  final int selectedIndex;
-  final Color accentColor;
-  final bool showCalendarTab;
-  final ValueChanged<int> onSelected;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(4),
-      decoration: BoxDecoration(
-        color: const Color(0xFFF4F7F6),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFFE5EBE8)),
-      ),
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          final useColumn = constraints.maxWidth < 560;
-
-          if (useColumn) {
-            return Column(
-              children: [
-                _CustomerRegistrationSubtabButton(
-                  label: 'Trabalhos',
-                  selected: selectedIndex == 0,
-                  selectedColor: accentColor,
-                  onTap: () => onSelected(0),
-                ),
-                const SizedBox(height: 6),
-                if (showCalendarTab) ...[
-                  _CustomerRegistrationSubtabButton(
-                    label: 'Calendário',
-                    selected: selectedIndex == 1,
-                    selectedColor: accentColor,
-                    onTap: () => onSelected(1),
-                  ),
-                  const SizedBox(height: 6),
-                ],
-                _CustomerRegistrationSubtabButton(
-                  label: 'Clientes cadastrados',
-                  selected: selectedIndex == (showCalendarTab ? 2 : 1),
-                  selectedColor: accentColor,
-                  onTap: () => onSelected(showCalendarTab ? 2 : 1),
-                ),
-              ],
-            );
-          }
-
-          return Row(
-            children: [
-              Expanded(
-                child: _CustomerRegistrationSubtabButton(
-                  label: 'Trabalhos',
-                  selected: selectedIndex == 0,
-                  selectedColor: accentColor,
-                  onTap: () => onSelected(0),
-                ),
-              ),
-              const SizedBox(width: 6),
-              if (showCalendarTab) ...[
-                Expanded(
-                  child: _CustomerRegistrationSubtabButton(
-                    label: 'Calendário',
-                    selected: selectedIndex == 1,
-                    selectedColor: accentColor,
-                    onTap: () => onSelected(1),
-                  ),
-                ),
-                const SizedBox(width: 6),
-              ],
-              Expanded(
-                child: _CustomerRegistrationSubtabButton(
-                  label: 'Clientes cadastrados',
-                  selected: selectedIndex == (showCalendarTab ? 2 : 1),
-                  selectedColor: accentColor,
-                  onTap: () => onSelected(showCalendarTab ? 2 : 1),
-                ),
-              ),
-            ],
-          );
-        },
-      ),
-    );
-  }
-}
-
-class _RegisteredClientsPreviewSubtabs extends StatelessWidget {
-  const _RegisteredClientsPreviewSubtabs();
-
-  @override
-  Widget build(BuildContext context) {
-    return IgnorePointer(
-      child: Opacity(
-        opacity: 1,
-        child: Container(
-          padding: const EdgeInsets.all(4),
-          decoration: BoxDecoration(
-            color: const Color(0xFFF4F7F6),
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: const Color(0xFFE5EBE8)),
-          ),
-          child: LayoutBuilder(
-            builder: (context, constraints) {
-              final useColumn = constraints.maxWidth < 560;
-
-              if (useColumn) {
-                return Column(
-                  children: const [
-                    _CustomerRegistrationPreviewTabButton(
-                      label: 'Cadastro em andamento',
-                      selected: false,
-                    ),
-                    SizedBox(height: 6),
-                    _CustomerRegistrationPreviewTabButton(
-                      label: 'Clientes cadastrados',
-                      selected: true,
-                    ),
-                  ],
-                );
-              }
-
-              return const Row(
-                children: [
-                  Expanded(
-                    child: _CustomerRegistrationPreviewTabButton(
-                      label: 'Cadastro em andamento',
-                      selected: false,
-                    ),
-                  ),
-                  SizedBox(width: 6),
-                  Expanded(
-                    child: _CustomerRegistrationPreviewTabButton(
-                      label: 'Clientes cadastrados',
-                      selected: true,
-                    ),
-                  ),
-                ],
-              );
-            },
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _CustomerRegistrationSubtabButton extends StatelessWidget {
-  const _CustomerRegistrationSubtabButton({
-    required this.label,
-    required this.selected,
-    required this.onTap,
-    this.selectedColor = const Color(0xFF2563EB),
-  });
-
-  final String label;
-  final bool selected;
-  final VoidCallback onTap;
-  final Color selectedColor;
-
-  @override
-  Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(12),
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 160),
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-        decoration: BoxDecoration(
-          color: selected ? Colors.white : Colors.transparent,
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: selected
-                ? selectedColor.withValues(alpha: 0.24)
-                : Colors.transparent,
-          ),
-          boxShadow: selected
-              ? const [
-                  BoxShadow(
-                    color: Color(0x120F172A),
-                    blurRadius: 10,
-                    offset: Offset(0, 4),
-                  ),
-                ]
-              : null,
-        ),
-        child: Text(
-          label,
-          textAlign: TextAlign.center,
-          style: TextStyle(
-            fontWeight: FontWeight.w700,
-            color: selected ? selectedColor : const Color(0xFF14211D),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _CustomerRegistrationPreviewTabButton extends StatelessWidget {
-  const _CustomerRegistrationPreviewTabButton({
-    required this.label,
-    required this.selected,
-  });
-
-  final String label;
-  final bool selected;
-
-  @override
-  Widget build(BuildContext context) {
-    return AnimatedContainer(
-      duration: const Duration(milliseconds: 160),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      decoration: BoxDecoration(
-        color: selected ? Colors.white : Colors.transparent,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: selected
-              ? const Color(0xFF2563EB).withValues(alpha: 0.22)
-              : Colors.transparent,
-        ),
-        boxShadow: selected
-            ? const [
-                BoxShadow(
-                  color: Color(0x120F172A),
-                  blurRadius: 10,
-                  offset: Offset(0, 4),
-                ),
-              ]
-            : null,
-      ),
-      child: Text(
-        label,
-        textAlign: TextAlign.center,
-        style: TextStyle(
-          fontWeight: FontWeight.w700,
-          color: selected ? const Color(0xFF2563EB) : const Color(0xFF14211D),
-        ),
-      ),
-    );
-  }
-}
-
-class _CustomerRegistrationUtilityCard extends StatelessWidget {
-  const _CustomerRegistrationUtilityCard({
-    required this.icon,
-    required this.accent,
-    required this.title,
-    required this.description,
-    this.child,
-    this.headerTrailing,
-  });
-
-  final IconData icon;
-  final Color accent;
-  final String title;
-  final String description;
-  final Widget? child;
-  final Widget? headerTrailing;
-
-  @override
-  Widget build(BuildContext context) {
-    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: _panelDecoration(context),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Container(
-                width: 34,
-                height: 34,
-                decoration: BoxDecoration(
-                  color: isDarkMode
-                      ? accent.withValues(alpha: 0.14)
-                      : accent.withValues(alpha: 0.08),
-                  borderRadius: BorderRadius.circular(9),
-                ),
-                child: Icon(icon, color: accent, size: 16),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      title,
-                      style: const TextStyle(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      description,
-                      style: const TextStyle(
-                        color: Color(0xFF52605C),
-                        fontSize: 13,
-                        height: 1.35,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              if (headerTrailing != null) ...[
-                const SizedBox(width: 12),
-                headerTrailing!,
-              ],
-            ],
-          ),
-          if (child != null) ...[const SizedBox(height: 10), child!],
-        ],
-      ),
     );
   }
 }
@@ -8890,6 +10362,7 @@ class _OrderDetailsScreen extends StatefulWidget {
     required this.onAdvanceOrder,
     required this.onReturnOrder,
     required this.onSendToEngineering,
+    required this.onSendToAssembly,
     required this.onSendToInstallation,
     this.openConversationOnLoad = false,
     this.onAttachMaterials,
@@ -8903,8 +10376,11 @@ class _OrderDetailsScreen extends StatefulWidget {
     this.onToggleFinanceClientApproval,
     this.onScheduleInstallation,
     this.onToggleInstallationExecutionItem,
+    this.onOpenAssemblyPreparationChecklist,
     this.onScheduleEngineeringActivity,
     this.onUpdateEngineeringChecklistStatus,
+    this.onUpdateFinanceContractStatus,
+    this.onUpdateRelationshipKanbanStatus,
     this.onEditOrder,
     this.onDeleteOrder,
   });
@@ -8924,6 +10400,7 @@ class _OrderDetailsScreen extends StatefulWidget {
   final Future<void> Function() onAdvanceOrder;
   final Future<void> Function() onReturnOrder;
   final Future<void> Function() onSendToEngineering;
+  final Future<void> Function() onSendToAssembly;
   final Future<void> Function() onSendToInstallation;
   final bool openConversationOnLoad;
   final Future<void> Function()? onAttachMaterials;
@@ -8938,12 +10415,23 @@ class _OrderDetailsScreen extends StatefulWidget {
   final Future<void> Function()? onScheduleInstallation;
   final Future<void> Function(int visitIndex, String item)?
   onToggleInstallationExecutionItem;
+  final Future<void> Function()? onOpenAssemblyPreparationChecklist;
   final Future<void> Function(String taskKey)? onScheduleEngineeringActivity;
   final Future<void> Function(
     String taskKey,
     EngineeringChecklistStatus status,
   )?
   onUpdateEngineeringChecklistStatus;
+  final Future<void> Function(
+    String taskKey,
+    EngineeringChecklistStatus status,
+  )?
+  onUpdateFinanceContractStatus;
+  final Future<void> Function(
+    String taskKey,
+    EngineeringChecklistStatus status,
+  )?
+  onUpdateRelationshipKanbanStatus;
   final Future<void> Function()? onEditOrder;
   final Future<void> Function()? onDeleteOrder;
 
@@ -9099,6 +10587,8 @@ class _OrderDetailsScreenState extends State<_OrderDetailsScreen> {
                 onReturnOrder: () => _runStageTransition(widget.onReturnOrder),
                 onSendToEngineering: () =>
                     _runStageTransition(widget.onSendToEngineering),
+                onSendToAssembly: () =>
+                    _runStageTransition(widget.onSendToAssembly),
                 onSendToInstallation: () =>
                     _runStageTransition(widget.onSendToInstallation),
                 onOpenConversation: _openConversationDialog,
@@ -9152,6 +10642,12 @@ class _OrderDetailsScreenState extends State<_OrderDetailsScreen> {
                         }
                         _setStateSafely(() {});
                       },
+                onOpenAssemblyPreparationChecklist:
+                    widget.onOpenAssemblyPreparationChecklist == null
+                    ? null
+                    : () => _runAndRefresh(
+                        widget.onOpenAssemblyPreparationChecklist,
+                      ),
                 onScheduleEngineeringActivity:
                     widget.onScheduleEngineeringActivity == null
                     ? null
@@ -9167,6 +10663,32 @@ class _OrderDetailsScreenState extends State<_OrderDetailsScreen> {
                     ? null
                     : (taskKey, status) async {
                         await widget.onUpdateEngineeringChecklistStatus!(
+                          taskKey,
+                          status,
+                        );
+                        if (!mounted) {
+                          return;
+                        }
+                        _setStateSafely(() {});
+                      },
+                onUpdateFinanceContractStatus:
+                    widget.onUpdateFinanceContractStatus == null
+                    ? null
+                    : (taskKey, status) async {
+                        await widget.onUpdateFinanceContractStatus!(
+                          taskKey,
+                          status,
+                        );
+                        if (!mounted) {
+                          return;
+                        }
+                        _setStateSafely(() {});
+                      },
+                onUpdateRelationshipKanbanStatus:
+                    widget.onUpdateRelationshipKanbanStatus == null
+                    ? null
+                    : (taskKey, status) async {
+                        await widget.onUpdateRelationshipKanbanStatus!(
                           taskKey,
                           status,
                         );
@@ -9210,6 +10732,7 @@ class _OrderDetailsPanel extends StatelessWidget {
     required this.onAdvanceOrder,
     required this.onReturnOrder,
     required this.onSendToEngineering,
+    required this.onSendToAssembly,
     required this.onSendToInstallation,
     this.onOpenConversation,
     this.conversationCount = 0,
@@ -9226,8 +10749,11 @@ class _OrderDetailsPanel extends StatelessWidget {
     this.onToggleFinanceClientApproval,
     this.onScheduleInstallation,
     this.onToggleInstallationExecutionItem,
+    this.onOpenAssemblyPreparationChecklist,
     this.onScheduleEngineeringActivity,
     this.onUpdateEngineeringChecklistStatus,
+    this.onUpdateFinanceContractStatus,
+    this.onUpdateRelationshipKanbanStatus,
     this.showFlowActions = true,
     this.onEditOrder,
     this.onDeleteOrder,
@@ -9240,6 +10766,7 @@ class _OrderDetailsPanel extends StatelessWidget {
   final Future<void> Function() onAdvanceOrder;
   final Future<void> Function() onReturnOrder;
   final Future<void> Function() onSendToEngineering;
+  final Future<void> Function() onSendToAssembly;
   final Future<void> Function() onSendToInstallation;
   final Future<void> Function()? onOpenConversation;
   final int conversationCount;
@@ -9257,12 +10784,23 @@ class _OrderDetailsPanel extends StatelessWidget {
   final Future<void> Function()? onScheduleInstallation;
   final Future<void> Function(int visitIndex, String item)?
   onToggleInstallationExecutionItem;
+  final Future<void> Function()? onOpenAssemblyPreparationChecklist;
   final Future<void> Function(String taskKey)? onScheduleEngineeringActivity;
   final Future<void> Function(
     String taskKey,
     EngineeringChecklistStatus status,
   )?
   onUpdateEngineeringChecklistStatus;
+  final Future<void> Function(
+    String taskKey,
+    EngineeringChecklistStatus status,
+  )?
+  onUpdateFinanceContractStatus;
+  final Future<void> Function(
+    String taskKey,
+    EngineeringChecklistStatus status,
+  )?
+  onUpdateRelationshipKanbanStatus;
   final bool showFlowActions;
   final Future<void> Function()? onEditOrder;
   final Future<void> Function()? onDeleteOrder;
@@ -9282,6 +10820,8 @@ class _OrderDetailsPanel extends StatelessWidget {
     final progressTrackColor = isDarkMode
         ? const Color(0xFF29403A)
         : const Color(0xFFE5E7EB);
+    final showFullCustomerRegistrationData =
+        order?.currentStage == WorkflowStage.customerRegistration;
 
     if (order == null) {
       return Container(
@@ -9295,32 +10835,36 @@ class _OrderDetailsPanel extends StatelessWidget {
     final isEstimatingStage = order!.currentStage == WorkflowStage.estimating;
     final isRelationshipStage =
         order!.currentStage == WorkflowStage.relationship;
-    final canViewDetails = !isEstimatingStage && !isRelationshipStage;
     final isFinanceStage = order!.currentStage == WorkflowStage.finance;
     final isEngineeringStage = order!.currentStage == WorkflowStage.engineering;
     final isInstallationStage =
         order!.currentStage == WorkflowStage.installation;
     final isServiceOrder = order!.isServiceOrder;
-    final hasMaterialsFile = order!.materialFileName.trim().isNotEmpty;
+    final hasMaterialsFile = _hasEstimatingWorksheetData(order!);
     final hasServiceOrderPdf = order!.serviceOrderFileName.trim().isNotEmpty;
-    final hasConsolidatedProposal = order!.consolidatedProposalFileName
-        .trim()
-        .isNotEmpty;
-    final hasContractFile = order!.contractFileName.trim().isNotEmpty;
     final hasElectricalProject = order!.electricalProjectFileName
         .trim()
         .isNotEmpty;
     final hasPanelLayout = order!.panelLayoutFileName.trim().isNotEmpty;
     final hasPushButtonTable = order!.pushButtonTableFileName.trim().isNotEmpty;
     final hasEngineeringData = order!.engineeringDataFileName.trim().isNotEmpty;
+    final hasContractFile = order!.contractFileName.trim().isNotEmpty;
     // Use assemblyAssignedProfiles directly for avatars
     final relatedProposals = _proposalGroupOrders(allOrders, order!);
     final stageOwners = order!.resolvedStageOwners().entries.toList(
       growable: false,
     );
     final engineeringFlow = _engineeringFlowSnapshot(order!);
+    final financeContractFlow = _financeContractFlowSnapshot(order!);
+    final relationshipKanbanFlow = _relationshipKanbanFlowSnapshot(order!);
+    final hasPassedFinance =
+        stageIndex > workflowStages.indexOf(WorkflowStage.finance);
+    final hasPassedRelationship =
+        stageIndex > workflowStages.indexOf(WorkflowStage.relationship);
     final hasPassedEngineering =
         stageIndex > workflowStages.indexOf(WorkflowStage.engineering);
+    final hasReachedAssembly =
+        stageIndex >= workflowStages.indexOf(WorkflowStage.assembly);
     final showEngineeringFilesSection =
         isEngineeringStage ||
         order!.engineeringChecklistStatuses.isNotEmpty ||
@@ -9335,6 +10879,33 @@ class _OrderDetailsPanel extends StatelessWidget {
     final showEngineeringSection =
         showEngineeringChecklist || showEngineeringFilesInEngineering;
     final canEditEngineeringSection = showFlowActions && isEngineeringStage;
+    final showFinanceContractSection =
+        !isServiceOrder &&
+        (isFinanceStage ||
+            hasPassedFinance ||
+            hasContractFile ||
+            order!.financeContractStatuses.isNotEmpty);
+    final showRelationshipSection =
+        !isServiceOrder &&
+        (isRelationshipStage ||
+            hasPassedRelationship ||
+            order!.relationshipKanbanStatuses.isNotEmpty);
+    final assemblyChecklistSection = !hasReachedAssembly
+        ? null
+        : _CollapsibleDetailSection(
+            title: 'Checklist da montagem',
+            subtitle:
+                'Preparação inicial obrigatória antes de liberar o pedido para a produção.',
+            initiallyExpanded: order!.currentStage == WorkflowStage.assembly,
+            child: _AssemblyPreparationChecklistCard(
+              order: order!,
+              canEdit:
+                  showFlowActions &&
+                  order!.currentStage == WorkflowStage.assembly &&
+                  onOpenAssemblyPreparationChecklist != null,
+              onOpenChecklist: onOpenAssemblyPreparationChecklist,
+            ),
+          );
     final canAdvance =
         (stageIndex != workflowStages.length - 1 ||
             (isInstallationStage &&
@@ -9342,7 +10913,10 @@ class _OrderDetailsPanel extends StatelessWidget {
                     InstallationWorkflowStatus.done)) &&
         (!isEstimatingStage ||
             (isServiceOrder ? hasServiceOrderPdf : hasMaterialsFile)) &&
-        (!isFinanceStage || !isServiceOrder || order!.financeClientApproved);
+        (!isFinanceStage ||
+            (isServiceOrder
+                ? order!.financeClientApproved
+                : financeContractFlow.isComplete));
     const headerActionSpacing = 6.0;
     const headerActionPanelPadding = 4.0;
     final headerActionMinWidth = isRelationshipStage ? 138.0 : 102.0;
@@ -9414,18 +10988,36 @@ class _OrderDetailsPanel extends StatelessWidget {
         ),
       if (showFlowActions && isRelationshipStage)
         FilledButton.icon(
-          onPressed: () async {
-            await onSendToEngineering();
-          },
+          onPressed:
+              isServiceOrder || relationshipKanbanFlow.isComplete
+              ? () async {
+                  await onSendToEngineering();
+                }
+              : null,
           style: compactFilledHeaderButtonStyle,
           icon: const Icon(Icons.architecture_outlined),
           label: const Text('Enviar para Engenharia'),
         ),
       if (showFlowActions && isRelationshipStage)
         FilledButton.icon(
-          onPressed: () async {
-            await onSendToInstallation();
-          },
+          onPressed:
+              isServiceOrder || relationshipKanbanFlow.isComplete
+              ? () async {
+                  await onSendToAssembly();
+                }
+              : null,
+          style: compactFilledHeaderButtonStyle,
+          icon: const Icon(Icons.precision_manufacturing_outlined),
+          label: const Text('Enviar para Montagem'),
+        ),
+      if (showFlowActions && isRelationshipStage)
+        FilledButton.icon(
+          onPressed:
+              isServiceOrder || relationshipKanbanFlow.isComplete
+              ? () async {
+                  await onSendToInstallation();
+                }
+              : null,
           style: compactFilledHeaderButtonStyle,
           icon: const Icon(Icons.home_repair_service_outlined),
           label: const Text('Enviar para Instalação'),
@@ -9446,8 +11038,13 @@ class _OrderDetailsPanel extends StatelessWidget {
                       : 'Avançar kanban')
                 : order!.currentStage == WorkflowStage.assembly
                 ? switch (order!.assemblyWorkflowStatus) {
-                    AssemblyWorkflowStatus.waiting => 'Iniciar montagem',
-                    AssemblyWorkflowStatus.doing => 'Concluir e enviar',
+                    AssemblyWorkflowStatus.waiting =>
+                      _isAssemblyPreparationChecklistComplete(order!)
+                          ? 'Liberar para montagem'
+                          : 'Baixar checklist',
+                    AssemblyWorkflowStatus.released => 'Iniciar montagem',
+                    AssemblyWorkflowStatus.doing => 'Enviar para teste',
+                    AssemblyWorkflowStatus.panelTesting => 'Concluir painel',
                     AssemblyWorkflowStatus.done => 'Enviar para Instalação',
                   }
                 : isInstallationStage
@@ -9523,7 +11120,9 @@ class _OrderDetailsPanel extends StatelessWidget {
         320 + (headerActions.isEmpty ? 0.0 : 16 + headerActionGroupWidth);
     final customerDataSection = _CollapsibleDetailSection(
       title: 'Dados do cliente',
-      subtitle: 'Informações principais do cadastro e da obra.',
+      subtitle: showFullCustomerRegistrationData
+          ? 'Consulta completa do cadastro, obra, comercial e etapa 2.'
+          : 'Informações principais do cadastro e da obra.',
       child: LayoutBuilder(
         builder: (context, constraints) {
           final spacing = 14.0;
@@ -9531,294 +11130,108 @@ class _OrderDetailsPanel extends StatelessWidget {
           final itemWidth = useTwoColumns
               ? (constraints.maxWidth - spacing) / 2
               : constraints.maxWidth;
+          final fullWidth = useTwoColumns ? constraints.maxWidth : itemWidth;
+
+          Widget info(String label, String value, {bool emphasize = false}) {
+            return SizedBox(
+              width: itemWidth,
+              child: _InfoRow(
+                label: label,
+                value: value.trim().isEmpty ? 'Não informado' : value,
+                emphasizeValue: emphasize,
+              ),
+            );
+          }
+
+          Widget infoFull(
+            String label,
+            String value, {
+            bool emphasize = false,
+          }) {
+            return SizedBox(
+              width: fullWidth,
+              child: _InfoRow(
+                label: label,
+                value: value.trim().isEmpty ? 'Não informado' : value,
+                emphasizeValue: emphasize,
+              ),
+            );
+          }
+
+          final stage2ServicesSummary = order!.proposalServices.isEmpty
+              ? 'Não informado'
+              : order!.proposalServices
+                    .map(
+                      (service) =>
+                          '${service.serviceName}: Consolidado ${service.consolidated.isEmpty ? "Não informado" : service.consolidated}, Projeto ${service.prepareInProject.isEmpty ? "Não informado" : service.prepareInProject}${service.observations.trim().isEmpty ? "" : " (${service.observations.trim()})"}',
+                    )
+                    .join('\n');
+          final whatsappMembersSummary = order!.whatsappGroupMembers.isEmpty
+              ? 'Não informado'
+              : order!.whatsappGroupMembers
+                    .map(
+                      (member) =>
+                          '${member.name} • ${member.phone} • ${member.role}',
+                    )
+                    .join('\n');
 
           return Wrap(
             spacing: spacing,
             runSpacing: spacing,
             children: [
-              SizedBox(
-                width: itemWidth,
-                child: _InfoRow(
-                  label: 'ID do cliente',
-                  value: order!.client.id,
-                  emphasizeValue: true,
+              info('ID do cliente', order!.client.id, emphasize: true),
+              info('Obra', order!.workName, emphasize: true),
+              info('Cliente', order!.client.name, emphasize: true),
+              info('Telefone', order!.client.phone),
+              infoFull('Endereço', order!.address),
+              if (showFullCustomerRegistrationData) ...[
+                info('Data de nascimento', order!.client.birthDate),
+                info('E-mail', order!.client.email),
+                info('RG', order!.client.rg),
+                info('CPF', order!.client.cpf),
+                info('CEP cobrança', order!.client.postalCode),
+                info('Rua cobrança', order!.client.street),
+                info('Número cobrança', order!.client.number),
+                info('Bairro cobrança', order!.client.neighborhood),
+                info('Complemento cobrança', order!.client.complement),
+                info('Cidade cobrança', order!.client.city),
+                info('CEP obra', order!.workPostalCode),
+                info('Rua obra', order!.workStreet),
+                info('Número obra', order!.workNumber),
+                info('Bairro obra', order!.workNeighborhood),
+                info('Complemento obra', order!.workComplement),
+                info('Número da proposta', order!.commercialProposalNumber),
+                info(
+                  'Valor consolidado',
+                  order!.value == 0 ? '' : order!.value.toStringAsFixed(2),
                 ),
-              ),
-              SizedBox(
-                width: itemWidth,
-                child: _InfoRow(
-                  label: 'Obra',
-                  value: order!.workName,
-                  emphasizeValue: true,
+                info('Pagamento', order!.paymentType),
+                info('Forma de pagamento', order!.paymentMethod),
+                info('Valor da parcela', order!.installmentValue),
+                info('Qtde de parcelas', order!.installmentCount),
+                infoFull('Observação comercial', order!.paymentObservation),
+                info('Data do pagamento', order!.paymentDate),
+                info('Valor RT', order!.rtValue),
+                info('Nome do arquiteto', order!.architectName),
+                info('Valor integrador', order!.integratorValue),
+                info('Nome do integrador', order!.integratorName),
+                info('Já é cliente DANF?', order!.isDanfClient),
+                info('DANF faz a instalação?', order!.danfInstallerName),
+                info('Pode ter placa DANF?', order!.canHaveDanfPlate),
+                info('Tem grupo no WhatsApp?', order!.hasWhatsappGroup),
+                infoFull('Serviços da etapa 2', stage2ServicesSummary),
+                infoFull(
+                  'Membros do grupo de WhatsApp',
+                  whatsappMembersSummary,
                 ),
-              ),
-              SizedBox(
-                width: itemWidth,
-                child: _InfoRow(
-                  label: 'Cliente',
-                  value: order!.client.name,
-                  emphasizeValue: true,
+                infoFull(
+                  'Observação do grupo de WhatsApp',
+                  order!.whatsappGroupObservation,
                 ),
-              ),
-              SizedBox(
-                width: itemWidth,
-                child: _InfoRow(label: 'Telefone', value: order!.client.phone),
-              ),
-              SizedBox(
-                width: useTwoColumns ? constraints.maxWidth : itemWidth,
-                child: _InfoRow(label: 'Endereço', value: order!.address),
-              ),
+              ],
             ],
           );
         },
-      ),
-    );
-    final stageFilesSection = _CollapsibleDetailSection(
-      title: 'Arquivos da etapa',
-      subtitle: 'Acesse anexos liberados e acompanhe o que ainda falta.',
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          LayoutBuilder(
-            builder: (context, constraints) {
-              final spacing = 14.0;
-              final useTwoColumns = constraints.maxWidth >= 700;
-              final itemWidth = useTwoColumns
-                  ? (constraints.maxWidth - spacing) / 2
-                  : constraints.maxWidth;
-
-              return Wrap(
-                spacing: spacing,
-                runSpacing: spacing,
-                children: [
-                  if (!isServiceOrder) ...[
-                    SizedBox(
-                      width: itemWidth,
-                      child: _FileInfoRow(
-                        label: 'Proposta',
-                        value: order!.proposalFileName.isEmpty
-                            ? 'Arquivo ainda não anexado'
-                            : order!.proposalFileName,
-                        filePath: order!.proposalFilePath,
-                        status: order!.proposalFileName.trim().isEmpty
-                            ? _FileInfoStatus.missing
-                            : _FileInfoStatus.available,
-                      ),
-                    ),
-                    SizedBox(
-                      width: itemWidth,
-                      child: canViewDetails
-                          ? _FileInfoRow(
-                              label: 'Detalhes',
-                              value: order!.detailFileName,
-                              filePath: order!.detailFilePath,
-                            )
-                          : const _FileInfoRow(
-                              label: 'Detalhes',
-                              value: 'Arquivo restrito nesta etapa',
-                              status: _FileInfoStatus.restricted,
-                            ),
-                    ),
-                  ],
-                  if (isServiceOrder)
-                    SizedBox(
-                      width: itemWidth,
-                      child: _FileInfoRow(
-                        label: 'Ordem de serviço (PDF)',
-                        value: hasServiceOrderPdf
-                            ? order!.serviceOrderFileName
-                            : 'Arquivo ainda não anexado',
-                        filePath: order!.serviceOrderFilePath,
-                        status: hasServiceOrderPdf
-                            ? _FileInfoStatus.available
-                            : _FileInfoStatus.missing,
-                      ),
-                    ),
-                  if (!isServiceOrder && !isFinanceStage)
-                    SizedBox(
-                      width: itemWidth,
-                      child: _FileInfoRow(
-                        label: 'Materiais',
-                        value: hasMaterialsFile
-                            ? order!.materialFileName
-                            : 'Arquivo ainda não anexado',
-                        filePath: order!.materialFilePath,
-                        status: hasMaterialsFile
-                            ? _FileInfoStatus.available
-                            : _FileInfoStatus.missing,
-                      ),
-                    ),
-                  if (isFinanceStage && !isServiceOrder) ...[
-                    SizedBox(
-                      width: itemWidth,
-                      child: _FileInfoRow(
-                        label: 'Proposta consolidada',
-                        value: hasConsolidatedProposal
-                            ? order!.consolidatedProposalFileName
-                            : 'Arquivo ainda não anexado',
-                        filePath: order!.consolidatedProposalFilePath,
-                        status: hasConsolidatedProposal
-                            ? _FileInfoStatus.available
-                            : _FileInfoStatus.missing,
-                      ),
-                    ),
-                    SizedBox(
-                      width: itemWidth,
-                      child: _FileInfoRow(
-                        label: 'Contrato',
-                        value: hasContractFile
-                            ? order!.contractFileName
-                            : 'Arquivo ainda não anexado',
-                        filePath: order!.contractFilePath,
-                        status: hasContractFile
-                            ? _FileInfoStatus.available
-                            : _FileInfoStatus.missing,
-                      ),
-                    ),
-                  ],
-                  if (showEngineeringFilesInStageFiles) ...[
-                    SizedBox(
-                      width: itemWidth,
-                      child: _FileInfoRow(
-                        label: 'Projeto elétrico',
-                        value: hasElectricalProject
-                            ? order!.electricalProjectFileName
-                            : 'Arquivo ainda não anexado',
-                        filePath: order!.electricalProjectFilePath,
-                        status: hasElectricalProject
-                            ? _FileInfoStatus.available
-                            : _FileInfoStatus.missing,
-                      ),
-                    ),
-                    SizedBox(
-                      width: itemWidth,
-                      child: _FileInfoRow(
-                        label: 'Layout do painel',
-                        value: hasPanelLayout
-                            ? order!.panelLayoutFileName
-                            : 'Arquivo ainda não anexado',
-                        filePath: order!.panelLayoutFilePath,
-                        status: hasPanelLayout
-                            ? _FileInfoStatus.available
-                            : _FileInfoStatus.missing,
-                      ),
-                    ),
-                    SizedBox(
-                      width: itemWidth,
-                      child: _FileInfoRow(
-                        label: 'Tabela de pulsadores',
-                        value: hasPushButtonTable
-                            ? order!.pushButtonTableFileName
-                            : 'Arquivo ainda não anexado',
-                        filePath: order!.pushButtonTableFilePath,
-                        status: hasPushButtonTable
-                            ? _FileInfoStatus.available
-                            : _FileInfoStatus.missing,
-                      ),
-                    ),
-                    SizedBox(
-                      width: itemWidth,
-                      child: _FileInfoRow(
-                        label: 'Dados',
-                        value: hasEngineeringData
-                            ? order!.engineeringDataFileName
-                            : 'Arquivo ainda não anexado',
-                        filePath: order!.engineeringDataFilePath,
-                        status: hasEngineeringData
-                            ? _FileInfoStatus.available
-                            : _FileInfoStatus.missing,
-                      ),
-                    ),
-                  ],
-                ],
-              );
-            },
-          ),
-          if (showFlowActions && isEstimatingStage && !isServiceOrder) ...[
-            const SizedBox(height: 12),
-            OutlinedButton.icon(
-              onPressed: onAttachMaterials == null
-                  ? null
-                  : () async {
-                      await onAttachMaterials!();
-                    },
-              style: _attachmentReadyButtonStyle(hasMaterialsFile),
-              icon: Icon(
-                hasMaterialsFile
-                    ? Icons.upload_file_outlined
-                    : Icons.note_add_outlined,
-              ),
-              label: Text(
-                hasMaterialsFile
-                    ? 'Trocar arquivo Materiais'
-                    : 'Adicionar arquivo Materiais',
-              ),
-            ),
-          ],
-          if (showFlowActions && isFinanceStage && !isServiceOrder) ...[
-            const SizedBox(height: 12),
-            Wrap(
-              spacing: 10,
-              runSpacing: 10,
-              children: [
-                OutlinedButton.icon(
-                  onPressed: onAttachConsolidatedProposal == null
-                      ? null
-                      : () async {
-                          await onAttachConsolidatedProposal!();
-                        },
-                  style: _attachmentReadyButtonStyle(hasConsolidatedProposal),
-                  icon: Icon(
-                    hasConsolidatedProposal
-                        ? Icons.upload_file_outlined
-                        : Icons.note_add_outlined,
-                  ),
-                  label: Text(
-                    hasConsolidatedProposal
-                        ? 'Trocar proposta consolidada'
-                        : 'Anexar proposta consolidada',
-                  ),
-                ),
-                OutlinedButton.icon(
-                  onPressed: onAttachContract == null
-                      ? null
-                      : () async {
-                          await onAttachContract!();
-                        },
-                  style: _attachmentReadyButtonStyle(hasContractFile),
-                  icon: Icon(
-                    hasContractFile
-                        ? Icons.upload_file_outlined
-                        : Icons.note_add_outlined,
-                  ),
-                  label: Text(
-                    hasContractFile ? 'Trocar contrato' : 'Anexar contrato',
-                  ),
-                ),
-              ],
-            ),
-          ],
-          if (showFlowActions &&
-              isEstimatingStage &&
-              !isServiceOrder &&
-              !hasMaterialsFile) ...[
-            const SizedBox(height: 8),
-            const Text(
-              'O arquivo Materiais e obrigatorio para avancar esta etapa.',
-              style: TextStyle(color: Color(0xFFB91C1C)),
-            ),
-          ],
-          if (showFlowActions &&
-              isEstimatingStage &&
-              isServiceOrder &&
-              !hasServiceOrderPdf) ...[
-            const SizedBox(height: 8),
-            const Text(
-              'O PDF da ordem de serviço é obrigatório para avançar esta etapa.',
-              style: TextStyle(color: Color(0xFFB91C1C)),
-            ),
-          ],
-        ],
       ),
     );
     final serviceOrderSection = !isServiceOrder
@@ -9847,6 +11260,60 @@ class _OrderDetailsPanel extends StatelessWidget {
                   ),
                 ],
               ],
+            ),
+          );
+    final financeContractSection = !showFinanceContractSection
+        ? null
+        : _CollapsibleDetailSection(
+            title: 'Financeiro',
+            subtitle:
+                'Kanban interno de contrato para acompanhar emissão, envio, assinatura e contas a receber.',
+            initiallyExpanded: isFinanceStage,
+            child: _FinanceContractChecklistCard(
+              order: order!,
+              isEditable: showFlowActions && isFinanceStage,
+              onAttachContract: onAttachContract,
+              onStatusChanged: onUpdateFinanceContractStatus,
+            ),
+          );
+    final relationshipSection = !showRelationshipSection
+        ? null
+        : _CollapsibleDetailSection(
+            title: 'Relacionamento',
+            subtitle:
+                'Kanban interno para acompanhar aguardando, execução e conclusão antes do encaminhamento.',
+            initiallyExpanded: isRelationshipStage,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _RelationshipChecklistCard(
+                  order: order!,
+                  isEditable: showFlowActions && isRelationshipStage,
+                  onStatusChanged: onUpdateRelationshipKanbanStatus,
+                ),
+                if (showFlowActions &&
+                    isRelationshipStage &&
+                    !relationshipKanbanFlow.isComplete) ...[
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Conclua o kanban do Relacionamento antes de encaminhar o pedido.',
+                    style: TextStyle(color: Color(0xFFB91C1C)),
+                  ),
+                ],
+              ],
+            ),
+          );
+    final estimatingSection = isServiceOrder
+        ? null
+        : _CollapsibleDetailSection(
+            title: 'Levantamento do Orçamentista',
+            subtitle:
+                'Quantidade de visitas inclusas e lista de materiais do orçamento.',
+            initiallyExpanded: isEstimatingStage,
+            child: _EstimatingWorksheetSummaryCard(
+              order: order!,
+              canEdit: showFlowActions && isEstimatingStage,
+              onEditWorksheet: onAttachMaterials,
             ),
           );
     final proposalExtensionsSection = relatedProposals.length <= 1
@@ -10155,8 +11622,18 @@ class _OrderDetailsPanel extends StatelessWidget {
           ),
           const SizedBox(height: 18),
           customerDataSection,
-          const SizedBox(height: 12),
-          stageFilesSection,
+          if (relationshipSection != null) ...[
+            const SizedBox(height: 12),
+            relationshipSection,
+          ],
+          if (financeContractSection != null) ...[
+            const SizedBox(height: 12),
+            financeContractSection,
+          ],
+          if (estimatingSection != null) ...[
+            const SizedBox(height: 12),
+            estimatingSection,
+          ],
           if (serviceOrderSection != null) ...[
             const SizedBox(height: 12),
             serviceOrderSection,
@@ -10168,6 +11645,10 @@ class _OrderDetailsPanel extends StatelessWidget {
           if (engineeringSection != null) ...[
             const SizedBox(height: 12),
             engineeringSection,
+          ],
+          if (assemblyChecklistSection != null) ...[
+            const SizedBox(height: 12),
+            assemblyChecklistSection,
           ],
           if (assemblyTeamSection != null) ...[
             const SizedBox(height: 12),
@@ -10228,6 +11709,36 @@ class _ServiceOrderSummaryCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          if (order.financeClientApproved) ...[
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: const Color(0xFF15803D).withValues(alpha: 0.10),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: const Color(0xFF15803D).withValues(alpha: 0.28),
+                ),
+              ),
+              child: Row(
+                children: const [
+                  Icon(Icons.verified_rounded, color: Color(0xFF15803D)),
+                  SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      'Ordem de serviço aprovada',
+                      style: TextStyle(
+                        color: Color(0xFF15803D),
+                        fontSize: 16,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 14),
+          ],
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -10532,2341 +12043,6 @@ InstallationVisitLog? _plannedVisitForCurrentInstallationSchedule(
     }
   }
   return null;
-}
-
-class _InstallationScheduleCard extends StatelessWidget {
-  const _InstallationScheduleCard({
-    required this.order,
-    required this.workspaceProfiles,
-    required this.canEdit,
-    this.onScheduleInstallation,
-    this.onToggleExecutionItem,
-  });
-
-  final WorkflowOrder order;
-  final List<EmployeeWorkspaceProfile> workspaceProfiles;
-  final bool canEdit;
-  final Future<void> Function()? onScheduleInstallation;
-  final Future<void> Function(int visitIndex, String item)?
-  onToggleExecutionItem;
-
-  @override
-  Widget build(BuildContext context) {
-    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
-    final borderColor = isDarkMode
-        ? const Color(0xFF29403A)
-        : const Color(0xFFE2E8F0);
-    final surfaceColor = isDarkMode
-        ? const Color(0xFF121E1B)
-        : const Color(0xFFF8FAFC);
-    final secondaryTextColor = isDarkMode
-        ? const Color(0xFF9FB2AC)
-        : const Color(0xFF52605C);
-    final scheduledAt = order.installationScheduledAt;
-    final hasSchedule = scheduledAt != null;
-    final assignedProfiles = _profilesForEmails(
-      order.installationAssignedEmployeeEmails,
-      workspaceProfiles,
-    );
-    final team = assignedProfiles.isNotEmpty
-        ? assignedProfiles
-              .map(
-                (profile) =>
-                    profile.name.trim().isEmpty ? profile.login : profile.name,
-              )
-              .join(', ')
-        : order.installationAssignedTeam.trim();
-    final notes = order.installationNotes.trim();
-    final status = order.installationWorkflowStatus;
-    final plannedVisit = _plannedVisitForCurrentInstallationSchedule(order);
-    final plannedItems = plannedVisit?.plannedItems ?? const <String>[];
-
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: surfaceColor,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: borderColor),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    _StatusBadge(label: status.title, color: status.color),
-                    const SizedBox(height: 10),
-                    Text(
-                      hasSchedule
-                          ? _formatDateWithWeekday(scheduledAt)
-                          : 'Defina uma data e hora para organizar a execução em campo.',
-                      style: TextStyle(color: secondaryTextColor, height: 1.35),
-                    ),
-                  ],
-                ),
-              ),
-              if (canEdit && onScheduleInstallation != null)
-                OutlinedButton.icon(
-                  onPressed: () async {
-                    await onScheduleInstallation!();
-                  },
-                  icon: const Icon(Icons.edit_calendar_outlined),
-                  label: Text(hasSchedule ? 'Reagendar' : 'Agendar'),
-                ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          LayoutBuilder(
-            builder: (context, constraints) {
-              final useTwoColumns = constraints.maxWidth >= 720;
-              final itemWidth = useTwoColumns
-                  ? (constraints.maxWidth - 12) / 2
-                  : constraints.maxWidth;
-
-              return Wrap(
-                spacing: 12,
-                runSpacing: 12,
-                children: [
-                  SizedBox(
-                    width: itemWidth,
-                    child: _InfoRow(
-                      label: 'Data da instalação',
-                      value: hasSchedule
-                          ? _formatDate(scheduledAt)
-                          : 'Ainda não agendada',
-                      emphasizeValue: hasSchedule,
-                    ),
-                  ),
-                  SizedBox(
-                    width: itemWidth,
-                    child: _InfoRow(
-                      label: 'Horário',
-                      value: hasSchedule
-                          ? _formatTimeOnly(scheduledAt)
-                          : 'Definir horário',
-                    ),
-                  ),
-                  SizedBox(
-                    width: itemWidth,
-                    child: _InfoRow(
-                      label: 'Equipe responsável',
-                      value: team.isEmpty ? 'Não informada' : team,
-                    ),
-                  ),
-                  SizedBox(
-                    width: itemWidth,
-                    child: _InfoRow(
-                      label: 'Observações',
-                      value: notes.isEmpty ? 'Sem observações.' : notes,
-                    ),
-                  ),
-                ],
-              );
-            },
-          ),
-          if (plannedItems.isNotEmpty) ...[
-            const SizedBox(height: 14),
-            Text(
-              'Trabalhos planejados',
-              style: TextStyle(
-                color: isDarkMode
-                    ? const Color(0xFFE7F1EC)
-                    : const Color(0xFF17211E),
-                fontWeight: FontWeight.w800,
-              ),
-            ),
-            const SizedBox(height: 8),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: plannedItems
-                  .map(
-                    (item) => Chip(
-                      label: Text(item),
-                      backgroundColor: status.color.withValues(alpha: 0.08),
-                      side: BorderSide(
-                        color: status.color.withValues(alpha: 0.18),
-                      ),
-                    ),
-                  )
-                  .toList(growable: false),
-            ),
-          ],
-          if (assignedProfiles.isNotEmpty) ...[
-            const SizedBox(height: 14),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: assignedProfiles
-                  .map(
-                    (profile) => Chip(
-                      avatar: CircleAvatar(
-                        backgroundColor: profile.accent.withValues(alpha: 0.15),
-                        backgroundImage: _resolveProfileImageProvider(
-                          profile.photoFilePath,
-                        ),
-                        child:
-                            profile.photoFilePath == null ||
-                                profile.photoFilePath!.trim().isEmpty
-                            ? Text(
-                                (profile.name.trim().isEmpty
-                                        ? profile.login
-                                        : profile.name)
-                                    .trim()
-                                    .substring(0, 1)
-                                    .toUpperCase(),
-                                style: TextStyle(
-                                  color: profile.accent,
-                                  fontWeight: FontWeight.w800,
-                                ),
-                              )
-                            : null,
-                      ),
-                      label: Text(
-                        profile.name.trim().isEmpty
-                            ? profile.login
-                            : profile.name,
-                      ),
-                    ),
-                  )
-                  .toList(growable: false),
-            ),
-          ],
-          if (order.installationVisitHistory.isNotEmpty) ...[
-            const SizedBox(height: 18),
-            Text(
-              'Relatórios da instalação',
-              style: TextStyle(
-                color: isDarkMode
-                    ? const Color(0xFFE7F1EC)
-                    : const Color(0xFF17211E),
-                fontWeight: FontWeight.w800,
-              ),
-            ),
-            const SizedBox(height: 10),
-            ...order.installationVisitHistory.asMap().entries.map((entry) {
-              final visitIndex = entry.key;
-              final visit = entry.value;
-              final visitProfiles = _profilesForEmails(
-                visit.employeeEmails,
-                workspaceProfiles,
-              );
-              final visitTeam = visitProfiles.isEmpty
-                  ? visit.employeeEmails.join(', ')
-                  : visitProfiles
-                        .map(
-                          (profile) => profile.name.trim().isEmpty
-                              ? profile.login
-                              : profile.name,
-                        )
-                        .join(', ');
-
-              return Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: isDarkMode ? const Color(0xFF0E1715) : Colors.white,
-                    borderRadius: BorderRadius.circular(14),
-                    border: Border.all(color: borderColor),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        _formatDateWithWeekday(visit.scheduledAt),
-                        style: const TextStyle(fontWeight: FontWeight.w800),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        'Registrado em ${_formatDateTime(visit.createdAt)}',
-                        style: TextStyle(
-                          color: secondaryTextColor,
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        visitTeam.isEmpty
-                            ? 'Equipe não registrada'
-                            : 'Equipe: $visitTeam',
-                        style: TextStyle(color: secondaryTextColor),
-                      ),
-                      if (visit.plannedItems.isNotEmpty) ...[
-                        const SizedBox(height: 10),
-                        Text(
-                          'Trabalhos',
-                          style: TextStyle(
-                            color: secondaryTextColor,
-                            fontSize: 12,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                        const SizedBox(height: 6),
-                        ...visit.plannedItems.map((item) {
-                          final isChecked = visit.completedItems.contains(item);
-                          final canToggle =
-                              canEdit &&
-                              onToggleExecutionItem != null &&
-                              order.installationWorkflowStatus ==
-                                  InstallationWorkflowStatus.doing &&
-                              visitIndex ==
-                                  order.installationVisitHistory.length - 1;
-                          return CheckboxListTile(
-                            value: isChecked,
-                            contentPadding: EdgeInsets.zero,
-                            dense: true,
-                            controlAffinity: ListTileControlAffinity.leading,
-                            title: Text(item),
-                            onChanged: canToggle
-                                ? (_) async {
-                                    await onToggleExecutionItem!(
-                                      visitIndex,
-                                      item,
-                                    );
-                                  }
-                                : null,
-                          );
-                        }),
-                      ],
-                      if (visit.notes.trim().isNotEmpty) ...[
-                        const SizedBox(height: 4),
-                        Text(
-                          visit.notes,
-                          style: TextStyle(
-                            color: secondaryTextColor,
-                            height: 1.35,
-                          ),
-                        ),
-                      ],
-                    ],
-                  ),
-                ),
-              );
-            }),
-          ],
-        ],
-      ),
-    );
-  }
-}
-
-class _InstallationCalendarBoard extends StatelessWidget {
-  const _InstallationCalendarBoard({
-    required this.orders,
-    required this.selectedDate,
-    required this.onDateSelected,
-    required this.onOrderSelected,
-    this.selectedOrder,
-    this.onScheduleSelectedOrder,
-  });
-
-  final List<WorkflowOrder> orders;
-  final DateTime selectedDate;
-  final WorkflowOrder? selectedOrder;
-  final ValueChanged<DateTime> onDateSelected;
-  final ValueChanged<WorkflowOrder> onOrderSelected;
-  final Future<void> Function()? onScheduleSelectedOrder;
-
-  @override
-  Widget build(BuildContext context) {
-    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
-    final borderColor = isDarkMode
-        ? const Color(0xFF29403A)
-        : const Color(0xFFE2E8F0);
-    final surfaceColor = isDarkMode ? const Color(0xFF121E1B) : Colors.white;
-    final secondaryTextColor = isDarkMode
-        ? const Color(0xFF9FB2AC)
-        : const Color(0xFF52605C);
-    final stageOrders = orders
-        .where((order) => order.currentStage == WorkflowStage.installation)
-        .toList(growable: false);
-    final scheduledOrders =
-        stageOrders
-            .where((order) => order.installationScheduledAt != null)
-            .toList(growable: false)
-          ..sort(
-            (left, right) => left.installationScheduledAt!.compareTo(
-              right.installationScheduledAt!,
-            ),
-          );
-    final selectedDayOrders = scheduledOrders
-        .where(
-          (order) => _isSameDate(order.installationScheduledAt!, selectedDate),
-        )
-        .toList(growable: false);
-    final unscheduledCount = stageOrders
-        .where((order) => order.installationScheduledAt == null)
-        .length;
-    final canScheduleSelectedOrder =
-        selectedOrder?.currentStage == WorkflowStage.installation &&
-        onScheduleSelectedOrder != null;
-
-    return Container(
-      padding: const EdgeInsets.all(18),
-      decoration: _panelDecoration(context),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'Calendário de instalação',
-                      style: TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      'Planeje as visitas da equipe e visualize os pedidos do dia selecionado.',
-                      style: TextStyle(color: secondaryTextColor, height: 1.35),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 12),
-              if (canScheduleSelectedOrder)
-                FilledButton.icon(
-                  onPressed: () async {
-                    await onScheduleSelectedOrder!();
-                  },
-                  icon: const Icon(Icons.event_outlined),
-                  label: const Text('Agendar pedido selecionado'),
-                ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          Wrap(
-            spacing: 10,
-            runSpacing: 10,
-            children: [
-              _CalendarMetricPill(
-                label: 'Agendados',
-                value: '${scheduledOrders.length}',
-                accent: const Color(0xFF0F766E),
-              ),
-              _CalendarMetricPill(
-                label: 'Sem agenda',
-                value: '$unscheduledCount',
-                accent: const Color(0xFFB45309),
-              ),
-              _CalendarMetricPill(
-                label: 'Dia selecionado',
-                value: '${selectedDayOrders.length}',
-                accent: WorkflowStage.installation.color,
-              ),
-            ],
-          ),
-          const SizedBox(height: 18),
-          LayoutBuilder(
-            builder: (context, constraints) {
-              final useColumn = constraints.maxWidth < 980;
-              final calendar = Container(
-                decoration: BoxDecoration(
-                  color: surfaceColor,
-                  borderRadius: BorderRadius.circular(18),
-                  border: Border.all(color: borderColor),
-                ),
-                padding: const EdgeInsets.all(12),
-                child: CalendarDatePicker(
-                  initialDate: selectedDate,
-                  currentDate: DateTime.now(),
-                  firstDate: DateTime(2020),
-                  lastDate: DateTime(2035, 12, 31),
-                  onDateChanged: onDateSelected,
-                ),
-              );
-              final agenda = Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: surfaceColor,
-                  borderRadius: BorderRadius.circular(18),
-                  border: Border.all(color: borderColor),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      _formatDayWithWeekday(selectedDate),
-                      style: const TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      selectedDayOrders.isEmpty
-                          ? 'Nenhuma instalação marcada para este dia.'
-                          : '${selectedDayOrders.length} instalação(ões) programada(s).',
-                      style: TextStyle(color: secondaryTextColor),
-                    ),
-                    const SizedBox(height: 16),
-                    if (selectedDayOrders.isEmpty)
-                      Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.all(16),
-                        decoration: BoxDecoration(
-                          color: isDarkMode
-                              ? Colors.black.withValues(alpha: 0.12)
-                              : const Color(0xFFF8FAFC),
-                          borderRadius: BorderRadius.circular(14),
-                          border: Border.all(color: borderColor),
-                        ),
-                        child: Text(
-                          'Selecione um pedido da lista de Instalação e use o botão de agendamento para preencher este calendário.',
-                          style: TextStyle(
-                            color: secondaryTextColor,
-                            height: 1.35,
-                          ),
-                        ),
-                      )
-                    else
-                      ...selectedDayOrders.map(
-                        (order) => Padding(
-                          padding: const EdgeInsets.only(bottom: 10),
-                          child: InkWell(
-                            onTap: () => onOrderSelected(order),
-                            borderRadius: BorderRadius.circular(14),
-                            child: Container(
-                              width: double.infinity,
-                              padding: const EdgeInsets.all(14),
-                              decoration: BoxDecoration(
-                                color: selectedOrder?.code == order.code
-                                    ? WorkflowStage.installation.color
-                                          .withValues(alpha: 0.08)
-                                    : isDarkMode
-                                    ? const Color(0xFF0E1715)
-                                    : const Color(0xFFF8FAFC),
-                                borderRadius: BorderRadius.circular(14),
-                                border: Border.all(
-                                  color: selectedOrder?.code == order.code
-                                      ? WorkflowStage.installation.color
-                                      : borderColor,
-                                ),
-                              ),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Row(
-                                    children: [
-                                      Container(
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 10,
-                                          vertical: 6,
-                                        ),
-                                        decoration: BoxDecoration(
-                                          color: WorkflowStage
-                                              .installation
-                                              .color
-                                              .withValues(alpha: 0.12),
-                                          borderRadius: BorderRadius.circular(
-                                            999,
-                                          ),
-                                        ),
-                                        child: Text(
-                                          _formatTimeOnly(
-                                            order.installationScheduledAt!,
-                                          ),
-                                          style: TextStyle(
-                                            color: WorkflowStage
-                                                .installation
-                                                .color,
-                                            fontWeight: FontWeight.w800,
-                                          ),
-                                        ),
-                                      ),
-                                      const SizedBox(width: 10),
-                                      Expanded(
-                                        child: Text(
-                                          order.code,
-                                          style: TextStyle(
-                                            color: secondaryTextColor,
-                                            fontSize: 12,
-                                            fontWeight: FontWeight.w700,
-                                          ),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                  const SizedBox(height: 10),
-                                  Text(
-                                    order.workName,
-                                    style: const TextStyle(
-                                      fontSize: 15,
-                                      fontWeight: FontWeight.w800,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    '${order.client.name} • ${order.address}',
-                                    style: TextStyle(
-                                      color: secondaryTextColor,
-                                      height: 1.35,
-                                    ),
-                                  ),
-                                  if (order.installationAssignedTeam
-                                      .trim()
-                                      .isNotEmpty) ...[
-                                    const SizedBox(height: 8),
-                                    Text(
-                                      'Equipe: ${order.installationAssignedTeam}',
-                                      style: TextStyle(
-                                        color: secondaryTextColor,
-                                        fontSize: 12,
-                                        fontWeight: FontWeight.w600,
-                                      ),
-                                    ),
-                                  ],
-                                ],
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
-              );
-
-              if (useColumn) {
-                return Column(
-                  children: [calendar, const SizedBox(height: 16), agenda],
-                );
-              }
-
-              return Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Expanded(flex: 5, child: calendar),
-                  const SizedBox(width: 16),
-                  Expanded(flex: 6, child: agenda),
-                ],
-              );
-            },
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _EngineeringStageCalendarBoard extends StatefulWidget {
-  const _EngineeringStageCalendarBoard({
-    required this.orders,
-    required this.onOrderSelected,
-    this.selectedOrder,
-  });
-
-  final List<WorkflowOrder> orders;
-  final WorkflowOrder? selectedOrder;
-  final ValueChanged<WorkflowOrder> onOrderSelected;
-
-  @override
-  State<_EngineeringStageCalendarBoard> createState() =>
-      _EngineeringStageCalendarBoardState();
-}
-
-class _EngineeringStageCalendarBoardState
-    extends State<_EngineeringStageCalendarBoard> {
-  late DateTime _selectedDate;
-
-  @override
-  void initState() {
-    super.initState();
-    _selectedDate = _resolveInitialDate(widget.orders);
-  }
-
-  @override
-  void didUpdateWidget(covariant _EngineeringStageCalendarBoard oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.orders != widget.orders && widget.orders.isNotEmpty) {
-      final hasSchedulesForCurrentDate = widget.orders.any(
-        (order) => order.engineeringActivitySchedules.values.any(
-          (schedule) => _isSameDate(schedule.scheduledAt, _selectedDate),
-        ),
-      );
-      if (!hasSchedulesForCurrentDate) {
-        _selectedDate = _resolveInitialDate(widget.orders);
-      }
-    }
-  }
-
-  DateTime _resolveInitialDate(List<WorkflowOrder> orders) {
-    DateTime? earliestSchedule;
-    for (final order in orders) {
-      for (final schedule in order.engineeringActivitySchedules.values) {
-        if (earliestSchedule == null ||
-            schedule.scheduledAt.isBefore(earliestSchedule)) {
-          earliestSchedule = schedule.scheduledAt;
-        }
-      }
-    }
-
-    return DateUtils.dateOnly(earliestSchedule ?? DateTime.now());
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
-    final borderColor = isDarkMode
-        ? const Color(0xFF29403A)
-        : const Color(0xFFE2E8F0);
-    final surfaceColor = isDarkMode ? const Color(0xFF121E1B) : Colors.white;
-    final secondaryTextColor = isDarkMode
-        ? const Color(0xFF9FB2AC)
-        : const Color(0xFF52605C);
-    final stageOrders = widget.orders
-        .where((order) => order.currentStage == WorkflowStage.engineering)
-        .toList(growable: false);
-    final scheduledEntries = <_EngineeringCalendarEntry>[];
-    for (final order in stageOrders) {
-      for (final entry in order.engineeringActivitySchedules.entries) {
-        final task = _engineeringChecklistTaskByKey(entry.key);
-        if (task == null) {
-          continue;
-        }
-        scheduledEntries.add(
-          _EngineeringCalendarEntry(
-            order: order,
-            task: task,
-            schedule: entry.value,
-          ),
-        );
-      }
-    }
-    scheduledEntries.sort(
-      (left, right) =>
-          left.schedule.scheduledAt.compareTo(right.schedule.scheduledAt),
-    );
-    final selectedDayEntries = scheduledEntries
-        .where(
-          (entry) => _isSameDate(entry.schedule.scheduledAt, _selectedDate),
-        )
-        .toList(growable: false);
-    final ordersWithSchedule = stageOrders
-        .where((order) => order.engineeringActivitySchedules.isNotEmpty)
-        .length;
-
-    return Container(
-      padding: const EdgeInsets.all(18),
-      decoration: _panelDecoration(context),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            'Calendário da engenharia',
-            style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
-          ),
-          const SizedBox(height: 6),
-          Text(
-            'Concentre aqui as apresentações, visitas em obra e conferências de cabos já agendadas.',
-            style: TextStyle(color: secondaryTextColor, height: 1.35),
-          ),
-          const SizedBox(height: 16),
-          Wrap(
-            spacing: 10,
-            runSpacing: 10,
-            children: [
-              _CalendarMetricPill(
-                label: 'Atividades',
-                value: '${scheduledEntries.length}',
-                accent: WorkflowStage.engineering.color,
-              ),
-              _CalendarMetricPill(
-                label: 'Pedidos com agenda',
-                value: '$ordersWithSchedule',
-                accent: const Color(0xFF0F766E),
-              ),
-              _CalendarMetricPill(
-                label: 'Dia selecionado',
-                value: '${selectedDayEntries.length}',
-                accent: const Color(0xFF475569),
-              ),
-            ],
-          ),
-          const SizedBox(height: 18),
-          LayoutBuilder(
-            builder: (context, constraints) {
-              final useColumn = constraints.maxWidth < 980;
-              final calendar = Container(
-                decoration: BoxDecoration(
-                  color: surfaceColor,
-                  borderRadius: BorderRadius.circular(18),
-                  border: Border.all(color: borderColor),
-                ),
-                padding: const EdgeInsets.all(12),
-                child: CalendarDatePicker(
-                  initialDate: _selectedDate,
-                  currentDate: DateTime.now(),
-                  firstDate: DateTime(2020),
-                  lastDate: DateTime(2035, 12, 31),
-                  onDateChanged: (value) {
-                    setState(() {
-                      _selectedDate = DateUtils.dateOnly(value);
-                    });
-                  },
-                ),
-              );
-              final agenda = Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: surfaceColor,
-                  borderRadius: BorderRadius.circular(18),
-                  border: Border.all(color: borderColor),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      _formatDayWithWeekday(_selectedDate),
-                      style: const TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      selectedDayEntries.isEmpty
-                          ? 'Nenhuma atividade técnica marcada para este dia.'
-                          : '${selectedDayEntries.length} atividade(s) técnica(s) programada(s).',
-                      style: TextStyle(color: secondaryTextColor),
-                    ),
-                    const SizedBox(height: 16),
-                    if (selectedDayEntries.isEmpty)
-                      Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.all(16),
-                        decoration: BoxDecoration(
-                          color: isDarkMode
-                              ? Colors.black.withValues(alpha: 0.12)
-                              : const Color(0xFFF8FAFC),
-                          borderRadius: BorderRadius.circular(14),
-                          border: Border.all(color: borderColor),
-                        ),
-                        child: Text(
-                          'Abra um pedido em Trabalhos para agendar as atividades do checklist técnico. Elas aparecem aqui automaticamente.',
-                          style: TextStyle(
-                            color: secondaryTextColor,
-                            height: 1.35,
-                          ),
-                        ),
-                      )
-                    else
-                      ...selectedDayEntries.map((entry) {
-                        final isSelected =
-                            widget.selectedOrder?.code == entry.order.code;
-                        return Padding(
-                          padding: const EdgeInsets.only(bottom: 10),
-                          child: InkWell(
-                            onTap: () => widget.onOrderSelected(entry.order),
-                            borderRadius: BorderRadius.circular(14),
-                            child: Container(
-                              width: double.infinity,
-                              padding: const EdgeInsets.all(14),
-                              decoration: BoxDecoration(
-                                color: isSelected
-                                    ? WorkflowStage.engineering.color
-                                          .withValues(alpha: 0.08)
-                                    : isDarkMode
-                                    ? const Color(0xFF0E1715)
-                                    : const Color(0xFFF8FAFC),
-                                borderRadius: BorderRadius.circular(14),
-                                border: Border.all(
-                                  color: isSelected
-                                      ? WorkflowStage.engineering.color
-                                      : borderColor,
-                                ),
-                              ),
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Row(
-                                    children: [
-                                      Container(
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 10,
-                                          vertical: 6,
-                                        ),
-                                        decoration: BoxDecoration(
-                                          color: WorkflowStage.engineering.color
-                                              .withValues(alpha: 0.12),
-                                          borderRadius: BorderRadius.circular(
-                                            999,
-                                          ),
-                                        ),
-                                        child: Text(
-                                          _formatTimeOnly(
-                                            entry.schedule.scheduledAt,
-                                          ),
-                                          style: TextStyle(
-                                            color:
-                                                WorkflowStage.engineering.color,
-                                            fontWeight: FontWeight.w800,
-                                          ),
-                                        ),
-                                      ),
-                                      const SizedBox(width: 10),
-                                      Expanded(
-                                        child: Text(
-                                          _displayOrderCode(
-                                            entry.order,
-                                            widget.orders,
-                                          ),
-                                          style: TextStyle(
-                                            color: secondaryTextColor,
-                                            fontSize: 12,
-                                            fontWeight: FontWeight.w700,
-                                          ),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                  const SizedBox(height: 10),
-                                  Text(
-                                    entry.task.label,
-                                    style: const TextStyle(
-                                      fontSize: 15,
-                                      fontWeight: FontWeight.w800,
-                                    ),
-                                  ),
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    '${entry.order.workName} • ${entry.order.client.name}',
-                                    style: TextStyle(
-                                      color: secondaryTextColor,
-                                      height: 1.35,
-                                    ),
-                                  ),
-                                  if (entry.schedule.notes
-                                      .trim()
-                                      .isNotEmpty) ...[
-                                    const SizedBox(height: 8),
-                                    Text(
-                                      entry.schedule.notes,
-                                      style: TextStyle(
-                                        color: secondaryTextColor,
-                                        fontSize: 12,
-                                        height: 1.35,
-                                      ),
-                                    ),
-                                  ],
-                                ],
-                              ),
-                            ),
-                          ),
-                        );
-                      }),
-                  ],
-                ),
-              );
-
-              if (useColumn) {
-                return Column(
-                  children: [calendar, const SizedBox(height: 16), agenda],
-                );
-              }
-
-              return Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Expanded(flex: 5, child: calendar),
-                  const SizedBox(width: 16),
-                  Expanded(flex: 6, child: agenda),
-                ],
-              );
-            },
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _EngineeringCalendarEntry {
-  const _EngineeringCalendarEntry({
-    required this.order,
-    required this.task,
-    required this.schedule,
-  });
-
-  final WorkflowOrder order;
-  final EngineeringChecklistTask task;
-  final EngineeringTaskSchedule schedule;
-}
-
-class _CalendarMetricPill extends StatelessWidget {
-  const _CalendarMetricPill({
-    required this.label,
-    required this.value,
-    required this.accent,
-  });
-
-  final String label;
-  final String value;
-  final Color accent;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      decoration: BoxDecoration(
-        color: accent.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: accent.withValues(alpha: 0.16)),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(
-            value,
-            style: TextStyle(
-              color: accent,
-              fontSize: 16,
-              fontWeight: FontWeight.w800,
-            ),
-          ),
-          const SizedBox(width: 8),
-          Text(label, style: const TextStyle(fontWeight: FontWeight.w700)),
-        ],
-      ),
-    );
-  }
-}
-
-class _InstallationScheduleDraft {
-  const _InstallationScheduleDraft({
-    required this.scheduledAt,
-    required this.assignedTeam,
-    required this.plannedItems,
-    required this.notes,
-  });
-
-  final DateTime scheduledAt;
-  final String assignedTeam;
-  final List<String> plannedItems;
-  final String notes;
-}
-
-class _InstallationExecutionDraft {
-  const _InstallationExecutionDraft({
-    required this.plannedItems,
-    required this.notes,
-  });
-
-  final List<String> plannedItems;
-  final String notes;
-}
-
-class _InstallationExecutionDialog extends StatefulWidget {
-  const _InstallationExecutionDialog({required this.order});
-
-  final WorkflowOrder order;
-
-  @override
-  State<_InstallationExecutionDialog> createState() =>
-      _InstallationExecutionDialogState();
-}
-
-class _InstallationExecutionDialogState
-    extends State<_InstallationExecutionDialog> {
-  final Set<String> _selectedItems = {...WorkflowStage.installation.checklist};
-  late final TextEditingController _customItemsController;
-  late final TextEditingController _notesController;
-
-  @override
-  void initState() {
-    super.initState();
-    _customItemsController = TextEditingController();
-    _notesController = TextEditingController(
-      text: widget.order.installationNotes,
-    );
-  }
-
-  @override
-  void dispose() {
-    _customItemsController.dispose();
-    _notesController.dispose();
-    super.dispose();
-  }
-
-  void _submit() {
-    final customItems = _customItemsController.text
-        .split('\n')
-        .map((item) => item.trim())
-        .where((item) => item.isNotEmpty);
-    final plannedItems = {
-      ..._selectedItems,
-      ...customItems,
-    }.toList(growable: false);
-    if (plannedItems.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Selecione ou descreva pelo menos uma execução.'),
-        ),
-      );
-      return;
-    }
-
-    Navigator.of(context).pop(
-      _InstallationExecutionDraft(
-        plannedItems: plannedItems,
-        notes: _notesController.text.trim(),
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final screenWidth = MediaQuery.sizeOf(context).width;
-
-    return Dialog(
-      backgroundColor: Colors.transparent,
-      insetPadding: EdgeInsets.symmetric(
-        horizontal: screenWidth < 640 ? 16 : 32,
-        vertical: 24,
-      ),
-      child: Container(
-        constraints: const BoxConstraints(maxWidth: 760),
-        decoration: BoxDecoration(
-          color: const Color(0xFFF5F7F2),
-          borderRadius: BorderRadius.circular(28),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              padding: const EdgeInsets.all(24),
-              decoration: const BoxDecoration(
-                borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-                color: Color(0xFF14211D),
-              ),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.08),
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                    child: const Icon(
-                      Icons.checklist_rtl_outlined,
-                      color: Colors.white,
-                      size: 28,
-                    ),
-                  ),
-                  const SizedBox(width: 14),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        const Text(
-                          'Execução da instalação',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 25,
-                            fontWeight: FontWeight.w800,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          '${_displayOrderCode(widget.order)} • ${widget.order.workName}',
-                          style: const TextStyle(color: Colors.white70),
-                        ),
-                      ],
-                    ),
-                  ),
-                  IconButton(
-                    onPressed: () => Navigator.of(context).pop(),
-                    icon: const Icon(Icons.close, color: Colors.white),
-                  ),
-                ],
-              ),
-            ),
-            Flexible(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'O que será executado',
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    ...WorkflowStage.installation.checklist.map((item) {
-                      return CheckboxListTile(
-                        value: _selectedItems.contains(item),
-                        contentPadding: EdgeInsets.zero,
-                        title: Text(item),
-                        onChanged: (value) {
-                          setState(() {
-                            if (value == true) {
-                              _selectedItems.add(item);
-                            } else {
-                              _selectedItems.remove(item);
-                            }
-                          });
-                        },
-                      );
-                    }),
-                    const SizedBox(height: 14),
-                    _DialogField(
-                      controller: _customItemsController,
-                      label: 'Outras execuções',
-                      validator: (_) => null,
-                      hintText: 'Uma execução por linha',
-                      maxLines: 3,
-                    ),
-                    const SizedBox(height: 16),
-                    _DialogField(
-                      controller: _notesController,
-                      label: 'Observação desta execução',
-                      validator: (_) => null,
-                      hintText:
-                          'Descreva acesso, pendências, materiais, impedimentos...',
-                      maxLines: 4,
-                    ),
-                    const SizedBox(height: 24),
-                    Align(
-                      alignment: Alignment.centerRight,
-                      child: Wrap(
-                        spacing: 12,
-                        runSpacing: 12,
-                        children: [
-                          OutlinedButton(
-                            onPressed: () => Navigator.of(context).pop(),
-                            child: const Text('Cancelar'),
-                          ),
-                          FilledButton.icon(
-                            onPressed: _submit,
-                            icon: const Icon(Icons.play_arrow_outlined),
-                            label: const Text('Iniciar execução'),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _EngineeringActivityScheduleDraft {
-  const _EngineeringActivityScheduleDraft({
-    required this.scheduledAt,
-    required this.notes,
-  });
-
-  final DateTime scheduledAt;
-  final String notes;
-}
-
-class _EngineeringActivityScheduleDialog extends StatefulWidget {
-  const _EngineeringActivityScheduleDialog({
-    required this.order,
-    required this.task,
-    required this.initialDraft,
-  });
-
-  final WorkflowOrder order;
-  final EngineeringChecklistTask task;
-  final _EngineeringActivityScheduleDraft initialDraft;
-
-  @override
-  State<_EngineeringActivityScheduleDialog> createState() =>
-      _EngineeringActivityScheduleDialogState();
-}
-
-class _EngineeringActivityScheduleDialogState
-    extends State<_EngineeringActivityScheduleDialog> {
-  late DateTime _scheduledAt;
-  late TextEditingController _notesController;
-
-  @override
-  void initState() {
-    super.initState();
-    _scheduledAt = widget.initialDraft.scheduledAt;
-    _notesController = TextEditingController(text: widget.initialDraft.notes);
-  }
-
-  @override
-  void dispose() {
-    _notesController.dispose();
-    super.dispose();
-  }
-
-  Future<void> _pickDate() async {
-    final pickedDate = await showDatePicker(
-      context: context,
-      initialDate: _scheduledAt,
-      firstDate: DateTime(DateTime.now().year - 1),
-      lastDate: DateTime(DateTime.now().year + 3),
-    );
-    if (pickedDate == null) {
-      return;
-    }
-
-    setState(() {
-      _scheduledAt = DateTime(
-        pickedDate.year,
-        pickedDate.month,
-        pickedDate.day,
-        _scheduledAt.hour,
-        _scheduledAt.minute,
-      );
-    });
-  }
-
-  Future<void> _pickTime() async {
-    final pickedTime = await showTimePicker(
-      context: context,
-      initialTime: TimeOfDay.fromDateTime(_scheduledAt),
-    );
-    if (pickedTime == null) {
-      return;
-    }
-
-    setState(() {
-      _scheduledAt = DateTime(
-        _scheduledAt.year,
-        _scheduledAt.month,
-        _scheduledAt.day,
-        pickedTime.hour,
-        pickedTime.minute,
-      );
-    });
-  }
-
-  void _submit() {
-    Navigator.of(context).pop(
-      _EngineeringActivityScheduleDraft(
-        scheduledAt: _scheduledAt,
-        notes: _notesController.text.trim(),
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final screenWidth = MediaQuery.sizeOf(context).width;
-    final isCompact = screenWidth < 720;
-
-    return Dialog(
-      backgroundColor: Colors.transparent,
-      insetPadding: EdgeInsets.symmetric(
-        horizontal: screenWidth < 640 ? 16 : 32,
-        vertical: 24,
-      ),
-      child: Container(
-        constraints: const BoxConstraints(maxWidth: 720),
-        decoration: BoxDecoration(
-          color: const Color(0xFFF5F7F2),
-          borderRadius: BorderRadius.circular(28),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              padding: const EdgeInsets.all(24),
-              decoration: const BoxDecoration(
-                borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-                color: Color(0xFF14211D),
-              ),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.08),
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                    child: const Icon(
-                      Icons.event_note_outlined,
-                      color: Colors.white,
-                      size: 28,
-                    ),
-                  ),
-                  const SizedBox(width: 14),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          widget.task.label,
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: isCompact ? 22 : 26,
-                            fontWeight: FontWeight.w800,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          '${_displayOrderCode(widget.order)} • ${widget.order.workName}',
-                          style: const TextStyle(color: Colors.white70),
-                        ),
-                      ],
-                    ),
-                  ),
-                  IconButton(
-                    onPressed: () => Navigator.of(context).pop(),
-                    icon: const Icon(Icons.close, color: Colors.white),
-                  ),
-                ],
-              ),
-            ),
-            Flexible(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    LayoutBuilder(
-                      builder: (context, constraints) {
-                        final useTwoColumns = constraints.maxWidth >= 560;
-                        final fieldWidth = useTwoColumns
-                            ? (constraints.maxWidth - 16) / 2
-                            : constraints.maxWidth;
-
-                        return Wrap(
-                          spacing: 16,
-                          runSpacing: 16,
-                          children: [
-                            SizedBox(
-                              width: fieldWidth,
-                              child: _SchedulePickerTile(
-                                label: 'Data',
-                                value: _formatDate(_scheduledAt),
-                                icon: Icons.calendar_month_outlined,
-                                onTap: _pickDate,
-                              ),
-                            ),
-                            SizedBox(
-                              width: fieldWidth,
-                              child: _SchedulePickerTile(
-                                label: 'Horário',
-                                value: _formatTimeOnly(_scheduledAt),
-                                icon: Icons.schedule_outlined,
-                                onTap: _pickTime,
-                              ),
-                            ),
-                          ],
-                        );
-                      },
-                    ),
-                    const SizedBox(height: 20),
-                    _DialogField(
-                      controller: _notesController,
-                      label: 'Observações',
-                      validator: (_) => null,
-                      hintText:
-                          'Ponto de encontro, responsável na obra, dependências, materiais...',
-                      maxLines: 4,
-                    ),
-                    const SizedBox(height: 24),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.end,
-                      children: [
-                        TextButton(
-                          onPressed: () => Navigator.of(context).pop(),
-                          child: const Text('Cancelar'),
-                        ),
-                        const SizedBox(width: 12),
-                        FilledButton.icon(
-                          onPressed: _submit,
-                          icon: const Icon(Icons.check_circle_outline),
-                          label: const Text('Salvar agenda'),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _InstallationScheduleDialog extends StatefulWidget {
-  const _InstallationScheduleDialog({
-    required this.order,
-    required this.initialDraft,
-  });
-
-  final WorkflowOrder order;
-  final _InstallationScheduleDraft initialDraft;
-
-  @override
-  State<_InstallationScheduleDialog> createState() =>
-      _InstallationScheduleDialogState();
-}
-
-class _InstallationScheduleDialogState
-    extends State<_InstallationScheduleDialog> {
-  late DateTime _scheduledAt;
-  late final TextEditingController _notesController;
-  final Set<String> _selectedItems = <String>{};
-  late final TextEditingController _customItemsController;
-
-  @override
-  void initState() {
-    super.initState();
-    _scheduledAt = widget.initialDraft.scheduledAt;
-    _notesController = TextEditingController(text: widget.initialDraft.notes);
-    _customItemsController = TextEditingController();
-    for (final item in widget.initialDraft.plannedItems) {
-      if (WorkflowStage.installation.checklist.contains(item)) {
-        _selectedItems.add(item);
-      }
-    }
-    final customItems = widget.initialDraft.plannedItems
-        .where((item) => !WorkflowStage.installation.checklist.contains(item))
-        .join('\n');
-    _customItemsController.text = customItems;
-  }
-
-  @override
-  void dispose() {
-    _notesController.dispose();
-    _customItemsController.dispose();
-    super.dispose();
-  }
-
-  Future<void> _pickDate() async {
-    final pickedDate = await showDatePicker(
-      context: context,
-      initialDate: _scheduledAt,
-      firstDate: DateTime(2020),
-      lastDate: DateTime(2035, 12, 31),
-    );
-    if (pickedDate == null) {
-      return;
-    }
-
-    setState(() {
-      _scheduledAt = DateTime(
-        pickedDate.year,
-        pickedDate.month,
-        pickedDate.day,
-        _scheduledAt.hour,
-        _scheduledAt.minute,
-      );
-    });
-  }
-
-  Future<void> _pickTime() async {
-    final pickedTime = await showTimePicker(
-      context: context,
-      initialTime: TimeOfDay.fromDateTime(_scheduledAt),
-    );
-    if (pickedTime == null) {
-      return;
-    }
-
-    setState(() {
-      _scheduledAt = DateTime(
-        _scheduledAt.year,
-        _scheduledAt.month,
-        _scheduledAt.day,
-        pickedTime.hour,
-        pickedTime.minute,
-      );
-    });
-  }
-
-  void _submit() {
-    final customItems = _customItemsController.text
-        .split('\n')
-        .map((item) => item.trim())
-        .where((item) => item.isNotEmpty);
-    final plannedItems = {
-      ..._selectedItems,
-      ...customItems,
-    }.toList(growable: false);
-    if (plannedItems.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Informe pelo menos um trabalho da instalação.'),
-        ),
-      );
-      return;
-    }
-    if (_notesController.text.trim().isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('A observação da instalação é obrigatória.'),
-        ),
-      );
-      return;
-    }
-
-    Navigator.of(context).pop(
-      _InstallationScheduleDraft(
-        scheduledAt: _scheduledAt,
-        assignedTeam: '',
-        plannedItems: plannedItems,
-        notes: _notesController.text.trim(),
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final screenWidth = MediaQuery.sizeOf(context).width;
-    final isCompact = screenWidth < 720;
-
-    return Dialog(
-      backgroundColor: Colors.transparent,
-      insetPadding: EdgeInsets.symmetric(
-        horizontal: screenWidth < 640 ? 16 : 32,
-        vertical: 24,
-      ),
-      child: Container(
-        constraints: const BoxConstraints(maxWidth: 760),
-        decoration: BoxDecoration(
-          color: const Color(0xFFF5F7F2),
-          borderRadius: BorderRadius.circular(28),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              padding: const EdgeInsets.all(24),
-              decoration: const BoxDecoration(
-                borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-                color: Color(0xFF14211D),
-              ),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.08),
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                    child: const Icon(
-                      Icons.event_available_outlined,
-                      color: Colors.white,
-                      size: 28,
-                    ),
-                  ),
-                  const SizedBox(width: 14),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Calendário de instalação',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: isCompact ? 22 : 26,
-                            fontWeight: FontWeight.w800,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          '${_displayOrderCode(widget.order)} • ${widget.order.workName}',
-                          style: const TextStyle(color: Colors.white70),
-                        ),
-                      ],
-                    ),
-                  ),
-                  IconButton(
-                    onPressed: () => Navigator.of(context).pop(),
-                    icon: const Icon(Icons.close, color: Colors.white),
-                  ),
-                ],
-              ),
-            ),
-            Flexible(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    LayoutBuilder(
-                      builder: (context, constraints) {
-                        final useTwoColumns = constraints.maxWidth >= 560;
-                        final fieldWidth = useTwoColumns
-                            ? (constraints.maxWidth - 16) / 2
-                            : constraints.maxWidth;
-
-                        return Wrap(
-                          spacing: 16,
-                          runSpacing: 16,
-                          children: [
-                            SizedBox(
-                              width: fieldWidth,
-                              child: _SchedulePickerTile(
-                                label: 'Data',
-                                value: _formatDate(_scheduledAt),
-                                icon: Icons.calendar_month_outlined,
-                                onTap: _pickDate,
-                              ),
-                            ),
-                            SizedBox(
-                              width: fieldWidth,
-                              child: _SchedulePickerTile(
-                                label: 'Horário',
-                                value: _formatTimeOnly(_scheduledAt),
-                                icon: Icons.schedule_outlined,
-                                onTap: _pickTime,
-                              ),
-                            ),
-                          ],
-                        );
-                      },
-                    ),
-                    const SizedBox(height: 20),
-                    const Text(
-                      'Trabalhos da instalação',
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                    const SizedBox(height: 10),
-                    ...WorkflowStage.installation.checklist.map((item) {
-                      return CheckboxListTile(
-                        value: _selectedItems.contains(item),
-                        contentPadding: EdgeInsets.zero,
-                        title: Text(item),
-                        onChanged: (value) {
-                          setState(() {
-                            if (value == true) {
-                              _selectedItems.add(item);
-                            } else {
-                              _selectedItems.remove(item);
-                            }
-                          });
-                        },
-                      );
-                    }),
-                    const SizedBox(height: 14),
-                    _DialogField(
-                      controller: _customItemsController,
-                      label: 'Outros trabalhos',
-                      validator: (_) => null,
-                      hintText: 'Um trabalho por linha',
-                      maxLines: 3,
-                    ),
-                    const SizedBox(height: 16),
-                    _DialogField(
-                      controller: _notesController,
-                      label: 'Observação da instalação',
-                      validator: (_) => null,
-                      hintText:
-                          'Ex.: Instalar 3 unifi, 2 switch poe, acesso ao local, materiais pendentes...',
-                      maxLines: 4,
-                    ),
-                    const SizedBox(height: 24),
-                    Align(
-                      alignment: Alignment.centerRight,
-                      child: Wrap(
-                        spacing: 12,
-                        runSpacing: 12,
-                        children: [
-                          OutlinedButton(
-                            onPressed: () => Navigator.of(context).pop(),
-                            child: const Text('Cancelar'),
-                          ),
-                          FilledButton.icon(
-                            onPressed: _submit,
-                            icon: const Icon(Icons.save_outlined),
-                            label: const Text('Salvar agenda'),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _SchedulePickerTile extends StatelessWidget {
-  const _SchedulePickerTile({
-    required this.label,
-    required this.value,
-    required this.icon,
-    required this.onTap,
-  });
-
-  final String label;
-  final String value;
-  final IconData icon;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(18),
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: const Color(0xFFDCE5E1)),
-        ),
-        child: Row(
-          children: [
-            Container(
-              width: 42,
-              height: 42,
-              decoration: BoxDecoration(
-                color: const Color(0xFF14211D).withValues(alpha: 0.06),
-                borderRadius: BorderRadius.circular(14),
-              ),
-              child: Icon(icon, color: const Color(0xFF14211D)),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    label,
-                    style: const TextStyle(
-                      color: Color(0xFF52605C),
-                      fontSize: 12,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    value,
-                    style: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const Icon(Icons.chevron_right),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _EngineeringChecklistCard extends StatelessWidget {
-  const _EngineeringChecklistCard({
-    required this.order,
-    required this.isEditable,
-    this.onScheduleActivity,
-    this.onStatusChanged,
-  });
-
-  final WorkflowOrder order;
-  final bool isEditable;
-  final Future<void> Function(String taskKey)? onScheduleActivity;
-  final Future<void> Function(
-    String taskKey,
-    EngineeringChecklistStatus status,
-  )?
-  onStatusChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
-    final secondaryTextColor = isDarkMode
-        ? const Color(0xFF9FB2AC)
-        : const Color(0xFF52605C);
-    final surfaceColor = isDarkMode
-        ? const Color(0xFF121E1B)
-        : const Color(0xFFF8FAFC);
-    final borderColor = isDarkMode
-        ? const Color(0xFF29403A)
-        : const Color(0xFFE2E8F0);
-    final flowSnapshot = _engineeringFlowSnapshot(order);
-
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: surfaceColor,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: borderColor),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            'Checklist da engenharia',
-            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            isEditable
-                ? 'Use o kanban interno da Engenharia e conclua cada etapa antes de liberar para Montagem.'
-                : 'Visualização do andamento técnico e da agenda registrada pela Engenharia.',
-            style: TextStyle(color: secondaryTextColor, height: 1.4),
-          ),
-          const SizedBox(height: 14),
-          _EngineeringFlowKanban(
-            order: order,
-            flowSnapshot: flowSnapshot,
-            isDarkMode: isDarkMode,
-            borderColor: borderColor,
-            isEditable: isEditable,
-            onScheduleActivity: onScheduleActivity,
-            onStatusChanged: onStatusChanged,
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _EngineeringTaskScheduleLine extends StatelessWidget {
-  const _EngineeringTaskScheduleLine({
-    required this.task,
-    required this.schedule,
-    required this.isDarkMode,
-    required this.borderColor,
-    required this.canEdit,
-    this.onSchedule,
-  });
-
-  final EngineeringChecklistTask task;
-  final EngineeringTaskSchedule? schedule;
-  final bool isDarkMode;
-  final Color borderColor;
-  final bool canEdit;
-  final Future<void> Function()? onSchedule;
-
-  @override
-  Widget build(BuildContext context) {
-    final surfaceColor = isDarkMode ? const Color(0xFF0E1715) : Colors.white;
-    final mutedTextColor = isDarkMode
-        ? const Color(0xFF9FB2AC)
-        : const Color(0xFF52605C);
-    final hasSchedule = schedule != null;
-
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: surfaceColor,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: borderColor),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  hasSchedule
-                      ? 'Agendado para ${_formatDateTime(schedule!.scheduledAt)}'
-                      : 'Sem agendamento definido',
-                  style: TextStyle(
-                    color: hasSchedule
-                        ? const Color(0xFF0F766E)
-                        : mutedTextColor,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-                if (hasSchedule && schedule!.notes.trim().isNotEmpty) ...[
-                  const SizedBox(height: 4),
-                  Text(
-                    schedule!.notes,
-                    style: TextStyle(color: mutedTextColor, height: 1.35),
-                  ),
-                ],
-              ],
-            ),
-          ),
-          if (canEdit)
-            OutlinedButton.icon(
-              onPressed: onSchedule == null
-                  ? null
-                  : () async {
-                      await onSchedule!();
-                    },
-              icon: Icon(
-                hasSchedule
-                    ? Icons.event_repeat_outlined
-                    : Icons.event_available_outlined,
-              ),
-              label: Text(hasSchedule ? 'Reagendar' : 'Agendar'),
-            ),
-        ],
-      ),
-    );
-  }
-}
-
-class _EngineeringFlowKanban extends StatelessWidget {
-  const _EngineeringFlowKanban({
-    required this.order,
-    required this.flowSnapshot,
-    required this.isDarkMode,
-    required this.borderColor,
-    required this.isEditable,
-    this.onScheduleActivity,
-    this.onStatusChanged,
-  });
-
-  final WorkflowOrder order;
-  final _EngineeringFlowSnapshot flowSnapshot;
-  final bool isDarkMode;
-  final Color borderColor;
-  final bool isEditable;
-  final Future<void> Function(String taskKey)? onScheduleActivity;
-  final Future<void> Function(
-    String taskKey,
-    EngineeringChecklistStatus status,
-  )?
-  onStatusChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final useColumn = constraints.maxWidth < 980;
-        final columns = [
-          _EngineeringFlowKanbanColumn(
-            title: 'Concluídas',
-            accent: const Color(0xFF15803D),
-            tasks: flowSnapshot.completedTasks,
-            emptyMessage: 'Nenhuma etapa concluída ainda.',
-            isDarkMode: isDarkMode,
-            borderColor: borderColor,
-            order: order,
-            isEditable: isEditable,
-            onScheduleActivity: onScheduleActivity,
-            onStatusChanged: onStatusChanged,
-            taskState: _EngineeringFlowTaskState.completed,
-          ),
-          _EngineeringFlowKanbanColumn(
-            title: 'Etapa atual',
-            accent: const Color(0xFFC2410C),
-            tasks: flowSnapshot.currentTask == null
-                ? const <EngineeringChecklistTask>[]
-                : [flowSnapshot.currentTask!],
-            emptyMessage: 'Fluxo técnico concluído e pronto para Montagem.',
-            isDarkMode: isDarkMode,
-            borderColor: borderColor,
-            order: order,
-            isEditable: isEditable,
-            onScheduleActivity: onScheduleActivity,
-            onStatusChanged: onStatusChanged,
-            taskState: _EngineeringFlowTaskState.current,
-          ),
-          _EngineeringFlowKanbanColumn(
-            title: 'Próximas',
-            accent: const Color(0xFF64748B),
-            tasks: flowSnapshot.upcomingTasks,
-            emptyMessage: 'Não existem próximas etapas pendentes.',
-            isDarkMode: isDarkMode,
-            borderColor: borderColor,
-            order: order,
-            isEditable: isEditable,
-            onScheduleActivity: onScheduleActivity,
-            onStatusChanged: onStatusChanged,
-            taskState: _EngineeringFlowTaskState.upcoming,
-          ),
-        ];
-
-        if (useColumn) {
-          return Column(
-            children: [
-              for (var index = 0; index < columns.length; index++) ...[
-                if (index > 0) const SizedBox(height: 12),
-                columns[index],
-              ],
-            ],
-          );
-        }
-
-        return Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            for (var index = 0; index < columns.length; index++) ...[
-              if (index > 0) const SizedBox(width: 12),
-              Expanded(child: columns[index]),
-            ],
-          ],
-        );
-      },
-    );
-  }
-}
-
-enum _EngineeringFlowTaskState { completed, current, upcoming }
-
-class _EngineeringFlowKanbanColumn extends StatelessWidget {
-  const _EngineeringFlowKanbanColumn({
-    required this.title,
-    required this.accent,
-    required this.tasks,
-    required this.emptyMessage,
-    required this.isDarkMode,
-    required this.borderColor,
-    required this.order,
-    required this.isEditable,
-    required this.taskState,
-    this.onScheduleActivity,
-    this.onStatusChanged,
-  });
-
-  final String title;
-  final Color accent;
-  final List<EngineeringChecklistTask> tasks;
-  final String emptyMessage;
-  final bool isDarkMode;
-  final Color borderColor;
-  final WorkflowOrder order;
-  final bool isEditable;
-  final _EngineeringFlowTaskState taskState;
-  final Future<void> Function(String taskKey)? onScheduleActivity;
-  final Future<void> Function(
-    String taskKey,
-    EngineeringChecklistStatus status,
-  )?
-  onStatusChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    final surfaceColor = isDarkMode
-        ? const Color(0xFF0E1715)
-        : const Color(0xFFFFFFFF);
-    final mutedTextColor = isDarkMode
-        ? const Color(0xFF9FB2AC)
-        : const Color(0xFF52605C);
-
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: surfaceColor,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: borderColor),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                width: 12,
-                height: 12,
-                decoration: BoxDecoration(
-                  color: accent,
-                  borderRadius: BorderRadius.circular(999),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  title,
-                  style: const TextStyle(
-                    fontSize: 14,
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-              ),
-              Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 10,
-                  vertical: 4,
-                ),
-                decoration: BoxDecoration(
-                  color: accent.withValues(alpha: 0.12),
-                  borderRadius: BorderRadius.circular(999),
-                ),
-                child: Text(
-                  '${tasks.length}',
-                  style: TextStyle(color: accent, fontWeight: FontWeight.w800),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          if (tasks.isEmpty)
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: isDarkMode
-                    ? Colors.black.withValues(alpha: 0.12)
-                    : const Color(0xFFF8FAFC),
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: borderColor),
-              ),
-              child: Text(
-                emptyMessage,
-                style: TextStyle(color: mutedTextColor, height: 1.35),
-              ),
-            )
-          else
-            ...tasks.map(
-              (task) => Padding(
-                padding: const EdgeInsets.only(bottom: 10),
-                child: _EngineeringFlowTaskCard(
-                  task: task,
-                  taskState: taskState,
-                  accent: accent,
-                  order: order,
-                  isDarkMode: isDarkMode,
-                  borderColor: borderColor,
-                  isEditable: isEditable,
-                  onScheduleActivity: onScheduleActivity,
-                  onStatusChanged: onStatusChanged,
-                ),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-}
-
-class _EngineeringFlowTaskCard extends StatelessWidget {
-  const _EngineeringFlowTaskCard({
-    required this.task,
-    required this.taskState,
-    required this.accent,
-    required this.order,
-    required this.isDarkMode,
-    required this.borderColor,
-    required this.isEditable,
-    this.onScheduleActivity,
-    this.onStatusChanged,
-  });
-
-  final EngineeringChecklistTask task;
-  final _EngineeringFlowTaskState taskState;
-  final Color accent;
-  final WorkflowOrder order;
-  final bool isDarkMode;
-  final Color borderColor;
-  final bool isEditable;
-  final Future<void> Function(String taskKey)? onScheduleActivity;
-  final Future<void> Function(
-    String taskKey,
-    EngineeringChecklistStatus status,
-  )?
-  onStatusChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    final schedule = order.engineeringActivitySchedules[task.key];
-    final helperText = switch (taskState) {
-      _EngineeringFlowTaskState.completed => 'Etapa já concluída no fluxo.',
-      _EngineeringFlowTaskState.current =>
-        'Etapa atual do kanban interno da Engenharia.',
-      _EngineeringFlowTaskState.upcoming =>
-        'Aguardando a conclusão da etapa anterior.',
-    };
-
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: accent.withValues(alpha: isDarkMode ? 0.14 : 0.08),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: accent.withValues(alpha: 0.24)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            task.label,
-            style: const TextStyle(fontWeight: FontWeight.w700, height: 1.35),
-          ),
-          const SizedBox(height: 6),
-          Text(
-            helperText,
-            style: TextStyle(
-              color: isDarkMode
-                  ? const Color(0xFFD2E1DB)
-                  : const Color(0xFF52605C),
-              height: 1.3,
-              fontSize: 12,
-            ),
-          ),
-          if (task.supportsScheduling) ...[
-            const SizedBox(height: 10),
-            _EngineeringTaskScheduleLine(
-              task: task,
-              schedule: schedule,
-              isDarkMode: isDarkMode,
-              borderColor: borderColor,
-              canEdit:
-                  isEditable && taskState == _EngineeringFlowTaskState.current,
-              onSchedule:
-                  !isEditable ||
-                      taskState != _EngineeringFlowTaskState.current ||
-                      onScheduleActivity == null
-                  ? null
-                  : () async {
-                      await onScheduleActivity!(task.key);
-                    },
-            ),
-          ],
-          if (isEditable && onStatusChanged != null) ...[
-            const SizedBox(height: 10),
-            if (taskState == _EngineeringFlowTaskState.current)
-              FilledButton.icon(
-                onPressed: () async {
-                  await onStatusChanged!(
-                    task.key,
-                    EngineeringChecklistStatus.done,
-                  );
-                },
-                icon: const Icon(Icons.arrow_forward_rounded),
-                label: const Text('Concluir e avançar'),
-              ),
-            if (taskState == _EngineeringFlowTaskState.completed)
-              OutlinedButton.icon(
-                onPressed: () async {
-                  await onStatusChanged!(
-                    task.key,
-                    EngineeringChecklistStatus.notStarted,
-                  );
-                },
-                icon: const Icon(Icons.restart_alt_rounded),
-                label: const Text('Reabrir daqui'),
-              ),
-          ],
-        ],
-      ),
-    );
-  }
 }
 
 class _OrderCard extends StatelessWidget {
@@ -13781,1686 +12957,6 @@ class _ConversationMessageBubble extends StatelessWidget {
   }
 }
 
-class _CustomerRegistrationDraft {
-  const _CustomerRegistrationDraft({
-    required this.workName,
-    required this.phone,
-    required this.address,
-    required this.proposalFileName,
-    this.proposalFilePath,
-    required this.detailFileName,
-    this.detailFilePath,
-  });
-
-  final String workName;
-  final String phone;
-  final String address;
-  final String proposalFileName;
-  final String? proposalFilePath;
-  final String detailFileName;
-  final String? detailFilePath;
-}
-
-class _ServiceOrderClientOption {
-  const _ServiceOrderClientOption({
-    required this.client,
-    required this.address,
-    required this.referenceWorkName,
-  });
-
-  final ClientProfile client;
-  final String address;
-  final String referenceWorkName;
-
-  String get label => '${client.id} • ${client.name}';
-}
-
-class _ServiceOrderDraft {
-  const _ServiceOrderDraft({
-    required this.client,
-    required this.address,
-    required this.serviceTitle,
-    required this.serviceDescription,
-  });
-
-  final ClientProfile client;
-  final String address;
-  final String serviceTitle;
-  final String serviceDescription;
-}
-
-class _ServiceOrderDialog extends StatefulWidget {
-  const _ServiceOrderDialog({required this.clients});
-
-  final List<_ServiceOrderClientOption> clients;
-
-  @override
-  State<_ServiceOrderDialog> createState() => _ServiceOrderDialogState();
-}
-
-class _ServiceOrderDialogState extends State<_ServiceOrderDialog> {
-  final _formKey = GlobalKey<FormState>();
-  final _serviceTitleController = TextEditingController();
-  final _serviceDescriptionController = TextEditingController();
-  String? _selectedClientId;
-
-  _ServiceOrderClientOption? get _selectedClient {
-    final clientId = _selectedClientId;
-    if (clientId == null) {
-      return null;
-    }
-
-    for (final option in widget.clients) {
-      if (option.client.id == clientId) {
-        return option;
-      }
-    }
-
-    return null;
-  }
-
-  @override
-  void dispose() {
-    _serviceTitleController.dispose();
-    _serviceDescriptionController.dispose();
-    super.dispose();
-  }
-
-  void _submit() {
-    if (!_formKey.currentState!.validate()) {
-      return;
-    }
-
-    final selectedClient = _selectedClient;
-    if (selectedClient == null) {
-      return;
-    }
-
-    Navigator.of(context).pop(
-      _ServiceOrderDraft(
-        client: selectedClient.client,
-        address: selectedClient.address,
-        serviceTitle: _serviceTitleController.text.trim(),
-        serviceDescription: _serviceDescriptionController.text.trim(),
-      ),
-    );
-  }
-
-  String? _requiredField(String? value) {
-    if (value == null || value.trim().isEmpty) {
-      return 'Campo obrigatório.';
-    }
-
-    return null;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final screenWidth = MediaQuery.sizeOf(context).width;
-    final selectedClient = _selectedClient;
-    final isCompact = screenWidth < 720;
-
-    return Dialog(
-      backgroundColor: Colors.transparent,
-      insetPadding: EdgeInsets.symmetric(
-        horizontal: screenWidth < 640 ? 16 : 32,
-        vertical: 24,
-      ),
-      child: Container(
-        constraints: const BoxConstraints(maxWidth: 820),
-        decoration: BoxDecoration(
-          color: const Color(0xFFF5F7F2),
-          borderRadius: BorderRadius.circular(28),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              padding: const EdgeInsets.all(24),
-              decoration: const BoxDecoration(
-                borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-                color: Color(0xFF14211D),
-              ),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.08),
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                    child: const Icon(
-                      Icons.assignment_outlined,
-                      color: Colors.white,
-                      size: 28,
-                    ),
-                  ),
-                  const SizedBox(width: 14),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Nova ordem de serviço',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: isCompact ? 22 : 26,
-                            fontWeight: FontWeight.w800,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        const Text(
-                          'Selecione o cliente, descreva o serviço e envie a OS para o Orçamentista.',
-                          style: TextStyle(color: Colors.white70),
-                        ),
-                      ],
-                    ),
-                  ),
-                  IconButton(
-                    onPressed: () => Navigator.of(context).pop(),
-                    icon: const Icon(Icons.close, color: Colors.white),
-                  ),
-                ],
-              ),
-            ),
-            Flexible(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.all(24),
-                child: Form(
-                  key: _formKey,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      DropdownButtonFormField<String>(
-                        initialValue: _selectedClientId,
-                        decoration: const InputDecoration(
-                          labelText: 'Cliente',
-                          border: OutlineInputBorder(),
-                        ),
-                        items: widget.clients
-                            .map(
-                              (option) => DropdownMenuItem<String>(
-                                value: option.client.id,
-                                child: Text(option.label),
-                              ),
-                            )
-                            .toList(growable: false),
-                        onChanged: (value) {
-                          setState(() {
-                            _selectedClientId = value;
-                          });
-                        },
-                        validator: (value) {
-                          if (value == null || value.trim().isEmpty) {
-                            return 'Selecione o cliente.';
-                          }
-
-                          return null;
-                        },
-                      ),
-                      if (selectedClient != null) ...[
-                        const SizedBox(height: 16),
-                        Container(
-                          width: double.infinity,
-                          padding: const EdgeInsets.all(16),
-                          decoration: BoxDecoration(
-                            color: Colors.white,
-                            borderRadius: BorderRadius.circular(20),
-                            border: Border.all(color: const Color(0xFFDCE5E1)),
-                          ),
-                          child: Wrap(
-                            spacing: 12,
-                            runSpacing: 12,
-                            children: [
-                              SizedBox(
-                                width: 220,
-                                child: _InfoRow(
-                                  label: 'Cliente',
-                                  value: selectedClient.client.name,
-                                  emphasizeValue: true,
-                                ),
-                              ),
-                              SizedBox(
-                                width: 220,
-                                child: _InfoRow(
-                                  label: 'Telefone',
-                                  value: selectedClient.client.phone,
-                                ),
-                              ),
-                              SizedBox(
-                                width: 220,
-                                child: _InfoRow(
-                                  label: 'Última referência',
-                                  value: selectedClient.referenceWorkName,
-                                ),
-                              ),
-                              SizedBox(
-                                width: 320,
-                                child: _InfoRow(
-                                  label: 'Endereço',
-                                  value: selectedClient.address,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                      const SizedBox(height: 16),
-                      _DialogField(
-                        controller: _serviceTitleController,
-                        label: 'Título do serviço',
-                        validator: _requiredField,
-                        hintText:
-                            'Ex.: Manutenção corretiva no quadro elétrico',
-                      ),
-                      const SizedBox(height: 16),
-                      _DialogField(
-                        controller: _serviceDescriptionController,
-                        label: 'Detalhes do serviço',
-                        validator: _requiredField,
-                        hintText:
-                            'Descreva o escopo, materiais previstos, observações e contexto da OS.',
-                        maxLines: 5,
-                      ),
-                      const SizedBox(height: 24),
-                      Align(
-                        alignment: Alignment.centerRight,
-                        child: Wrap(
-                          spacing: 12,
-                          runSpacing: 12,
-                          children: [
-                            OutlinedButton(
-                              onPressed: () => Navigator.of(context).pop(),
-                              child: const Text('Cancelar'),
-                            ),
-                            FilledButton.icon(
-                              onPressed: _submit,
-                              icon: const Icon(Icons.send_outlined),
-                              label: const Text('Criar e enviar'),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _AdditionalProposalDraft {
-  const _AdditionalProposalDraft({
-    required this.workName,
-    required this.address,
-    required this.proposalFileName,
-    this.proposalFilePath,
-  });
-
-  final String workName;
-  final String address;
-  final String proposalFileName;
-  final String? proposalFilePath;
-}
-
-class _AdditionalProposalClientPickerDialog extends StatefulWidget {
-  const _AdditionalProposalClientPickerDialog({required this.baseOrders});
-
-  final List<WorkflowOrder> baseOrders;
-
-  @override
-  State<_AdditionalProposalClientPickerDialog> createState() =>
-      _AdditionalProposalClientPickerDialogState();
-}
-
-class _AdditionalProposalClientPickerDialogState
-    extends State<_AdditionalProposalClientPickerDialog> {
-  final TextEditingController _searchController = TextEditingController();
-  String _query = '';
-
-  List<WorkflowOrder> get _filteredOrders {
-    final normalizedQuery = _query.trim().toLowerCase();
-    if (normalizedQuery.isEmpty) {
-      return widget.baseOrders;
-    }
-
-    return widget.baseOrders
-        .where((order) {
-          return order.client.id.toLowerCase().contains(normalizedQuery) ||
-              order.client.name.toLowerCase().contains(normalizedQuery) ||
-              order.workName.toLowerCase().contains(normalizedQuery) ||
-              order.client.phone.toLowerCase().contains(normalizedQuery) ||
-              order.address.toLowerCase().contains(normalizedQuery);
-        })
-        .toList(growable: false);
-  }
-
-  @override
-  void dispose() {
-    _searchController.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final screenWidth = MediaQuery.sizeOf(context).width;
-    final filteredOrders = _filteredOrders;
-
-    return Dialog(
-      backgroundColor: Colors.transparent,
-      insetPadding: EdgeInsets.symmetric(
-        horizontal: screenWidth < 640 ? 16 : 32,
-        vertical: 24,
-      ),
-      child: Container(
-        constraints: const BoxConstraints(maxWidth: 820, maxHeight: 760),
-        decoration: BoxDecoration(
-          color: const Color(0xFFF5F7F2),
-          borderRadius: BorderRadius.circular(28),
-        ),
-        child: Column(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(24),
-              decoration: const BoxDecoration(
-                borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-                color: Color(0xFF14211D),
-              ),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.08),
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                    child: const Icon(
-                      Icons.people_alt_outlined,
-                      color: Colors.white,
-                      size: 28,
-                    ),
-                  ),
-                  const SizedBox(width: 14),
-                  const Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Selecionar cliente',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 25,
-                            fontWeight: FontWeight.w800,
-                          ),
-                        ),
-                        SizedBox(height: 4),
-                        Text(
-                          'Escolha o cliente para gerar uma nova proposta vinculada.',
-                          style: TextStyle(color: Colors.white70),
-                        ),
-                      ],
-                    ),
-                  ),
-                  IconButton(
-                    onPressed: () => Navigator.of(context).pop(),
-                    icon: const Icon(Icons.close, color: Colors.white),
-                  ),
-                ],
-              ),
-            ),
-            Flexible(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  children: [
-                    TextField(
-                      controller: _searchController,
-                      onChanged: (value) {
-                        setState(() {
-                          _query = value;
-                        });
-                      },
-                      decoration: InputDecoration(
-                        labelText: 'Pesquisar cliente',
-                        hintText: 'ID, nome, obra, telefone ou endereço',
-                        filled: true,
-                        fillColor: Colors.white,
-                        prefixIcon: const Icon(Icons.search),
-                        suffixIcon: _query.trim().isEmpty
-                            ? null
-                            : IconButton(
-                                onPressed: () {
-                                  _searchController.clear();
-                                  setState(() {
-                                    _query = '';
-                                  });
-                                },
-                                icon: const Icon(Icons.close),
-                              ),
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(18),
-                        ),
-                        enabledBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(18),
-                          borderSide: const BorderSide(
-                            color: Color(0xFFDCE5E1),
-                          ),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 18),
-                    Expanded(
-                      child: filteredOrders.isEmpty
-                          ? Container(
-                              width: double.infinity,
-                              padding: const EdgeInsets.all(24),
-                              decoration: BoxDecoration(
-                                color: Colors.white,
-                                borderRadius: BorderRadius.circular(20),
-                                border: Border.all(
-                                  color: const Color(0xFFDCE5E1),
-                                ),
-                              ),
-                              child: const Text(
-                                'Nenhum cliente encontrado com esse filtro.',
-                                style: TextStyle(
-                                  color: Color(0xFF52605C),
-                                  fontWeight: FontWeight.w600,
-                                ),
-                              ),
-                            )
-                          : ListView.separated(
-                              itemCount: filteredOrders.length,
-                              separatorBuilder: (context, index) =>
-                                  const SizedBox(height: 12),
-                              itemBuilder: (context, index) {
-                                final order = filteredOrders[index];
-                                return InkWell(
-                                  onTap: () => Navigator.of(context).pop(order),
-                                  borderRadius: BorderRadius.circular(20),
-                                  child: Container(
-                                    padding: const EdgeInsets.all(18),
-                                    decoration: BoxDecoration(
-                                      color: Colors.white,
-                                      borderRadius: BorderRadius.circular(20),
-                                      border: Border.all(
-                                        color: const Color(0xFFDCE5E1),
-                                      ),
-                                    ),
-                                    child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        Row(
-                                          children: [
-                                            Expanded(
-                                              child: Text(
-                                                '${order.client.id} • ${order.client.name}',
-                                                style: const TextStyle(
-                                                  fontSize: 16,
-                                                  fontWeight: FontWeight.w800,
-                                                ),
-                                              ),
-                                            ),
-                                            Container(
-                                              padding:
-                                                  const EdgeInsets.symmetric(
-                                                    horizontal: 10,
-                                                    vertical: 6,
-                                                  ),
-                                              decoration: BoxDecoration(
-                                                color: const Color(0xFFEEF2FF),
-                                                borderRadius:
-                                                    BorderRadius.circular(999),
-                                              ),
-                                              child: Text(
-                                                _proposalVersionTitle(order),
-                                                style: const TextStyle(
-                                                  color: Color(0xFF3730A3),
-                                                  fontWeight: FontWeight.w700,
-                                                  fontSize: 12,
-                                                ),
-                                              ),
-                                            ),
-                                          ],
-                                        ),
-                                        const SizedBox(height: 8),
-                                        Text(
-                                          order.workName,
-                                          style: const TextStyle(
-                                            fontSize: 15,
-                                            fontWeight: FontWeight.w700,
-                                          ),
-                                        ),
-                                        const SizedBox(height: 4),
-                                        Text(
-                                          '${order.client.phone} • ${order.address}',
-                                          style: const TextStyle(
-                                            color: Color(0xFF52605C),
-                                            height: 1.35,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                  ),
-                                );
-                              },
-                            ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _AdditionalProposalDialog extends StatefulWidget {
-  const _AdditionalProposalDialog({
-    required this.baseOrder,
-    required this.proposalVersion,
-  });
-
-  final WorkflowOrder baseOrder;
-  final int proposalVersion;
-
-  @override
-  State<_AdditionalProposalDialog> createState() =>
-      _AdditionalProposalDialogState();
-}
-
-class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
-  final _formKey = GlobalKey<FormState>();
-  final _workNameController = TextEditingController();
-  final _addressController = TextEditingController();
-  final _proposalController = TextEditingController();
-  String? _proposalFilePath;
-
-  @override
-  void initState() {
-    super.initState();
-    _workNameController.text = widget.baseOrder.workName;
-    _addressController.text = widget.baseOrder.address;
-  }
-
-  @override
-  void dispose() {
-    _workNameController.dispose();
-    _addressController.dispose();
-    _proposalController.dispose();
-    super.dispose();
-  }
-
-  Future<void> _pickProposalFile() async {
-    try {
-      final result = await FilePicker.platform.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: const ['pdf', 'xls', 'xlsx'],
-        withData: false,
-      );
-
-      if (result == null || result.files.isEmpty) {
-        return;
-      }
-
-      setState(() {
-        _proposalController.text = result.files.single.name;
-        _proposalFilePath = result.files.single.path;
-      });
-    } on MissingPluginException {
-      _showPickerUnavailable();
-    } catch (error) {
-      final message = error.toString();
-      if (message.contains('LateInitializationError') ||
-          message.contains('LateError') ||
-          error is UnimplementedError) {
-        _showPickerUnavailable();
-        return;
-      }
-
-      rethrow;
-    }
-  }
-
-  void _showPickerUnavailable() {
-    if (!mounted) {
-      return;
-    }
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text(
-          'Seletor de arquivo indisponível neste ambiente. Faça um restart completo do app para carregar o plugin.',
-        ),
-      ),
-    );
-  }
-
-  String? _requiredField(String? value) {
-    if (value == null || value.trim().isEmpty) {
-      return 'Campo obrigatório.';
-    }
-
-    return null;
-  }
-
-  String? _validateAttachment(String? value) {
-    final requiredError = _requiredField(value);
-    if (requiredError != null) {
-      return requiredError;
-    }
-
-    final normalized = value!.trim().toLowerCase();
-    if (normalized.endsWith('.pdf') ||
-        normalized.endsWith('.xls') ||
-        normalized.endsWith('.xlsx')) {
-      return null;
-    }
-
-    return 'Use arquivo PDF, XLS ou XLSX.';
-  }
-
-  void _submit() {
-    if (!_formKey.currentState!.validate()) {
-      return;
-    }
-
-    Navigator.of(context).pop(
-      _AdditionalProposalDraft(
-        workName: _workNameController.text.trim(),
-        address: _addressController.text.trim(),
-        proposalFileName: _proposalController.text.trim(),
-        proposalFilePath: _proposalFilePath,
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final screenWidth = MediaQuery.sizeOf(context).width;
-    final isCompact = screenWidth < 720;
-
-    return Dialog(
-      backgroundColor: Colors.transparent,
-      insetPadding: EdgeInsets.symmetric(
-        horizontal: screenWidth < 640 ? 16 : 32,
-        vertical: 24,
-      ),
-      child: Container(
-        constraints: const BoxConstraints(maxWidth: 860),
-        decoration: BoxDecoration(
-          color: const Color(0xFFF5F7F2),
-          borderRadius: BorderRadius.circular(28),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              padding: const EdgeInsets.all(24),
-              decoration: const BoxDecoration(
-                borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-                color: Color(0xFF14211D),
-              ),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.08),
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                    child: const Icon(
-                      Icons.post_add_outlined,
-                      color: Colors.white,
-                      size: 28,
-                    ),
-                  ),
-                  const SizedBox(width: 14),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'Nova proposta vinculada',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: isCompact ? 22 : 26,
-                            fontWeight: FontWeight.w800,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          '${widget.baseOrder.client.id} • ${widget.baseOrder.client.name} • ${_proposalVersionTitleFromNumber(widget.proposalVersion)}',
-                          style: const TextStyle(color: Colors.white70),
-                        ),
-                      ],
-                    ),
-                  ),
-                  IconButton(
-                    onPressed: () => Navigator.of(context).pop(),
-                    icon: const Icon(Icons.close, color: Colors.white),
-                  ),
-                ],
-              ),
-            ),
-            Flexible(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.all(24),
-                child: Form(
-                  key: _formKey,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.all(16),
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(20),
-                          border: Border.all(color: const Color(0xFFDCE5E1)),
-                        ),
-                        child: Wrap(
-                          spacing: 12,
-                          runSpacing: 12,
-                          children: [
-                            SizedBox(
-                              width: 220,
-                              child: _InfoRow(
-                                label: 'Cliente',
-                                value: widget.baseOrder.client.name,
-                                emphasizeValue: true,
-                              ),
-                            ),
-                            SizedBox(
-                              width: 220,
-                              child: _InfoRow(
-                                label: 'Telefone',
-                                value: widget.baseOrder.client.phone,
-                              ),
-                            ),
-                            SizedBox(
-                              width: 220,
-                              child: _InfoRow(
-                                label: 'Card principal',
-                                value: widget.baseOrder.code,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      _DialogField(
-                        controller: _workNameController,
-                        label: 'Nome da obra / proposta',
-                        validator: _requiredField,
-                      ),
-                      const SizedBox(height: 16),
-                      _DialogField(
-                        controller: _addressController,
-                        label: 'Endereço',
-                        validator: _requiredField,
-                        maxLines: 2,
-                      ),
-                      const SizedBox(height: 16),
-                      _AttachmentPickerField(
-                        label: 'Arquivo da nova proposta',
-                        helper:
-                            'Anexe o arquivo da proposta que seguirá no fluxo.',
-                        controller: _proposalController,
-                        onPick: _pickProposalFile,
-                        validator: _validateAttachment,
-                        onClear: _proposalController.text.isEmpty
-                            ? null
-                            : () {
-                                setState(() {
-                                  _proposalController.clear();
-                                  _proposalFilePath = null;
-                                });
-                              },
-                      ),
-                      const SizedBox(height: 24),
-                      Align(
-                        alignment: Alignment.centerRight,
-                        child: Wrap(
-                          spacing: 12,
-                          runSpacing: 12,
-                          children: [
-                            OutlinedButton(
-                              onPressed: () => Navigator.of(context).pop(),
-                              child: const Text('Cancelar'),
-                            ),
-                            FilledButton.icon(
-                              onPressed: _submit,
-                              icon: const Icon(Icons.save_outlined),
-                              label: const Text('Criar proposta'),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _AssemblyTeamSelectionDialog extends StatefulWidget {
-  const _AssemblyTeamSelectionDialog({
-    required this.profiles,
-    required this.initialSelectedEmails,
-    this.title = 'Equipe da montagem',
-    this.subtitle = 'Selecione os funcionários que vão executar esta montagem.',
-    this.emptySelectionMessage =
-        'Selecione pelo menos um funcionário da montagem.',
-  });
-
-  final List<EmployeeWorkspaceProfile> profiles;
-  final List<String> initialSelectedEmails;
-  final String title;
-  final String subtitle;
-  final String emptySelectionMessage;
-
-  @override
-  State<_AssemblyTeamSelectionDialog> createState() =>
-      _AssemblyTeamSelectionDialogState();
-}
-
-class _AssemblyTeamSelectionDialogState
-    extends State<_AssemblyTeamSelectionDialog> {
-  late Set<String> _selectedEmails;
-
-  @override
-  void initState() {
-    super.initState();
-    _selectedEmails = widget.initialSelectedEmails
-        .map((item) => item.trim().toLowerCase())
-        .where((item) => item.isNotEmpty)
-        .toSet();
-  }
-
-  void _submit() {
-    if (_selectedEmails.isEmpty) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(widget.emptySelectionMessage)));
-      return;
-    }
-
-    final selectedEmails = widget.profiles
-        .map((profile) => profile.email.trim().toLowerCase())
-        .where(_selectedEmails.contains)
-        .toList(growable: false);
-    Navigator.of(context).pop(selectedEmails);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final screenWidth = MediaQuery.sizeOf(context).width;
-
-    return Dialog(
-      backgroundColor: Colors.transparent,
-      insetPadding: EdgeInsets.symmetric(
-        horizontal: screenWidth < 640 ? 16 : 32,
-        vertical: 24,
-      ),
-      child: Container(
-        constraints: const BoxConstraints(maxWidth: 760),
-        decoration: BoxDecoration(
-          color: const Color(0xFFF5F7F2),
-          borderRadius: BorderRadius.circular(28),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              padding: const EdgeInsets.all(24),
-              decoration: const BoxDecoration(
-                borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-                color: Color(0xFF14211D),
-              ),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withValues(alpha: 0.08),
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                    child: const Icon(
-                      Icons.groups_2_outlined,
-                      color: Colors.white,
-                      size: 28,
-                    ),
-                  ),
-                  const SizedBox(width: 14),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          widget.title,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 25,
-                            fontWeight: FontWeight.w800,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          widget.subtitle,
-                          style: const TextStyle(color: Colors.white70),
-                        ),
-                      ],
-                    ),
-                  ),
-                  IconButton(
-                    onPressed: () => Navigator.of(context).pop(),
-                    icon: const Icon(Icons.close, color: Colors.white),
-                  ),
-                ],
-              ),
-            ),
-            Flexible(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(20),
-                        border: Border.all(color: const Color(0xFFDCE5E1)),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text(
-                            'Funcionários disponíveis',
-                            style: TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.w800,
-                            ),
-                          ),
-                          const SizedBox(height: 12),
-                          ...widget.profiles.map((profile) {
-                            final email = profile.email.trim().toLowerCase();
-                            final isSelected = _selectedEmails.contains(email);
-                            return CheckboxListTile(
-                              value: isSelected,
-                              contentPadding: EdgeInsets.zero,
-                              activeColor: profile.accent,
-                              title: Text(
-                                profile.name.trim().isEmpty
-                                    ? profile.login
-                                    : profile.name,
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.w700,
-                                ),
-                              ),
-                              subtitle: Text(
-                                profile.role.trim().isEmpty
-                                    ? '@${profile.login}'
-                                    : '${profile.role} • @${profile.login}',
-                              ),
-                              onChanged: (value) {
-                                setState(() {
-                                  if (value == true) {
-                                    _selectedEmails.add(email);
-                                  } else {
-                                    _selectedEmails.remove(email);
-                                  }
-                                });
-                              },
-                            );
-                          }),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: 18),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.end,
-                      children: [
-                        TextButton(
-                          onPressed: () => Navigator.of(context).pop(),
-                          child: const Text('Cancelar'),
-                        ),
-                        const SizedBox(width: 10),
-                        FilledButton.icon(
-                          onPressed: _submit,
-                          icon: const Icon(Icons.check_circle_outline),
-                          label: const Text('Confirmar equipe'),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _CustomerRegistrationDialog extends StatefulWidget {
-  const _CustomerRegistrationDialog({
-    this.initialDraft,
-    this.isEditing = false,
-    this.allowProposalEdit = true,
-    this.allowDetailAccess = true,
-  });
-
-  final _CustomerRegistrationDraft? initialDraft;
-  final bool isEditing;
-  final bool allowProposalEdit;
-  final bool allowDetailAccess;
-
-  @override
-  State<_CustomerRegistrationDialog> createState() =>
-      _CustomerRegistrationDialogState();
-}
-
-class _CustomerRegistrationDialogState
-    extends State<_CustomerRegistrationDialog> {
-  final _formKey = GlobalKey<FormState>();
-  final _workNameController = TextEditingController();
-  final _phoneController = TextEditingController();
-  final _addressController = TextEditingController();
-  final _proposalController = TextEditingController();
-  final _detailController = TextEditingController();
-  String? _proposalFilePath;
-  String? _detailFilePath;
-
-  @override
-  void initState() {
-    super.initState();
-    final draft = widget.initialDraft;
-    if (draft == null) {
-      return;
-    }
-
-    _workNameController.text = draft.workName;
-    _phoneController.text = draft.phone;
-    _addressController.text = draft.address;
-    _proposalController.text = draft.proposalFileName;
-    _detailController.text = draft.detailFileName;
-    _proposalFilePath = draft.proposalFilePath;
-    _detailFilePath = draft.detailFilePath;
-  }
-
-  @override
-  void dispose() {
-    _workNameController.dispose();
-    _phoneController.dispose();
-    _addressController.dispose();
-    _proposalController.dispose();
-    _detailController.dispose();
-    super.dispose();
-  }
-
-  void _submit() {
-    if (!_formKey.currentState!.validate()) {
-      return;
-    }
-
-    Navigator.of(context).pop(
-      _CustomerRegistrationDraft(
-        workName: _workNameController.text.trim(),
-        phone: _phoneController.text.trim(),
-        address: _addressController.text.trim(),
-        proposalFileName: _proposalController.text.trim(),
-        proposalFilePath: _proposalFilePath,
-        detailFileName: _detailController.text.trim(),
-        detailFilePath: _detailFilePath,
-      ),
-    );
-  }
-
-  Future<void> _pickProposalFile() async {
-    final file = await _pickFile();
-    if (file == null) {
-      return;
-    }
-
-    setState(() {
-      _proposalController.text = file.name;
-      _proposalFilePath = file.path;
-    });
-  }
-
-  Future<void> _pickDetailFile() async {
-    final file = await _pickFile();
-    if (file == null) {
-      return;
-    }
-
-    setState(() {
-      _detailController.text = file.name;
-      _detailFilePath = file.path;
-    });
-  }
-
-  Future<PlatformFile?> _pickFile() async {
-    try {
-      final result = await FilePicker.platform.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: const ['pdf', 'xls', 'xlsx'],
-        withData: false,
-      );
-
-      if (result == null || result.files.isEmpty) {
-        return null;
-      }
-
-      return result.files.single;
-    } on MissingPluginException {
-      _showFilePickerUnavailableMessage();
-    } catch (error) {
-      final message = error.toString();
-      if (message.contains('LateInitializationError') ||
-          message.contains('LateError') ||
-          error is UnimplementedError) {
-        _showFilePickerUnavailableMessage();
-        return null;
-      }
-
-      rethrow;
-    }
-
-    return null;
-  }
-
-  void _showFilePickerUnavailableMessage() {
-    if (!mounted) {
-      return;
-    }
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text(
-          'Seletor de arquivo indisponível neste ambiente. Faça um restart completo do app para carregar o plugin.',
-        ),
-      ),
-    );
-  }
-
-  String? _validatePhoneNumber(String? value) {
-    final normalized = (value ?? '').trim();
-    if (normalized.isEmpty) {
-      return 'Informe o telefone.';
-    }
-    if (!RegExp(r'^[0-9]+$').hasMatch(normalized)) {
-      return 'Digite apenas números.';
-    }
-    return null;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final screenWidth = MediaQuery.sizeOf(context).width;
-    final proposalReadOnly = widget.isEditing && !widget.allowProposalEdit;
-    final detailAccessBlocked = widget.isEditing && !widget.allowDetailAccess;
-
-    return Dialog(
-      backgroundColor: Colors.transparent,
-      insetPadding: EdgeInsets.symmetric(
-        horizontal: screenWidth < 640 ? 16 : 32,
-        vertical: 24,
-      ),
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          final isCompact = constraints.maxWidth < 720;
-
-          return Container(
-            constraints: const BoxConstraints(maxWidth: 900),
-            decoration: BoxDecoration(
-              color: const Color(0xFFF5F7F2),
-              borderRadius: BorderRadius.circular(28),
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(24),
-                  decoration: const BoxDecoration(
-                    borderRadius: BorderRadius.vertical(
-                      top: Radius.circular(28),
-                    ),
-                    gradient: LinearGradient(
-                      colors: [Color(0xFF12372A), Color(0xFF059669)],
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                    ),
-                  ),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          color: Colors.white.withValues(alpha: 0.15),
-                          borderRadius: BorderRadius.circular(16),
-                        ),
-                        child: const Icon(
-                          Icons.badge_outlined,
-                          color: Colors.white,
-                          size: 28,
-                        ),
-                      ),
-                      const SizedBox(width: 14),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              widget.isEditing
-                                  ? 'Editar cadastro do cliente'
-                                  : 'Novo cadastro do cliente',
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontSize: isCompact ? 22 : 26,
-                                fontWeight: FontWeight.w800,
-                              ),
-                            ),
-                            const SizedBox(height: 4),
-                            Text(
-                              widget.isEditing
-                                  ? 'Atualize obra, telefone, endereço e anexos no mesmo padrão visual do ERP.'
-                                  : 'Crie a obra com telefone, endereço e anexos iniciais no mesmo padrão visual do ERP.',
-                              style: TextStyle(color: Colors.white70),
-                            ),
-                          ],
-                        ),
-                      ),
-                      IconButton(
-                        onPressed: () => Navigator.of(context).pop(),
-                        icon: const Icon(Icons.close, color: Colors.white),
-                      ),
-                    ],
-                  ),
-                ),
-                Flexible(
-                  child: SingleChildScrollView(
-                    padding: const EdgeInsets.all(24),
-                    child: Form(
-                      key: _formKey,
-                      child: Column(
-                        children: [
-                          Container(
-                            padding: const EdgeInsets.all(20),
-                            decoration: _panelDecoration(context),
-                            child: Column(
-                              children: [
-                                if (isCompact) ...[
-                                  _DialogField(
-                                    controller: _workNameController,
-                                    label: 'Nome da obra',
-                                    validator: _requiredField,
-                                  ),
-                                  const SizedBox(height: 16),
-                                  _DialogField(
-                                    controller: _phoneController,
-                                    label: 'Telefone',
-                                    keyboardType: TextInputType.phone,
-                                    validator: _validatePhoneNumber,
-                                    inputFormatters: [
-                                      FilteringTextInputFormatter.digitsOnly,
-                                    ],
-                                  ),
-                                ] else
-                                  Row(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Expanded(
-                                        child: _DialogField(
-                                          controller: _workNameController,
-                                          label: 'Nome da obra',
-                                          validator: _requiredField,
-                                        ),
-                                      ),
-                                      const SizedBox(width: 16),
-                                      Expanded(
-                                        child: _DialogField(
-                                          controller: _phoneController,
-                                          label: 'Telefone',
-                                          keyboardType: TextInputType.phone,
-                                          validator: _validatePhoneNumber,
-                                          inputFormatters: [
-                                            FilteringTextInputFormatter
-                                                .digitsOnly,
-                                          ],
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                const SizedBox(height: 16),
-                                _DialogField(
-                                  controller: _addressController,
-                                  label: 'Endereço',
-                                  maxLines: 2,
-                                  validator: _requiredField,
-                                ),
-                              ],
-                            ),
-                          ),
-                          const SizedBox(height: 20),
-                          if (isCompact) ...[
-                            _AttachmentPickerField(
-                              label: 'Proposta',
-                              helper: proposalReadOnly
-                                  ? 'A proposta pode ser visualizada, mas não alterada pelo Orçamentista.'
-                                  : 'Adicione um arquivo Excel ou PDF da proposta.',
-                              controller: _proposalController,
-                              onPick: proposalReadOnly
-                                  ? null
-                                  : _pickProposalFile,
-                              onClear:
-                                  proposalReadOnly ||
-                                      _proposalController.text.isEmpty
-                                  ? null
-                                  : () => setState(() {
-                                      _proposalController.clear();
-                                      _proposalFilePath = null;
-                                    }),
-                              validator: _validateAttachment,
-                            ),
-                            const SizedBox(height: 16),
-                            _AttachmentPickerField(
-                              label: 'Detalhes',
-                              helper: detailAccessBlocked
-                                  ? 'Arquivo indisponível para o Orçamentista.'
-                                  : 'Adicione um arquivo Excel ou PDF com os detalhes.',
-                              controller: _detailController,
-                              onPick: detailAccessBlocked
-                                  ? null
-                                  : _pickDetailFile,
-                              onClear:
-                                  detailAccessBlocked ||
-                                      _detailController.text.isEmpty
-                                  ? null
-                                  : () => setState(() {
-                                      _detailController.clear();
-                                      _detailFilePath = null;
-                                    }),
-                              validator: _validateAttachment,
-                              lockedMessage: detailAccessBlocked
-                                  ? 'Arquivo restrito nesta etapa'
-                                  : null,
-                            ),
-                          ] else
-                            Row(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Expanded(
-                                  child: _AttachmentPickerField(
-                                    label: 'Proposta',
-                                    helper: proposalReadOnly
-                                        ? 'A proposta pode ser visualizada, mas não alterada pelo Orçamentista.'
-                                        : 'Adicione um arquivo Excel ou PDF da proposta.',
-                                    controller: _proposalController,
-                                    onPick: proposalReadOnly
-                                        ? null
-                                        : _pickProposalFile,
-                                    onClear:
-                                        proposalReadOnly ||
-                                            _proposalController.text.isEmpty
-                                        ? null
-                                        : () => setState(() {
-                                            _proposalController.clear();
-                                            _proposalFilePath = null;
-                                          }),
-                                    validator: _validateAttachment,
-                                  ),
-                                ),
-                                const SizedBox(width: 16),
-                                Expanded(
-                                  child: _AttachmentPickerField(
-                                    label: 'Detalhes',
-                                    helper: detailAccessBlocked
-                                        ? 'Arquivo indisponível para o Orçamentista.'
-                                        : 'Adicione um arquivo Excel ou PDF com os detalhes.',
-                                    controller: _detailController,
-                                    onPick: detailAccessBlocked
-                                        ? null
-                                        : _pickDetailFile,
-                                    onClear:
-                                        detailAccessBlocked ||
-                                            _detailController.text.isEmpty
-                                        ? null
-                                        : () => setState(() {
-                                            _detailController.clear();
-                                            _detailFilePath = null;
-                                          }),
-                                    validator: _validateAttachment,
-                                    lockedMessage: detailAccessBlocked
-                                        ? 'Arquivo restrito nesta etapa'
-                                        : null,
-                                  ),
-                                ),
-                              ],
-                            ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(24, 0, 24, 24),
-                  child: Wrap(
-                    alignment: WrapAlignment.end,
-                    crossAxisAlignment: WrapCrossAlignment.center,
-                    spacing: 12,
-                    runSpacing: 12,
-                    children: [
-                      TextButton(
-                        onPressed: () => Navigator.of(context).pop(),
-                        child: const Text('Cancelar'),
-                      ),
-                      FilledButton.icon(
-                        onPressed: _submit,
-                        icon: const Icon(Icons.save_outlined),
-                        label: Text(
-                          widget.isEditing
-                              ? 'Salvar alterações'
-                              : 'Criar cadastro',
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          );
-        },
-      ),
-    );
-  }
-
-  String? _requiredField(String? value) {
-    if (value == null || value.trim().isEmpty) {
-      return 'Campo obrigatório.';
-    }
-
-    return null;
-  }
-
-  String? _validateAttachment(String? value) {
-    final requiredError = _requiredField(value);
-    if (requiredError != null) {
-      return requiredError;
-    }
-
-    final normalized = value!.trim().toLowerCase();
-    if (normalized.endsWith('.pdf') ||
-        normalized.endsWith('.xls') ||
-        normalized.endsWith('.xlsx')) {
-      return null;
-    }
-
-    return 'Use arquivo PDF, XLS ou XLSX.';
-  }
-}
-
-class _AttachmentPickerField extends FormField<String> {
-  _AttachmentPickerField({
-    required String label,
-    required String helper,
-    required TextEditingController controller,
-    Future<void> Function()? onPick,
-    required String? Function(String?) validator,
-    VoidCallback? onClear,
-    String? lockedMessage,
-  }) : super(
-         validator: validator,
-         builder: (field) {
-           final hasFile = controller.text.isNotEmpty;
-           final isLocked = lockedMessage != null;
-           return Container(
-             padding: const EdgeInsets.all(20),
-             decoration: _panelDecoration(field.context),
-             child: Column(
-               crossAxisAlignment: CrossAxisAlignment.start,
-               children: [
-                 Text(
-                   label,
-                   style: const TextStyle(
-                     fontSize: 18,
-                     fontWeight: FontWeight.w700,
-                   ),
-                 ),
-                 const SizedBox(height: 6),
-                 Text(helper, style: const TextStyle(color: Color(0xFF52605C))),
-                 const SizedBox(height: 16),
-                 OutlinedButton.icon(
-                   onPressed: onPick == null
-                       ? null
-                       : () async {
-                           await onPick();
-                           field.didChange(controller.text);
-                         },
-                   icon: const Icon(Icons.attach_file_outlined),
-                   label: Text(
-                     onPick == null
-                         ? 'Arquivo bloqueado'
-                         : hasFile
-                         ? 'Trocar arquivo'
-                         : 'Adicionar arquivo',
-                   ),
-                 ),
-                 const SizedBox(height: 12),
-                 if (isLocked)
-                   TextFormField(
-                     initialValue: lockedMessage,
-                     readOnly: true,
-                     decoration: const InputDecoration(
-                       labelText: 'Arquivo selecionado',
-                       border: OutlineInputBorder(),
-                     ),
-                   )
-                 else if (hasFile)
-                   TextFormField(
-                     controller: controller,
-                     readOnly: true,
-                     validator: validator,
-                     decoration: InputDecoration(
-                       labelText: 'Arquivo selecionado',
-                       border: const OutlineInputBorder(),
-                       suffixIcon: onClear == null
-                           ? null
-                           : IconButton(
-                               onPressed: () {
-                                 onClear();
-                                 field.didChange(controller.text);
-                               },
-                               icon: const Icon(Icons.close),
-                             ),
-                     ),
-                   )
-                 else
-                   TextFormField(
-                     controller: controller,
-                     readOnly: true,
-                     validator: validator,
-                     decoration: const InputDecoration(
-                       labelText: 'Arquivo selecionado',
-                       hintText: 'Nenhum arquivo adicionado',
-                       border: OutlineInputBorder(),
-                     ),
-                   ),
-                 if (field.hasError) ...[
-                   const SizedBox(height: 8),
-                   Text(
-                     field.errorText!,
-                     style: const TextStyle(color: Color(0xFFB91C1C)),
-                   ),
-                 ],
-               ],
-             ),
-           );
-         },
-       );
-}
-
-class _DialogField extends StatelessWidget {
-  const _DialogField({
-    required this.controller,
-    required this.label,
-    required this.validator,
-    this.maxLines = 1,
-    this.keyboardType,
-    this.inputFormatters,
-    this.enabled = true,
-    this.hintText,
-  });
-
-  final TextEditingController controller;
-  final String label;
-  final String? Function(String?) validator;
-  final int maxLines;
-  final TextInputType? keyboardType;
-  final List<TextInputFormatter>? inputFormatters;
-  final bool enabled;
-  final String? hintText;
-
-  @override
-  Widget build(BuildContext context) {
-    return TextFormField(
-      enabled: enabled,
-      controller: controller,
-      maxLines: maxLines,
-      keyboardType: keyboardType,
-      inputFormatters: inputFormatters,
-      validator: validator,
-      decoration: InputDecoration(
-        labelText: label,
-        hintText: hintText,
-        border: const OutlineInputBorder(),
-      ),
-    );
-  }
-}
-
 class _StageFilterChip extends StatelessWidget {
   const _StageFilterChip({
     required this.title,
@@ -16034,6 +13530,12 @@ class _OrdersKanbanColumnData {
     required this.icon,
     required this.emptyMessage,
     required this.orders,
+    this.assemblyTargetStatus,
+    this.engineeringTargetTaskKey,
+    this.isEngineeringCompletionTarget = false,
+    this.financeTargetTaskKey,
+    this.isFinanceCompletionTarget = false,
+    this.relationshipTargetTaskKey,
   });
 
   final String title;
@@ -16042,6 +13544,12 @@ class _OrdersKanbanColumnData {
   final IconData icon;
   final String emptyMessage;
   final List<WorkflowOrder> orders;
+  final AssemblyWorkflowStatus? assemblyTargetStatus;
+  final String? engineeringTargetTaskKey;
+  final bool isEngineeringCompletionTarget;
+  final String? financeTargetTaskKey;
+  final bool isFinanceCompletionTarget;
+  final String? relationshipTargetTaskKey;
 }
 
 class _PersonalKanbanBoard extends StatelessWidget {
@@ -16087,7 +13595,7 @@ class _PersonalKanbanBoard extends StatelessWidget {
   }
 }
 
-class _StageOrdersKanbanBoard extends StatelessWidget {
+class _StageOrdersKanbanBoard extends StatefulWidget {
   const _StageOrdersKanbanBoard({
     required this.columns,
     required this.allOrders,
@@ -16095,6 +13603,14 @@ class _StageOrdersKanbanBoard extends StatelessWidget {
     required this.onOrderSelected,
     required this.onOpenOrderConversation,
     required this.workspaceProfiles,
+    this.onMoveAssemblyKanbanOrder,
+    this.canAcceptAssemblyKanbanDrop,
+    this.onMoveEngineeringKanbanOrder,
+    this.canAcceptEngineeringKanbanDrop,
+    this.onMoveFinanceKanbanOrder,
+    this.canAcceptFinanceKanbanDrop,
+    this.onMoveRelationshipKanbanOrder,
+    this.canAcceptRelationshipKanbanDrop,
   });
 
   final List<_OrdersKanbanColumnData> columns;
@@ -16103,25 +13619,111 @@ class _StageOrdersKanbanBoard extends StatelessWidget {
   final ValueChanged<WorkflowOrder> onOrderSelected;
   final ValueChanged<WorkflowOrder> onOpenOrderConversation;
   final List<EmployeeWorkspaceProfile> workspaceProfiles;
+  final Future<void> Function(
+    WorkflowOrder order,
+    AssemblyWorkflowStatus target,
+  )?
+  onMoveAssemblyKanbanOrder;
+  final bool Function(WorkflowOrder order, AssemblyWorkflowStatus target)?
+  canAcceptAssemblyKanbanDrop;
+  final Future<void> Function(WorkflowOrder order, String? targetTaskKey)?
+  onMoveEngineeringKanbanOrder;
+  final bool Function(WorkflowOrder order, String? targetTaskKey)?
+  canAcceptEngineeringKanbanDrop;
+  final Future<void> Function(WorkflowOrder order, String? targetTaskKey)?
+  onMoveFinanceKanbanOrder;
+  final bool Function(WorkflowOrder order, String? targetTaskKey)?
+  canAcceptFinanceKanbanDrop;
+  final Future<void> Function(WorkflowOrder order, String targetTaskKey)?
+  onMoveRelationshipKanbanOrder;
+  final bool Function(WorkflowOrder order, String targetTaskKey)?
+  canAcceptRelationshipKanbanDrop;
+
+  @override
+  State<_StageOrdersKanbanBoard> createState() =>
+      _StageOrdersKanbanBoardState();
+}
+
+class _StageOrdersKanbanBoardState extends State<_StageOrdersKanbanBoard> {
+  final ScrollController _scrollController = ScrollController();
+  final GlobalKey _viewportKey = GlobalKey();
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  void _handleEngineeringCardDragUpdate(Offset globalPosition) {
+    final viewportContext = _viewportKey.currentContext;
+    if (viewportContext == null || !_scrollController.hasClients) {
+      return;
+    }
+
+    final box = viewportContext.findRenderObject();
+    if (box is! RenderBox) {
+      return;
+    }
+
+    final local = box.globalToLocal(globalPosition);
+    const edgeThreshold = 96.0;
+    const maxStep = 24.0;
+    double delta = 0;
+
+    if (local.dx < edgeThreshold) {
+      delta = -((edgeThreshold - local.dx) / edgeThreshold) * maxStep;
+    } else if (local.dx > box.size.width - edgeThreshold) {
+      delta =
+          ((local.dx - (box.size.width - edgeThreshold)) / edgeThreshold) *
+          maxStep;
+    }
+
+    if (delta == 0) {
+      return;
+    }
+
+    final nextOffset = (_scrollController.offset + delta).clamp(
+      0.0,
+      _scrollController.position.maxScrollExtent,
+    );
+    if (nextOffset != _scrollController.offset) {
+      _scrollController.jumpTo(nextOffset);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     return SingleChildScrollView(
+      key: _viewportKey,
+      controller: _scrollController,
       scrollDirection: Axis.horizontal,
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          for (var index = 0; index < columns.length; index++) ...[
+          for (var index = 0; index < widget.columns.length; index++) ...[
             if (index > 0) const SizedBox(width: 12),
             SizedBox(
               width: 300,
               child: _StageOrdersKanbanColumn(
-                column: columns[index],
-                allOrders: allOrders,
-                selectedOrderCode: selectedOrderCode,
-                onOrderSelected: onOrderSelected,
-                onOpenOrderConversation: onOpenOrderConversation,
-                workspaceProfiles: workspaceProfiles,
+                column: widget.columns[index],
+                allOrders: widget.allOrders,
+                selectedOrderCode: widget.selectedOrderCode,
+                onOrderSelected: widget.onOrderSelected,
+                onOpenOrderConversation: widget.onOpenOrderConversation,
+                workspaceProfiles: widget.workspaceProfiles,
+                onMoveAssemblyKanbanOrder: widget.onMoveAssemblyKanbanOrder,
+                canAcceptAssemblyKanbanDrop: widget.canAcceptAssemblyKanbanDrop,
+                onMoveEngineeringKanbanOrder:
+                    widget.onMoveEngineeringKanbanOrder,
+                canAcceptEngineeringKanbanDrop:
+                    widget.canAcceptEngineeringKanbanDrop,
+                onMoveFinanceKanbanOrder: widget.onMoveFinanceKanbanOrder,
+                canAcceptFinanceKanbanDrop: widget.canAcceptFinanceKanbanDrop,
+                onMoveRelationshipKanbanOrder:
+                    widget.onMoveRelationshipKanbanOrder,
+                canAcceptRelationshipKanbanDrop:
+                    widget.canAcceptRelationshipKanbanDrop,
+                onEngineeringCardDragUpdate: _handleEngineeringCardDragUpdate,
               ),
             ),
           ],
@@ -16139,6 +13741,15 @@ class _StageOrdersKanbanColumn extends StatelessWidget {
     required this.onOrderSelected,
     required this.onOpenOrderConversation,
     required this.workspaceProfiles,
+    this.onMoveAssemblyKanbanOrder,
+    this.canAcceptAssemblyKanbanDrop,
+    this.onMoveEngineeringKanbanOrder,
+    this.canAcceptEngineeringKanbanDrop,
+    this.onMoveFinanceKanbanOrder,
+    this.canAcceptFinanceKanbanDrop,
+    this.onMoveRelationshipKanbanOrder,
+    this.canAcceptRelationshipKanbanDrop,
+    this.onEngineeringCardDragUpdate,
   });
 
   final _OrdersKanbanColumnData column;
@@ -16147,118 +13758,306 @@ class _StageOrdersKanbanColumn extends StatelessWidget {
   final ValueChanged<WorkflowOrder> onOrderSelected;
   final ValueChanged<WorkflowOrder> onOpenOrderConversation;
   final List<EmployeeWorkspaceProfile> workspaceProfiles;
+  final Future<void> Function(
+    WorkflowOrder order,
+    AssemblyWorkflowStatus target,
+  )?
+  onMoveAssemblyKanbanOrder;
+  final bool Function(WorkflowOrder order, AssemblyWorkflowStatus target)?
+  canAcceptAssemblyKanbanDrop;
+  final Future<void> Function(WorkflowOrder order, String? targetTaskKey)?
+  onMoveEngineeringKanbanOrder;
+  final bool Function(WorkflowOrder order, String? targetTaskKey)?
+  canAcceptEngineeringKanbanDrop;
+  final Future<void> Function(WorkflowOrder order, String? targetTaskKey)?
+  onMoveFinanceKanbanOrder;
+  final bool Function(WorkflowOrder order, String? targetTaskKey)?
+  canAcceptFinanceKanbanDrop;
+  final Future<void> Function(WorkflowOrder order, String targetTaskKey)?
+  onMoveRelationshipKanbanOrder;
+  final bool Function(WorkflowOrder order, String targetTaskKey)?
+  canAcceptRelationshipKanbanDrop;
+  final ValueChanged<Offset>? onEngineeringCardDragUpdate;
 
   @override
   Widget build(BuildContext context) {
     final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    final acceptsAssemblyDrop =
+        onMoveAssemblyKanbanOrder != null &&
+        column.assemblyTargetStatus != null;
+    final acceptsEngineeringDrop =
+        onMoveEngineeringKanbanOrder != null &&
+        (column.engineeringTargetTaskKey != null ||
+            column.isEngineeringCompletionTarget);
+    final acceptsFinanceDrop =
+        onMoveFinanceKanbanOrder != null &&
+        (column.financeTargetTaskKey != null || column.isFinanceCompletionTarget);
+    final acceptsRelationshipDrop =
+        onMoveRelationshipKanbanOrder != null &&
+        column.relationshipTargetTaskKey != null;
+    final acceptsDrop =
+        acceptsAssemblyDrop ||
+        acceptsEngineeringDrop ||
+        acceptsFinanceDrop ||
+        acceptsRelationshipDrop;
 
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: _panelDecoration(context),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
+    return DragTarget<WorkflowOrder>(
+      onWillAcceptWithDetails: acceptsDrop
+          ? (details) {
+              if (acceptsAssemblyDrop &&
+                  details.data.currentStage == WorkflowStage.assembly) {
+                return canAcceptAssemblyKanbanDrop?.call(
+                      details.data,
+                      column.assemblyTargetStatus!,
+                    ) ??
+                    false;
+              }
+              if (acceptsEngineeringDrop &&
+                  details.data.currentStage == WorkflowStage.engineering) {
+                return canAcceptEngineeringKanbanDrop?.call(
+                      details.data,
+                      column.isEngineeringCompletionTarget
+                          ? null
+                          : column.engineeringTargetTaskKey,
+                    ) ??
+                    false;
+              }
+              if (acceptsFinanceDrop &&
+                  details.data.currentStage == WorkflowStage.finance) {
+                return canAcceptFinanceKanbanDrop?.call(
+                      details.data,
+                      column.isFinanceCompletionTarget
+                          ? null
+                          : column.financeTargetTaskKey,
+                    ) ??
+                    false;
+              }
+              if (acceptsRelationshipDrop &&
+                  details.data.currentStage == WorkflowStage.relationship) {
+                return canAcceptRelationshipKanbanDrop?.call(
+                      details.data,
+                      column.relationshipTargetTaskKey!,
+                    ) ??
+                    false;
+              }
+              return false;
+            }
+          : null,
+      onAcceptWithDetails: acceptsDrop
+          ? (details) async {
+              if (acceptsAssemblyDrop &&
+                  details.data.currentStage == WorkflowStage.assembly) {
+                await onMoveAssemblyKanbanOrder!(
+                  details.data,
+                  column.assemblyTargetStatus!,
+                );
+                return;
+              }
+              if (acceptsEngineeringDrop &&
+                  details.data.currentStage == WorkflowStage.engineering) {
+                await onMoveEngineeringKanbanOrder!(
+                  details.data,
+                  column.isEngineeringCompletionTarget
+                      ? null
+                      : column.engineeringTargetTaskKey,
+                );
+                return;
+              }
+              if (acceptsFinanceDrop &&
+                  details.data.currentStage == WorkflowStage.finance) {
+                await onMoveFinanceKanbanOrder!(
+                  details.data,
+                  column.isFinanceCompletionTarget
+                      ? null
+                      : column.financeTargetTaskKey,
+                );
+                return;
+              }
+              if (acceptsRelationshipDrop &&
+                  details.data.currentStage == WorkflowStage.relationship) {
+                await onMoveRelationshipKanbanOrder!(
+                  details.data,
+                  column.relationshipTargetTaskKey!,
+                );
+              }
+            }
+          : null,
+      builder: (context, candidateData, rejectedData) {
+        final isActiveTarget = candidateData.isNotEmpty;
+        return AnimatedContainer(
+          duration: const Duration(milliseconds: 120),
+          padding: const EdgeInsets.all(14),
+          decoration: _panelDecoration(context).copyWith(
+            border: Border.all(
+              color: isActiveTarget
+                  ? column.accent.withValues(alpha: 0.85)
+                  : (isDarkMode
+                        ? const Color(0xFF29403A)
+                        : const Color(0xFFDCE5E1)),
+              width: isActiveTarget ? 2 : 1,
+            ),
+            color: isActiveTarget
+                ? column.accent.withValues(alpha: isDarkMode ? 0.12 : 0.08)
+                : null,
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Container(
-                width: 34,
-                height: 34,
-                decoration: BoxDecoration(
-                  color: column.accent.withValues(alpha: 0.1),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Icon(column.icon, color: column.accent, size: 16),
-              ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      column.title,
-                      style: const TextStyle(
-                        fontWeight: FontWeight.w800,
-                        fontSize: 15,
+              Row(
+                children: [
+                  Container(
+                    width: 34,
+                    height: 34,
+                    decoration: BoxDecoration(
+                      color: column.accent.withValues(alpha: 0.1),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Icon(column.icon, color: column.accent, size: 16),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          column.title,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w800,
+                            fontSize: 15,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          column.subtitle,
+                          style: TextStyle(
+                            color: isDarkMode
+                                ? const Color(0xFFC0D0C9)
+                                : const Color(0xFF52605C),
+                            fontSize: 13,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 5,
+                    ),
+                    decoration: BoxDecoration(
+                      color: isDarkMode
+                          ? column.accent.withValues(alpha: 0.12)
+                          : const Color(0xFFF4F7F6),
+                      borderRadius: BorderRadius.circular(999),
+                      border: Border.all(
+                        color: column.accent.withValues(
+                          alpha: isDarkMode ? 0.32 : 0.14,
+                        ),
                       ),
                     ),
-                    const SizedBox(height: 2),
-                    Text(
-                      column.subtitle,
+                    child: Text(
+                      '${column.orders.length}',
                       style: TextStyle(
-                        color: isDarkMode
-                            ? const Color(0xFFC0D0C9)
-                            : const Color(0xFF52605C),
-                        fontSize: 13,
+                        color: column.accent,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
                       ),
                     ),
-                  ],
-                ),
+                  ),
+                ],
               ),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-                decoration: BoxDecoration(
-                  color: isDarkMode
-                      ? column.accent.withValues(alpha: 0.12)
-                      : const Color(0xFFF4F7F6),
-                  borderRadius: BorderRadius.circular(999),
-                  border: Border.all(
-                    color: column.accent.withValues(
-                      alpha: isDarkMode ? 0.32 : 0.14,
+              const SizedBox(height: 12),
+              if (column.orders.isEmpty)
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: column.accent.withValues(alpha: 0.04),
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(
+                      color: column.accent.withValues(
+                        alpha: isDarkMode ? 0.30 : 0.12,
+                      ),
                     ),
                   ),
-                ),
-                child: Text(
-                  '${column.orders.length}',
-                  style: TextStyle(
-                    color: column.accent,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w700,
+                  child: Text(
+                    column.emptyMessage,
+                    style: TextStyle(
+                      color: isDarkMode
+                          ? const Color(0xFFC0D0C9)
+                          : const Color(0xFF52605C),
+                      fontSize: 13,
+                      height: 1.35,
+                    ),
+                  ),
+                )
+              else
+                ...column.orders.map(
+                  (order) => Padding(
+                    padding: const EdgeInsets.only(bottom: 10),
+                    child: acceptsDrop
+                        ? LongPressDraggable<WorkflowOrder>(
+                            data: order,
+                            dragAnchorStrategy: pointerDragAnchorStrategy,
+                            onDragUpdate: (details) {
+                              onEngineeringCardDragUpdate?.call(
+                                details.globalPosition,
+                              );
+                            },
+                            feedback: Material(
+                              color: Colors.transparent,
+                              child: SizedBox(
+                                width: 272,
+                                child: Opacity(
+                                  opacity: 0.92,
+                                  child: _OrderCard(
+                                    order: order,
+                                    allOrders: allOrders,
+                                    selected: false,
+                                    onTap: () {},
+                                    onOpenConversation: () {},
+                                    workspaceProfiles: workspaceProfiles,
+                                  ),
+                                ),
+                              ),
+                            ),
+                            childWhenDragging: Opacity(
+                              opacity: 0.35,
+                              child: _OrderCard(
+                                order: order,
+                                allOrders: allOrders,
+                                selected: selectedOrderCode == order.code,
+                                onTap: () => onOrderSelected(order),
+                                onOpenConversation: () =>
+                                    onOpenOrderConversation(order),
+                                workspaceProfiles: workspaceProfiles,
+                              ),
+                            ),
+                            child: _OrderCard(
+                              order: order,
+                              allOrders: allOrders,
+                              selected: selectedOrderCode == order.code,
+                              onTap: () => onOrderSelected(order),
+                              onOpenConversation: () =>
+                                  onOpenOrderConversation(order),
+                              workspaceProfiles: workspaceProfiles,
+                            ),
+                          )
+                        : _OrderCard(
+                            order: order,
+                            allOrders: allOrders,
+                            selected: selectedOrderCode == order.code,
+                            onTap: () => onOrderSelected(order),
+                            onOpenConversation: () =>
+                                onOpenOrderConversation(order),
+                            workspaceProfiles: workspaceProfiles,
+                          ),
                   ),
                 ),
-              ),
             ],
           ),
-          const SizedBox(height: 12),
-          if (column.orders.isEmpty)
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: column.accent.withValues(alpha: 0.04),
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(
-                  color: column.accent.withValues(
-                    alpha: isDarkMode ? 0.30 : 0.12,
-                  ),
-                ),
-              ),
-              child: Text(
-                column.emptyMessage,
-                style: TextStyle(
-                  color: isDarkMode
-                      ? const Color(0xFFC0D0C9)
-                      : const Color(0xFF52605C),
-                  fontSize: 13,
-                  height: 1.35,
-                ),
-              ),
-            )
-          else
-            ...column.orders.map(
-              (order) => Padding(
-                padding: const EdgeInsets.only(bottom: 10),
-                child: _OrderCard(
-                  order: order,
-                  allOrders: allOrders,
-                  selected: selectedOrderCode == order.code,
-                  onTap: () => onOrderSelected(order),
-                  onOpenConversation: () => onOpenOrderConversation(order),
-                  workspaceProfiles: workspaceProfiles,
-                ),
-              ),
-            ),
-        ],
-      ),
+        );
+      },
     );
   }
 }
@@ -17282,322 +15081,4 @@ EngineeringChecklistStatus _normalizeEngineeringChecklistStatus(
   }
 
   return status;
-}
-
-class _EngineeringFlowSnapshot {
-  const _EngineeringFlowSnapshot({
-    required this.completedTasks,
-    required this.currentTask,
-    required this.upcomingTasks,
-  });
-
-  final List<EngineeringChecklistTask> completedTasks;
-  final EngineeringChecklistTask? currentTask;
-  final List<EngineeringChecklistTask> upcomingTasks;
-
-  bool get isComplete => currentTask == null && upcomingTasks.isEmpty;
-}
-
-_EngineeringFlowSnapshot _engineeringFlowSnapshot(WorkflowOrder order) {
-  return _engineeringFlowSnapshotFromStatuses(
-    order.engineeringChecklistStatuses,
-  );
-}
-
-double _effectiveOrderProgress(WorkflowOrder order) {
-  final stageIndex = workflowStages.indexOf(order.currentStage);
-  if (stageIndex == -1) {
-    return order.progress.clamp(0, 1);
-  }
-
-  final stageFraction = _stageProgressFraction(order);
-  final progress = (stageIndex + stageFraction) / workflowStages.length;
-  return progress.clamp(0.02, 1);
-}
-
-double _stageProgressFraction(WorkflowOrder order) {
-  return switch (order.currentStage) {
-    WorkflowStage.customerRegistration => 0.35,
-    WorkflowStage.estimating =>
-      order.isServiceOrder
-          ? (order.serviceOrderFileName.trim().isEmpty ? 0.35 : 0.85)
-          : (order.materialFileName.trim().isEmpty ? 0.35 : 0.85),
-    WorkflowStage.finance =>
-      order.isServiceOrder ? (order.financeClientApproved ? 0.85 : 0.40) : 0.60,
-    WorkflowStage.relationship => 0.55,
-    WorkflowStage.engineering => _engineeringProgressFraction(order),
-    WorkflowStage.assembly => switch (order.assemblyWorkflowStatus) {
-      AssemblyWorkflowStatus.waiting => 0.15,
-      AssemblyWorkflowStatus.doing => 0.60,
-      AssemblyWorkflowStatus.done => 0.95,
-    },
-    WorkflowStage.installation => switch (order.installationWorkflowStatus) {
-      InstallationWorkflowStatus.waiting => 0.10,
-      InstallationWorkflowStatus.scheduled => 0.35,
-      InstallationWorkflowStatus.doing => 0.70,
-      InstallationWorkflowStatus.done => 1.0,
-    },
-  };
-}
-
-double _engineeringProgressFraction(WorkflowOrder order) {
-  final completedCount = engineeringChecklistTasks
-      .where(
-        (task) =>
-            _normalizeEngineeringChecklistStatus(
-              order.engineeringChecklistStatuses[task.key] ??
-                  EngineeringChecklistStatus.notStarted,
-            ) ==
-            EngineeringChecklistStatus.done,
-      )
-      .length;
-  if (engineeringChecklistTasks.isEmpty) {
-    return 0.35;
-  }
-  return (completedCount / engineeringChecklistTasks.length).clamp(0.08, 1.0);
-}
-
-_EngineeringFlowSnapshot _engineeringFlowSnapshotFromStatuses(
-  Map<String, EngineeringChecklistStatus> statuses,
-) {
-  final completedTasks = <EngineeringChecklistTask>[];
-  EngineeringChecklistTask? currentTask;
-  final upcomingTasks = <EngineeringChecklistTask>[];
-
-  for (final task in engineeringChecklistTasks) {
-    final status = _normalizeEngineeringChecklistStatus(
-      statuses[task.key] ?? EngineeringChecklistStatus.notStarted,
-    );
-    if (currentTask == null && status != EngineeringChecklistStatus.done) {
-      currentTask = task;
-      continue;
-    }
-
-    if (currentTask == null) {
-      completedTasks.add(task);
-    } else {
-      upcomingTasks.add(task);
-    }
-  }
-
-  return _EngineeringFlowSnapshot(
-    completedTasks: completedTasks,
-    currentTask: currentTask,
-    upcomingTasks: upcomingTasks,
-  );
-}
-
-ImageProvider<Object>? _resolveProfileImageProvider(String? filePath) {
-  final normalized = filePath?.trim();
-  if (normalized == null || normalized.isEmpty) {
-    return null;
-  }
-
-  final uri = Uri.tryParse(normalized);
-  if (uri != null && (uri.scheme == 'http' || uri.scheme == 'https')) {
-    return NetworkImage(_normalizeProfileImageUrl(normalized));
-  }
-
-  if (kIsWeb) {
-    return null;
-  }
-
-  return FileImage(io.File(normalized));
-}
-
-String _normalizeProfileImageUrl(String url) {
-  final uri = Uri.tryParse(url);
-  if (uri == null) {
-    return url;
-  }
-
-  if (uri.host.contains('drive.google.com')) {
-    final idFromQuery = uri.queryParameters['id']?.trim();
-    if (idFromQuery != null && idFromQuery.isNotEmpty) {
-      return 'https://drive.google.com/uc?export=download&id=$idFromQuery';
-    }
-
-    final segments = uri.pathSegments;
-    final fileIndex = segments.indexOf('d');
-    if (fileIndex != -1 && fileIndex + 1 < segments.length) {
-      final fileId = segments[fileIndex + 1].trim();
-      if (fileId.isNotEmpty) {
-        return 'https://drive.google.com/uc?export=download&id=$fileId';
-      }
-    }
-  }
-
-  return url;
-}
-
-String _formatDate(DateTime date) {
-  final day = date.day.toString().padLeft(2, '0');
-  final month = date.month.toString().padLeft(2, '0');
-  return '$day/$month/${date.year}';
-}
-
-int _extractOrderNumber(String code) {
-  final firstNumber = RegExp(r'(\d+)').firstMatch(code)?.group(1) ?? '';
-  return int.tryParse(firstNumber) ?? 0;
-}
-
-String _displayOrderCode(
-  WorkflowOrder order, [
-  List<WorkflowOrder> allOrders = const [],
-]) {
-  final baseCode = 'OP-${order.client.id}';
-  if (!order.isServiceOrder) {
-    final version = order.proposalVersion <= 0 ? 1 : order.proposalVersion;
-    if (version <= 1) {
-      return baseCode;
-    }
-
-    return '$baseCode-P$version';
-  }
-
-  final explicitSuffix = RegExp(r'(-OS\d+)$').firstMatch(order.code.trim());
-  if (explicitSuffix != null) {
-    return '$baseCode${explicitSuffix.group(1)!}';
-  }
-
-  if (allOrders.isNotEmpty) {
-    final clientServiceOrders = allOrders
-        .where(
-          (item) => item.client.id == order.client.id && item.isServiceOrder,
-        )
-        .toList(growable: false);
-
-    if (clientServiceOrders.isNotEmpty) {
-      clientServiceOrders.sort((left, right) {
-        final codeCompare = _extractOrderNumber(
-          left.code,
-        ).compareTo(_extractOrderNumber(right.code));
-        if (codeCompare != 0) {
-          return codeCompare;
-        }
-
-        return left.workName.toLowerCase().compareTo(
-          right.workName.toLowerCase(),
-        );
-      });
-      final index = clientServiceOrders.indexWhere(
-        (item) => item.code == order.code,
-      );
-      if (index != -1) {
-        return '$baseCode-OS${index + 1}';
-      }
-    }
-  }
-
-  return '$baseCode-OS1';
-}
-
-String _proposalBadgeLabel(WorkflowOrder order) {
-  return 'P${order.proposalVersion <= 0 ? 1 : order.proposalVersion}';
-}
-
-String _proposalVersionTitle(WorkflowOrder order) {
-  return _proposalVersionTitleFromNumber(order.proposalVersion);
-}
-
-String _proposalVersionTitleFromNumber(int proposalVersion) {
-  if (proposalVersion <= 1) {
-    return 'Proposta principal';
-  }
-
-  return '${proposalVersion}a proposta';
-}
-
-EngineeringChecklistTask? _engineeringChecklistTaskByKey(String taskKey) {
-  for (final task in engineeringChecklistTasks) {
-    if (task.key == taskKey) {
-      return task;
-    }
-  }
-
-  return null;
-}
-
-List<WorkflowOrder> _proposalGroupOrders(
-  List<WorkflowOrder> allOrders,
-  WorkflowOrder order,
-) {
-  final proposalGroupCode = order.proposalGroupCode.trim().isEmpty
-      ? order.code
-      : order.proposalGroupCode.trim();
-  final groupedOrders = allOrders
-      .where((item) => item.proposalGroupCode.trim() == proposalGroupCode)
-      .toList(growable: false);
-
-  groupedOrders.sort((left, right) {
-    final versionCompare = left.proposalVersion.compareTo(
-      right.proposalVersion,
-    );
-    if (versionCompare != 0) {
-      return versionCompare;
-    }
-    return _extractOrderNumber(
-      left.code,
-    ).compareTo(_extractOrderNumber(right.code));
-  });
-
-  return groupedOrders;
-}
-
-List<WorkflowOrder> _proposalExtensionsForPrimary(
-  List<WorkflowOrder> allOrders,
-  WorkflowOrder order,
-) {
-  if (!order.isPrimaryProposal) {
-    return const <WorkflowOrder>[];
-  }
-
-  return _proposalGroupOrders(
-    allOrders,
-    order,
-  ).where((item) => item.code != order.code).toList(growable: false);
-}
-
-String _formatTimeOnly(DateTime date) {
-  final hour = date.hour.toString().padLeft(2, '0');
-  final minute = date.minute.toString().padLeft(2, '0');
-  return '$hour:$minute';
-}
-
-String _formatDateWithWeekday(DateTime date) {
-  const weekdays = [
-    'Segunda-feira',
-    'Terça-feira',
-    'Quarta-feira',
-    'Quinta-feira',
-    'Sexta-feira',
-    'Sábado',
-    'Domingo',
-  ];
-  final weekday = weekdays[date.weekday - 1];
-  return '$weekday, ${_formatDate(date)} às ${_formatTimeOnly(date)}';
-}
-
-String _formatDayWithWeekday(DateTime date) {
-  const weekdays = [
-    'Segunda-feira',
-    'Terça-feira',
-    'Quarta-feira',
-    'Quinta-feira',
-    'Sexta-feira',
-    'Sábado',
-    'Domingo',
-  ];
-  final weekday = weekdays[date.weekday - 1];
-  return '$weekday, ${_formatDate(date)}';
-}
-
-bool _isSameDate(DateTime left, DateTime right) {
-  return left.year == right.year &&
-      left.month == right.month &&
-      left.day == right.day;
-}
-
-String _formatDateTime(DateTime date) {
-  return '${_formatDate(date)} ${_formatTimeOnly(date)}';
 }

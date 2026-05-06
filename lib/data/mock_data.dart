@@ -18,7 +18,6 @@ final List<EmployeeWorkspaceProfile> workspaceProfiles = [
     role: 'Administração do sistema',
     isAdministrator: true,
     allowedStages: [
-      WorkflowStage.customerRegistration,
       WorkflowStage.estimating,
       WorkflowStage.finance,
       WorkflowStage.relationship,
