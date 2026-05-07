@@ -4,6 +4,7 @@ import 'dart:io' as io;
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
@@ -14094,46 +14095,91 @@ class _StageOrdersKanbanBoardState extends State<_StageOrdersKanbanBoard> {
     }
   }
 
+  void _handlePointerSignal(PointerSignalEvent event) {
+    if (event is! PointerScrollEvent || !_scrollController.hasClients) {
+      return;
+    }
+
+    final delta = event.scrollDelta.dx == 0
+        ? event.scrollDelta.dy
+        : event.scrollDelta.dx;
+    if (delta == 0) {
+      return;
+    }
+
+    final nextOffset = (_scrollController.offset + delta).clamp(
+      0.0,
+      _scrollController.position.maxScrollExtent,
+    );
+    if (nextOffset != _scrollController.offset) {
+      _scrollController.jumpTo(nextOffset);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    return SingleChildScrollView(
-      key: _viewportKey,
-      controller: _scrollController,
-      scrollDirection: Axis.horizontal,
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          for (var index = 0; index < widget.columns.length; index++) ...[
-            if (index > 0) const SizedBox(width: 12),
-            SizedBox(
-              width: 300,
-              child: _StageOrdersKanbanColumn(
-                column: widget.columns[index],
-                allOrders: widget.allOrders,
-                selectedOrderCode: widget.selectedOrderCode,
-                onOrderSelected: widget.onOrderSelected,
-                onOpenOrderConversation: widget.onOpenOrderConversation,
-                workspaceProfiles: widget.workspaceProfiles,
-                onMoveAssemblyKanbanOrder: widget.onMoveAssemblyKanbanOrder,
-                canAcceptAssemblyKanbanDrop: widget.canAcceptAssemblyKanbanDrop,
-                onMoveEngineeringKanbanOrder:
-                    widget.onMoveEngineeringKanbanOrder,
-                canAcceptEngineeringKanbanDrop:
-                    widget.canAcceptEngineeringKanbanDrop,
-                onMoveFinanceKanbanOrder: widget.onMoveFinanceKanbanOrder,
-                canAcceptFinanceKanbanDrop: widget.canAcceptFinanceKanbanDrop,
-                onMoveRelationshipKanbanOrder:
-                    widget.onMoveRelationshipKanbanOrder,
-                canAcceptRelationshipKanbanDrop:
-                    widget.canAcceptRelationshipKanbanDrop,
-                onEngineeringCardDragUpdate: _handleEngineeringCardDragUpdate,
-              ),
-            ),
-          ],
-        ],
+    return Listener(
+      onPointerSignal: _handlePointerSignal,
+      child: ScrollConfiguration(
+        behavior: const _KanbanScrollBehavior(),
+        child: SingleChildScrollView(
+          key: _viewportKey,
+          controller: _scrollController,
+          scrollDirection: Axis.horizontal,
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              for (var index = 0; index < widget.columns.length; index++) ...[
+                if (index > 0) const SizedBox(width: 12),
+                SizedBox(
+                  width: 300,
+                  child: _StageOrdersKanbanColumn(
+                    column: widget.columns[index],
+                    allOrders: widget.allOrders,
+                    selectedOrderCode: widget.selectedOrderCode,
+                    onOrderSelected: widget.onOrderSelected,
+                    onOpenOrderConversation: widget.onOpenOrderConversation,
+                    workspaceProfiles: widget.workspaceProfiles,
+                    onMoveAssemblyKanbanOrder:
+                        widget.onMoveAssemblyKanbanOrder,
+                    canAcceptAssemblyKanbanDrop:
+                        widget.canAcceptAssemblyKanbanDrop,
+                    onMoveEngineeringKanbanOrder:
+                        widget.onMoveEngineeringKanbanOrder,
+                    canAcceptEngineeringKanbanDrop:
+                        widget.canAcceptEngineeringKanbanDrop,
+                    onMoveFinanceKanbanOrder: widget.onMoveFinanceKanbanOrder,
+                    canAcceptFinanceKanbanDrop:
+                        widget.canAcceptFinanceKanbanDrop,
+                    onMoveRelationshipKanbanOrder:
+                        widget.onMoveRelationshipKanbanOrder,
+                    canAcceptRelationshipKanbanDrop:
+                        widget.canAcceptRelationshipKanbanDrop,
+                    onEngineeringCardDragUpdate:
+                        _handleEngineeringCardDragUpdate,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
       ),
     );
   }
+}
+
+class _KanbanScrollBehavior extends MaterialScrollBehavior {
+  const _KanbanScrollBehavior();
+
+  @override
+  Set<PointerDeviceKind> get dragDevices => {
+    PointerDeviceKind.touch,
+    PointerDeviceKind.mouse,
+    PointerDeviceKind.trackpad,
+    PointerDeviceKind.stylus,
+    PointerDeviceKind.invertedStylus,
+    PointerDeviceKind.unknown,
+  };
 }
 
 class _StageOrdersKanbanColumn extends StatelessWidget {
