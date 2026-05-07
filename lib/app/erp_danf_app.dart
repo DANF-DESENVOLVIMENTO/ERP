@@ -10,6 +10,7 @@ import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'app_version.dart';
 import '../auth/firebase_auth_shell.dart';
 import '../auth/workspace_credentials.dart';
 import '../auth/workspace_session.dart';
@@ -17,6 +18,7 @@ import '../data/mock_data.dart';
 import '../models/erp_models.dart';
 import '../services/company_drive_storage_service.dart';
 import '../services/firebase_workflow_repository.dart';
+import '../services/software_update_service.dart';
 
 part 'erp_danf_app_customer_registration.dart';
 part 'erp_danf_app_estimating.dart';
@@ -395,6 +397,7 @@ class ErpDashboardPage extends StatefulWidget {
 class _ErpDashboardPageState extends State<ErpDashboardPage> {
   static const _platformLogStorageKey = 'erp_danf_platform_logs';
   final FirebaseWorkflowRepository _repository = FirebaseWorkflowRepository();
+  final SoftwareUpdateService _softwareUpdateService = SoftwareUpdateService();
   List<WorkflowOrder> _orders = List.of(mockOrders);
   List<EmployeeWorkspaceProfile> _workspaceProfiles = workspaceProfiles
       .map((profile) => profile.copyWith())
@@ -422,6 +425,9 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
   bool _profilesLoaded = false;
   String? _busyMessage;
   Object? _syncError;
+  Object? _softwareUpdateError;
+  bool _isCheckingSoftwareUpdate = false;
+  SoftwareUpdateManifest? _availableSoftwareUpdate;
   bool _didCheckLocalDriveBackend = false;
   _DriveSyncStatus _driveSyncStatus = _DriveSyncStatus.checking;
   final Map<WorkflowStage, _StageOrdersView> _stageOrdersViews = {
@@ -438,6 +444,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     _startFirebaseSync();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       unawaited(_refreshDriveSyncStatus());
+      unawaited(_checkForSoftwareUpdate(showNoUpdateMessage: false));
     });
   }
 
@@ -447,6 +454,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     _profilesSubscription?.cancel();
     _customerSearchController.dispose();
     _repository.dispose();
+    _softwareUpdateService.dispose();
     super.dispose();
   }
 
@@ -587,6 +595,124 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
         isError: true,
       );
     }
+  }
+
+  Future<void> _checkForSoftwareUpdate({
+    required bool showNoUpdateMessage,
+  }) async {
+    if (!_softwareUpdateService.isConfigured) {
+      if (showNoUpdateMessage) {
+        _showAppMessage(
+          'Atualizacao automatica nao configurada neste executavel.',
+          isError: true,
+        );
+      }
+      return;
+    }
+
+    if (_isCheckingSoftwareUpdate) {
+      return;
+    }
+
+    if (mounted) {
+      setState(() {
+        _isCheckingSoftwareUpdate = true;
+        _softwareUpdateError = null;
+      });
+    }
+
+    try {
+      final result = await _softwareUpdateService.checkForUpdate();
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _availableSoftwareUpdate = result.hasUpdate ? result.manifest : null;
+      });
+
+      if (!result.hasUpdate && showNoUpdateMessage) {
+        _showAppMessage('Voce ja esta usando a versao mais recente.');
+      }
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _softwareUpdateError = error;
+      });
+
+      if (showNoUpdateMessage) {
+        _showAppMessage(
+          'Nao foi possivel verificar atualizacoes: $error',
+          isError: true,
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isCheckingSoftwareUpdate = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _installAvailableSoftwareUpdate() async {
+    final manifest = _availableSoftwareUpdate;
+    if (manifest == null) {
+      return;
+    }
+
+    final shouldInstall = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Atualizar ERP DANF?'),
+        content: Text(
+          'A versao ${manifest.version} sera baixada e instalada. '
+          'O app vai fechar e abrir novamente no final.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Depois'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Atualizar'),
+          ),
+        ],
+      ),
+    );
+    if (shouldInstall != true) {
+      return;
+    }
+
+    await _runBusyTask(
+      () async {
+        final packageFile = await _softwareUpdateService.downloadUpdatePackage(
+          manifest,
+          onProgress: (received, total) {
+            if (!mounted || total == null || total <= 0) {
+              return;
+            }
+
+            final percentage = ((received / total) * 100).clamp(0, 100).round();
+            setState(() {
+              _busyMessage = 'Baixando atualizacao... $percentage%';
+            });
+          },
+        );
+        if (mounted) {
+          setState(() {
+            _busyMessage = 'Aplicando atualizacao...';
+          });
+        }
+        await _softwareUpdateService.installDownloadedPackage(packageFile);
+      },
+      busyMessage: 'Baixando atualizacao...',
+      errorPrefix: 'Nao foi possivel atualizar o ERP DANF',
+    );
   }
 
   bool _isDriveConfigurationMissingError(String? errorMessage) {
@@ -2759,8 +2885,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
             child: const Text('Cancelar'),
           ),
           FilledButton(
-            onPressed: () =>
-                Navigator.of(context).pop(controller.text.trim()),
+            onPressed: () => Navigator.of(context).pop(controller.text.trim()),
             child: const Text('Salvar'),
           ),
         ],
@@ -2835,19 +2960,13 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     final returnedToEstimatingOrder = selected.copyWith(
       currentStage: WorkflowStage.estimating,
       installationWorkflowStatus: InstallationWorkflowStatus.done,
-      installationVisitHistory: [
-        ...updatedVisits,
-        completionReport,
-      ],
+      installationVisitHistory: [...updatedVisits, completionReport],
     );
     final updatedOrder = selected.isServiceOrder
         ? selected.copyWith(
             currentStage: WorkflowStage.estimating,
             installationWorkflowStatus: InstallationWorkflowStatus.done,
-            installationVisitHistory: [
-              ...updatedVisits,
-              completionReport,
-            ],
+            installationVisitHistory: [...updatedVisits, completionReport],
             progress: _effectiveOrderProgress(returnedToEstimatingOrder),
             nextAction: 'OS Realizada',
             blocker: 'Sem bloqueio. Ordem de serviço realizada na Instalação.',
@@ -2859,10 +2978,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
           )
         : selected.copyWith(
             installationWorkflowStatus: InstallationWorkflowStatus.done,
-            installationVisitHistory: [
-              ...updatedVisits,
-              completionReport,
-            ],
+            installationVisitHistory: [...updatedVisits, completionReport],
             progress: _effectiveOrderProgress(previewOrder),
             nextAction: _defaultNextActionForStage(
               WorkflowStage.installation,
@@ -3998,7 +4114,8 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
               previewOrder,
               AssemblyWorkflowStatus.waiting,
             )
-          : nextStage == WorkflowStage.estimating && !previewOrder.isServiceOrder
+          : nextStage == WorkflowStage.estimating &&
+                !previewOrder.isServiceOrder
           ? _estimatingKanbanWorkflowBlocker(previewOrder)
           : nextStage == WorkflowStage.relationship
           ? _relationshipKanbanWorkflowBlocker(previewOrder)
@@ -4172,7 +4289,8 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     final now = DateTime.now();
     final updatedEstimatingStatuses = <String, EngineeringChecklistStatus>{
       'waiting': EngineeringChecklistStatus.done,
-      'doing': _hasEstimatingWorksheetData(
+      'doing':
+          _hasEstimatingWorksheetData(
             selected.copyWith(
               estimatingIncludedVisits: draft.includedVisits,
               estimatingMaterials: draft.materials,
@@ -4189,13 +4307,14 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
         ..[WorkflowStage.estimating] =
             'Levantamento do Orçamentista atualizado em ${_formatDateTime(now)}',
       nextAction:
-          _estimatingKanbanFlowSnapshotFromStatuses(updatedEstimatingStatuses)
-              .currentTask
-              ?.label ??
+          _estimatingKanbanFlowSnapshotFromStatuses(
+            updatedEstimatingStatuses,
+          ).currentTask?.label ??
           'Orçamento concluído',
       blocker:
-          _estimatingKanbanFlowSnapshotFromStatuses(updatedEstimatingStatuses)
-              .isComplete
+          _estimatingKanbanFlowSnapshotFromStatuses(
+            updatedEstimatingStatuses,
+          ).isComplete
           ? 'Sem bloqueio. Fluxo do Orçamentista concluído.'
           : 'Kanban do Orçamentista em ${_estimatingKanbanFlowSnapshotFromStatuses(updatedEstimatingStatuses).currentTask!.label}.',
     );
@@ -4630,11 +4749,12 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       logArea: 'Financeiro',
       onUpdate: (selected, file) {
         final now = DateTime.now();
-        final updatedStatuses = Map<String, EngineeringChecklistStatus>.from(
-          selected.financeContractStatuses,
-        )
-          ..['waiting'] = EngineeringChecklistStatus.done
-          ..['generate_contract'] = EngineeringChecklistStatus.done;
+        final updatedStatuses =
+            Map<String, EngineeringChecklistStatus>.from(
+                selected.financeContractStatuses,
+              )
+              ..['waiting'] = EngineeringChecklistStatus.done
+              ..['generate_contract'] = EngineeringChecklistStatus.done;
         final flowSnapshot = _financeContractFlowSnapshotFromStatuses(
           updatedStatuses,
         );
@@ -4808,7 +4928,11 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     if (status == EngineeringChecklistStatus.done) {
       updatedStatuses[taskKey] = EngineeringChecklistStatus.done;
     } else {
-      for (var index = taskIndex; index < financeContractTasks.length; index++) {
+      for (
+        var index = taskIndex;
+        index < financeContractTasks.length;
+        index++
+      ) {
         updatedStatuses[financeContractTasks[index].key] =
             EngineeringChecklistStatus.notStarted;
       }
@@ -4884,7 +5008,8 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     EngineeringChecklistStatus status,
   ) async {
     final selected = _selectedOrder;
-    if (selected == null || selected.currentStage != WorkflowStage.relationship) {
+    if (selected == null ||
+        selected.currentStage != WorkflowStage.relationship) {
       return;
     }
 
@@ -4926,8 +5051,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       progress: _effectiveOrderProgress(
         selected.copyWith(relationshipKanbanStatuses: updatedStatuses),
       ),
-      nextAction:
-          flowSnapshot.currentTask?.label ?? 'Relacionamento concluído',
+      nextAction: flowSnapshot.currentTask?.label ?? 'Relacionamento concluído',
       blocker: flowSnapshot.isComplete
           ? 'Sem bloqueio. Fluxo de Relacionamento concluído.'
           : 'Kanban do relacionamento em ${flowSnapshot.currentTask!.label}.',
@@ -5006,8 +5130,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
         ? financeContractTasks.length
         : financeContractTasks.indexWhere((task) => task.key == targetTaskKey);
     for (var index = 0; index < financeContractTasks.length; index++) {
-      updatedStatuses[financeContractTasks[index].key] =
-          index < targetIndex
+      updatedStatuses[financeContractTasks[index].key] = index < targetIndex
           ? EngineeringChecklistStatus.done
           : EngineeringChecklistStatus.notStarted;
     }
@@ -5077,7 +5200,8 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     WorkflowOrder order,
     String targetTaskKey,
   ) {
-    if (order.currentStage != WorkflowStage.relationship || order.isServiceOrder) {
+    if (order.currentStage != WorkflowStage.relationship ||
+        order.isServiceOrder) {
       return false;
     }
 
@@ -5113,8 +5237,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       (task) => task.key == targetTaskKey,
     );
     for (var index = 0; index < relationshipKanbanTasks.length; index++) {
-      updatedStatuses[relationshipKanbanTasks[index].key] =
-          index < targetIndex
+      updatedStatuses[relationshipKanbanTasks[index].key] = index < targetIndex
           ? EngineeringChecklistStatus.done
           : EngineeringChecklistStatus.notStarted;
     }
@@ -5130,8 +5253,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       progress: _effectiveOrderProgress(
         order.copyWith(relationshipKanbanStatuses: updatedStatuses),
       ),
-      nextAction:
-          flowSnapshot.currentTask?.label ?? 'Relacionamento concluído',
+      nextAction: flowSnapshot.currentTask?.label ?? 'Relacionamento concluído',
       blocker: flowSnapshot.isComplete
           ? 'Sem bloqueio. Fluxo de Relacionamento concluído.'
           : 'Kanban do relacionamento em ${flowSnapshot.currentTask!.label}.',
@@ -5380,6 +5502,25 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
             child: isCompactLayout
                 ? Column(
                     children: [
+                      if (_availableSoftwareUpdate != null)
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+                          child: _SoftwareUpdateBanner(
+                            manifest: _availableSoftwareUpdate!,
+                            currentVersion: erpDanfAppVersion,
+                            isChecking: _isCheckingSoftwareUpdate,
+                            error: _softwareUpdateError?.toString(),
+                            onInstall: _installAvailableSoftwareUpdate,
+                            onCheckAgain: () => _checkForSoftwareUpdate(
+                              showNoUpdateMessage: true,
+                            ),
+                            onDismiss: () {
+                              setState(() {
+                                _availableSoftwareUpdate = null;
+                              });
+                            },
+                          ),
+                        ),
                       if (_syncError != null)
                         _SyncErrorBanner(error: _syncError.toString()),
                       Padding(
@@ -5395,6 +5536,10 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
                           profile: _currentWorkspaceProfile,
                           notificationCount: _conversationNotifications.length,
                           notifications: _conversationNotifications,
+                          isCheckingSoftwareUpdate: _isCheckingSoftwareUpdate,
+                          onCheckSoftwareUpdate: () => _checkForSoftwareUpdate(
+                            showNoUpdateMessage: true,
+                          ),
                           onOpenNotification: (notification) {
                             final order = _findOrderByCode(
                               notification.orderCode,
@@ -5437,6 +5582,11 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
                             notificationCount:
                                 _conversationNotifications.length,
                             notifications: _conversationNotifications,
+                            isCheckingSoftwareUpdate: _isCheckingSoftwareUpdate,
+                            onCheckSoftwareUpdate: () =>
+                                _checkForSoftwareUpdate(
+                                  showNoUpdateMessage: true,
+                                ),
                             onOpenNotification: (notification) {
                               final order = _findOrderByCode(
                                 notification.orderCode,
@@ -5467,6 +5617,12 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
                                     _conversationNotifications.length,
                                 notifications: _conversationNotifications,
                                 driveSyncStatus: _driveSyncStatus,
+                                isCheckingSoftwareUpdate:
+                                    _isCheckingSoftwareUpdate,
+                                onCheckSoftwareUpdate: () =>
+                                    _checkForSoftwareUpdate(
+                                      showNoUpdateMessage: true,
+                                    ),
                                 onOpenNotification: (notification) {
                                   final order = _findOrderByCode(
                                     notification.orderCode,
@@ -5483,6 +5639,25 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
                                 },
                               ),
                               const SizedBox(height: 14),
+                              if (_availableSoftwareUpdate != null)
+                                Padding(
+                                  padding: const EdgeInsets.only(bottom: 12),
+                                  child: _SoftwareUpdateBanner(
+                                    manifest: _availableSoftwareUpdate!,
+                                    currentVersion: erpDanfAppVersion,
+                                    isChecking: _isCheckingSoftwareUpdate,
+                                    error: _softwareUpdateError?.toString(),
+                                    onInstall: _installAvailableSoftwareUpdate,
+                                    onCheckAgain: () => _checkForSoftwareUpdate(
+                                      showNoUpdateMessage: true,
+                                    ),
+                                    onDismiss: () {
+                                      setState(() {
+                                        _availableSoftwareUpdate = null;
+                                      });
+                                    },
+                                  ),
+                                ),
                               if (_syncError != null)
                                 Padding(
                                   padding: const EdgeInsets.only(bottom: 12),
@@ -5600,6 +5775,8 @@ class _DesktopShellHeader extends StatelessWidget {
     required this.notificationCount,
     required this.notifications,
     required this.driveSyncStatus,
+    required this.isCheckingSoftwareUpdate,
+    required this.onCheckSoftwareUpdate,
     required this.onOpenNotification,
   });
 
@@ -5609,6 +5786,8 @@ class _DesktopShellHeader extends StatelessWidget {
   final int notificationCount;
   final List<_OrderConversationNotification> notifications;
   final _DriveSyncStatus driveSyncStatus;
+  final bool isCheckingSoftwareUpdate;
+  final VoidCallback onCheckSoftwareUpdate;
   final ValueChanged<_OrderConversationNotification> onOpenNotification;
 
   @override
@@ -5674,6 +5853,11 @@ class _DesktopShellHeader extends StatelessWidget {
           ),
           const SizedBox(width: 10),
           _DriveSyncIndicator(status: driveSyncStatus),
+          const SizedBox(width: 10),
+          _SoftwareUpdateCheckButton(
+            isChecking: isCheckingSoftwareUpdate,
+            onPressed: onCheckSoftwareUpdate,
+          ),
           const SizedBox(width: 10),
           _ConversationNotificationsButton(
             notifications: notifications,
@@ -5744,6 +5928,61 @@ class _DriveSyncIndicator extends StatelessWidget {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SoftwareUpdateCheckButton extends StatelessWidget {
+  const _SoftwareUpdateCheckButton({
+    required this.isChecking,
+    required this.onPressed,
+    this.compact = false,
+  });
+
+  final bool isChecking;
+  final VoidCallback onPressed;
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    final color = isDarkMode
+        ? const Color(0xFF93C5FD)
+        : const Color(0xFF2563EB);
+
+    return Tooltip(
+      message: 'Verificar atualizacao',
+      child: InkWell(
+        borderRadius: BorderRadius.circular(18),
+        onTap: isChecking ? null : onPressed,
+        child: Container(
+          width: compact ? 44 : 46,
+          height: compact ? 44 : 46,
+          decoration: BoxDecoration(
+            color: isDarkMode
+                ? color.withValues(alpha: 0.14)
+                : Colors.white.withValues(alpha: 0.96),
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(
+              color: isDarkMode
+                  ? color.withValues(alpha: 0.28)
+                  : const Color(0xFFE4EAE5),
+            ),
+          ),
+          child: Center(
+            child: isChecking
+                ? SizedBox(
+                    width: compact ? 17 : 18,
+                    height: compact ? 17 : 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: color,
+                    ),
+                  )
+                : Icon(Icons.system_update_alt_rounded, color: color),
+          ),
         ),
       ),
     );
@@ -6030,6 +6269,150 @@ class _SyncErrorBanner extends StatelessWidget {
           color: Color(0xFF991B1B),
           fontWeight: FontWeight.w600,
         ),
+      ),
+    );
+  }
+}
+
+class _SoftwareUpdateBanner extends StatelessWidget {
+  const _SoftwareUpdateBanner({
+    required this.manifest,
+    required this.currentVersion,
+    required this.isChecking,
+    required this.onInstall,
+    required this.onCheckAgain,
+    required this.onDismiss,
+    this.error,
+  });
+
+  final SoftwareUpdateManifest manifest;
+  final String currentVersion;
+  final bool isChecking;
+  final String? error;
+  final VoidCallback onInstall;
+  final VoidCallback onCheckAgain;
+  final VoidCallback onDismiss;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    final accentColor = isDarkMode
+        ? const Color(0xFF93C5FD)
+        : const Color(0xFF1D4ED8);
+    final borderColor = isDarkMode
+        ? const Color(0xFF2B4A67)
+        : const Color(0xFFBFDBFE);
+    final surfaceColor = isDarkMode
+        ? const Color(0xFF132436)
+        : const Color(0xFFEFF6FF);
+    final titleColor = isDarkMode
+        ? const Color(0xFFEAF2FF)
+        : const Color(0xFF172554);
+    final helperColor = isDarkMode
+        ? const Color(0xFFC7D6EA)
+        : const Color(0xFF1E3A8A);
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: surfaceColor,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: borderColor),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 38,
+            height: 38,
+            decoration: BoxDecoration(
+              color: accentColor.withValues(alpha: 0.14),
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: Icon(Icons.system_update_alt_rounded, color: accentColor),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Nova versao disponivel',
+                  style: TextStyle(
+                    color: titleColor,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Instalada: $currentVersion  |  Disponivel: ${manifest.version}',
+                  style: TextStyle(
+                    color: helperColor,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                if (manifest.notes.trim().isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    manifest.notes,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: helperColor,
+                      fontSize: 12,
+                      height: 1.3,
+                    ),
+                  ),
+                ],
+                if (error != null) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    error!,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Color(0xFFB91C1C),
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            alignment: WrapAlignment.end,
+            children: [
+              IconButton(
+                tooltip: 'Verificar novamente',
+                onPressed: isChecking ? null : onCheckAgain,
+                icon: isChecking
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.refresh_rounded),
+              ),
+              FilledButton.icon(
+                onPressed: onInstall,
+                icon: const Icon(Icons.download_rounded, size: 18),
+                label: const Text('Atualizar'),
+              ),
+              IconButton(
+                tooltip: 'Ocultar aviso',
+                onPressed: onDismiss,
+                icon: const Icon(Icons.close_rounded),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }
@@ -8821,8 +9204,7 @@ class _StageWorkspaceSection extends StatelessWidget {
                   '${financeApprovedServiceOrdersHistory.length} ordens de serviço',
               accent: const Color(0xFF15803D),
               icon: Icons.task_alt_rounded,
-              emptyMessage:
-                  'Nenhuma ordem de serviço aprovada no Financeiro.',
+              emptyMessage: 'Nenhuma ordem de serviço aprovada no Financeiro.',
               orders: financeApprovedServiceOrdersHistory,
             ),
           ]
@@ -8836,7 +9218,8 @@ class _StageWorkspaceSection extends StatelessWidget {
                   '${relationshipServiceOrderSource.where((order) => !order.financeClientApproved && workflowStages.indexOf(order.currentStage) <= workflowStages.indexOf(WorkflowStage.finance)).length} ordens de serviço',
               accent: const Color(0xFFB45309),
               icon: Icons.assignment_outlined,
-              emptyMessage: 'Nenhuma ordem de serviço criada aguardando aprovação.',
+              emptyMessage:
+                  'Nenhuma ordem de serviço criada aguardando aprovação.',
               orders: relationshipServiceOrderSource
                   .where(
                     (order) =>
@@ -8879,7 +9262,8 @@ class _StageWorkspaceSection extends StatelessWidget {
                   '${relationshipServiceOrderSource.where((order) => order.financeClientApproved && workflowStages.indexOf(order.currentStage) > workflowStages.indexOf(WorkflowStage.estimating)).length} ordens de serviço',
               accent: const Color(0xFF2563EB),
               icon: Icons.task_alt_rounded,
-              emptyMessage: 'Nenhuma ordem de serviço concluída no Orçamentista.',
+              emptyMessage:
+                  'Nenhuma ordem de serviço concluída no Orçamentista.',
               orders: relationshipServiceOrderSource
                   .where(
                     (order) =>
@@ -9096,7 +9480,9 @@ class _StageWorkspaceSection extends StatelessWidget {
                     .where(
                       (order) =>
                           !order.isServiceOrder &&
-                          _estimatingKanbanFlowSnapshot(order).currentTask?.key ==
+                          _estimatingKanbanFlowSnapshot(
+                                order,
+                              ).currentTask?.key ==
                               task.key,
                     )
                     .toList(growable: false),
@@ -9145,8 +9531,10 @@ class _StageWorkspaceSection extends StatelessWidget {
                     .where(
                       (order) =>
                           !order.isServiceOrder &&
-                          _financeContractFlowSnapshot(order).currentTask?.key ==
-                          task.key,
+                          _financeContractFlowSnapshot(
+                                order,
+                              ).currentTask?.key ==
+                              task.key,
                     )
                     .toList(growable: false),
               ),
@@ -9189,9 +9577,9 @@ class _StageWorkspaceSection extends StatelessWidget {
                     .where(
                       (order) =>
                           !order.isServiceOrder &&
-                          _relationshipKanbanFlowSnapshot(order)
-                                  .currentTask
-                                  ?.key ==
+                          _relationshipKanbanFlowSnapshot(
+                                order,
+                              ).currentTask?.key ==
                               task.key,
                     )
                     .toList(growable: false),
@@ -9645,7 +10033,8 @@ class _StageWorkspaceSection extends StatelessWidget {
               onOpenOrderConversation: handleOpenConversation,
               workspaceProfiles: workspaceProfiles,
             ),
-          ] else if (stage == WorkflowStage.relationship && showingWorkQueue) ...[
+          ] else if (stage == WorkflowStage.relationship &&
+              showingWorkQueue) ...[
             const Text(
               'Pedidos',
               style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
@@ -9659,8 +10048,7 @@ class _StageWorkspaceSection extends StatelessWidget {
               onOpenOrderConversation: handleOpenConversation,
               workspaceProfiles: workspaceProfiles,
               onMoveRelationshipKanbanOrder: onMoveRelationshipKanbanOrder,
-              canAcceptRelationshipKanbanDrop:
-                  canAcceptRelationshipKanbanDrop,
+              canAcceptRelationshipKanbanDrop: canAcceptRelationshipKanbanDrop,
             ),
             const SizedBox(height: 20),
             const Text(
@@ -9693,8 +10081,7 @@ class _StageWorkspaceSection extends StatelessWidget {
               onMoveEngineeringKanbanOrder: stage == WorkflowStage.engineering
                   ? onMoveEngineeringKanbanOrder
                   : null,
-              canAcceptEngineeringKanbanDrop:
-                  stage == WorkflowStage.engineering
+              canAcceptEngineeringKanbanDrop: stage == WorkflowStage.engineering
                   ? canAcceptEngineeringKanbanDrop
                   : null,
               onMoveFinanceKanbanOrder: stage == WorkflowStage.finance
@@ -9703,8 +10090,7 @@ class _StageWorkspaceSection extends StatelessWidget {
               canAcceptFinanceKanbanDrop: stage == WorkflowStage.finance
                   ? canAcceptFinanceKanbanDrop
                   : null,
-              onMoveRelationshipKanbanOrder:
-                  stage == WorkflowStage.relationship
+              onMoveRelationshipKanbanOrder: stage == WorkflowStage.relationship
                   ? onMoveRelationshipKanbanOrder
                   : null,
               canAcceptRelationshipKanbanDrop:
@@ -9727,6 +10113,8 @@ class _FlowNavbar extends StatelessWidget {
     required this.onThemeModeChanged,
     required this.notificationCount,
     required this.notifications,
+    required this.isCheckingSoftwareUpdate,
+    required this.onCheckSoftwareUpdate,
     required this.onOpenNotification,
   });
 
@@ -9737,6 +10125,8 @@ class _FlowNavbar extends StatelessWidget {
   final ValueChanged<ThemeMode> onThemeModeChanged;
   final int notificationCount;
   final List<_OrderConversationNotification> notifications;
+  final bool isCheckingSoftwareUpdate;
+  final VoidCallback onCheckSoftwareUpdate;
   final ValueChanged<_OrderConversationNotification> onOpenNotification;
 
   @override
@@ -9793,6 +10183,12 @@ class _FlowNavbar extends StatelessWidget {
             compact: true,
           ),
           const SizedBox(height: 8),
+          _SoftwareUpdateCheckButton(
+            isChecking: isCheckingSoftwareUpdate,
+            onPressed: onCheckSoftwareUpdate,
+            compact: true,
+          ),
+          const SizedBox(height: 8),
           _ConversationNotificationsButton(
             notifications: notifications,
             notificationCount: notificationCount,
@@ -9815,6 +10211,8 @@ class _FlowTopNavbar extends StatelessWidget {
     required this.profile,
     required this.notificationCount,
     required this.notifications,
+    required this.isCheckingSoftwareUpdate,
+    required this.onCheckSoftwareUpdate,
     required this.onOpenNotification,
     this.onSignOut,
   });
@@ -9827,6 +10225,8 @@ class _FlowTopNavbar extends StatelessWidget {
   final EmployeeWorkspaceProfile profile;
   final int notificationCount;
   final List<_OrderConversationNotification> notifications;
+  final bool isCheckingSoftwareUpdate;
+  final VoidCallback onCheckSoftwareUpdate;
   final ValueChanged<_OrderConversationNotification> onOpenNotification;
   final VoidCallback? onSignOut;
 
@@ -9867,6 +10267,12 @@ class _FlowTopNavbar extends StatelessWidget {
               _ThemeModeSettingsButton(
                 themeMode: themeMode,
                 onThemeModeChanged: onThemeModeChanged,
+              ),
+              const SizedBox(width: 8),
+              _SoftwareUpdateCheckButton(
+                isChecking: isCheckingSoftwareUpdate,
+                onPressed: onCheckSoftwareUpdate,
+                compact: true,
               ),
               const SizedBox(width: 8),
               _ConversationNotificationsButton(
@@ -10988,8 +11394,7 @@ class _OrderDetailsPanel extends StatelessWidget {
         ),
       if (showFlowActions && isRelationshipStage)
         FilledButton.icon(
-          onPressed:
-              isServiceOrder || relationshipKanbanFlow.isComplete
+          onPressed: isServiceOrder || relationshipKanbanFlow.isComplete
               ? () async {
                   await onSendToEngineering();
                 }
@@ -11000,8 +11405,7 @@ class _OrderDetailsPanel extends StatelessWidget {
         ),
       if (showFlowActions && isRelationshipStage)
         FilledButton.icon(
-          onPressed:
-              isServiceOrder || relationshipKanbanFlow.isComplete
+          onPressed: isServiceOrder || relationshipKanbanFlow.isComplete
               ? () async {
                   await onSendToAssembly();
                 }
@@ -11012,8 +11416,7 @@ class _OrderDetailsPanel extends StatelessWidget {
         ),
       if (showFlowActions && isRelationshipStage)
         FilledButton.icon(
-          onPressed:
-              isServiceOrder || relationshipKanbanFlow.isComplete
+          onPressed: isServiceOrder || relationshipKanbanFlow.isComplete
               ? () async {
                   await onSendToInstallation();
                 }
@@ -13791,7 +14194,8 @@ class _StageOrdersKanbanColumn extends StatelessWidget {
             column.isEngineeringCompletionTarget);
     final acceptsFinanceDrop =
         onMoveFinanceKanbanOrder != null &&
-        (column.financeTargetTaskKey != null || column.isFinanceCompletionTarget);
+        (column.financeTargetTaskKey != null ||
+            column.isFinanceCompletionTarget);
     final acceptsRelationshipDrop =
         onMoveRelationshipKanbanOrder != null &&
         column.relationshipTargetTaskKey != null;
