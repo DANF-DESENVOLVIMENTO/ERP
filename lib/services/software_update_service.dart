@@ -386,6 +386,16 @@ function Write-UpdateLog([string]\$message) {
   Add-Content -LiteralPath \$log -Value "\$((Get-Date).ToString('yyyy-MM-dd HH:mm:ss')) \$message"
 }
 
+function Invoke-UpdateRobocopy([string]\$source, [string]\$destination, [string[]]\$extraArgs) {
+  Write-UpdateLog "Copiando de \$source para \$destination"
+  & robocopy \$source \$destination /E /R:3 /W:1 @extraArgs | Out-Null
+  \$code = \$LASTEXITCODE
+  Write-UpdateLog "Robocopy finalizado com codigo \$code"
+  if (\$code -gt 7) {
+    throw "Robocopy falhou com codigo \$code."
+  }
+}
+
 try {
   Write-UpdateLog "Iniciando atualizacao. Aplicador v2."
   Write-UpdateLog "Instalacao: \$installDir"
@@ -422,11 +432,9 @@ try {
   \$sourceDir = \$newExe.Directory.FullName
   Write-UpdateLog "Origem extraida: \$sourceDir"
 
-  Get-ChildItem -LiteralPath \$installDir -Force | Where-Object {
-    \$_.Name -notlike 'backup_*'
-  } | Copy-Item -Destination \$backupDir -Recurse -Force
+  Invoke-UpdateRobocopy \$installDir \$backupDir @('/XD', 'backup_*', 'backup_manual_*')
 
-  Copy-Item -Path (Join-Path \$sourceDir '*') -Destination \$installDir -Recurse -Force
+  Invoke-UpdateRobocopy \$sourceDir \$installDir @()
   Write-UpdateLog "Arquivos copiados."
 
   \$updatedExe = Join-Path \$installDir \$exeName
