@@ -187,22 +187,40 @@ class SoftwareUpdateService {
         'erp_danf_apply_update_${DateTime.now().millisecondsSinceEpoch}.ps1',
       ),
     );
-
-    await scriptFile.writeAsString(
-      _buildWindowsUpdaterScript(
-        executablePath: executablePath,
-        installDirectory: installDirectory,
-        packagePath: packageFile.path,
-        executableName: 'erp_danf.exe',
+    final launcherFile = File(
+      _joinPath(
+        Directory.systemTemp.path,
+        'erp_danf_apply_update_${DateTime.now().millisecondsSinceEpoch}.cmd',
       ),
     );
 
-    await Process.start('powershell.exe', [
-      '-NoProfile',
-      '-ExecutionPolicy',
-      'Bypass',
-      '-File',
-      scriptFile.path,
+    final script = _buildWindowsUpdaterScript(
+      executablePath: executablePath,
+      installDirectory: installDirectory,
+      packagePath: packageFile.path,
+      executableName: 'erp_danf.exe',
+    );
+    await scriptFile.writeAsBytes(<int>[
+      0xEF,
+      0xBB,
+      0xBF,
+      ...utf8.encode(script),
+    ]);
+
+    final launcherLog = _joinPath(
+      Directory.systemTemp.path,
+      'erp_danf_update_launcher_${DateTime.now().millisecondsSinceEpoch}.log',
+    );
+    await launcherFile.writeAsString(
+      _buildWindowsUpdaterLauncherScript(
+        scriptPath: scriptFile.path,
+        launcherLogPath: launcherLog,
+      ),
+    );
+
+    await Process.start('cmd.exe', [
+      '/c',
+      launcherFile.path,
     ], mode: ProcessStartMode.detached);
 
     exit(0);
@@ -361,6 +379,22 @@ String _normalizeGoogleDriveDownloadUrl(String rawUrl) {
     'export': 'download',
     'id': pathId,
   }).toString();
+}
+
+String _buildWindowsUpdaterLauncherScript({
+  required String scriptPath,
+  required String launcherLogPath,
+}) {
+  String cmd(String value) => value.replaceAll('"', '""');
+
+  return '''
+@echo off
+setlocal
+echo %DATE% %TIME% Iniciando aplicador > "${cmd(launcherLogPath)}"
+start "" /min powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${cmd(scriptPath)}"
+echo %DATE% %TIME% PowerShell solicitado >> "${cmd(launcherLogPath)}"
+endlocal
+''';
 }
 
 String _buildWindowsUpdaterScript({

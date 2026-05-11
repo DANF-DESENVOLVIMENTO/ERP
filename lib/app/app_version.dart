@@ -1,1 +1,1 @@
-const String erpDanfAppVersion = '1.0.2+3';
+const String erpDanfAppVersion = '1.0.4+5';
