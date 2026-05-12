@@ -1096,13 +1096,6 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
         icon: Icons.workspaces_outline,
         color: Color(0xFF12372A),
       ),
-      if (profile.isAdministrator)
-        const _FlowNavItem(
-          routeKey: 'log',
-          label: 'Log',
-          icon: Icons.receipt_long_outlined,
-          color: Color(0xFF475569),
-        ),
       ...profile.allowedStages.map(
         (stage) => _FlowNavItem(
           routeKey: 'stage:${stage.name}',
@@ -1118,6 +1111,13 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
           label: 'Administração',
           icon: Icons.admin_panel_settings_outlined,
           color: Color(0xFF0F172A),
+        ),
+      if (profile.isAdministrator)
+        const _FlowNavItem(
+          routeKey: 'log',
+          label: 'Log',
+          icon: Icons.receipt_long_outlined,
+          color: Color(0xFF475569),
         ),
     ];
   }
@@ -4492,23 +4492,58 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     }
     final flowSnapshot = _engineeringFlowSnapshotFromStatuses(updatedStatuses);
     final now = DateTime.now();
+    final actorLabel = _currentOrderOwnerLabel();
     final historyMessage = status == EngineeringChecklistStatus.done
         ? flowSnapshot.isComplete
               ? 'Kanban da engenharia concluído em ${_formatDateTime(now)}'
               : '${task.label} concluída. Próxima etapa: ${flowSnapshot.currentTask!.label}'
         : '${task.label} reaberta em ${_formatDateTime(now)}';
-    final updatedOrder = selected.copyWith(
+    final nextStage = flowSnapshot.isComplete
+        ? WorkflowStage.assembly
+        : selected.currentStage;
+    final nextAssemblyStatus = flowSnapshot.isComplete
+        ? AssemblyWorkflowStatus.waiting
+        : selected.assemblyWorkflowStatus;
+    final previewOrder = selected.copyWith(
+      currentStage: nextStage,
       engineeringChecklistStatuses: updatedStatuses,
-      progress: _effectiveOrderProgress(
-        selected.copyWith(engineeringChecklistStatuses: updatedStatuses),
-      ),
-      nextAction:
-          flowSnapshot.currentTask?.label ?? 'Liberar ordem para montagem',
+      assemblyWorkflowStatus: nextAssemblyStatus,
+      assemblyAssignedEmployeeEmails: flowSnapshot.isComplete
+          ? const <String>[]
+          : selected.assemblyAssignedEmployeeEmails,
+    );
+    final updatedHistory = Map<WorkflowStage, String>.from(selected.history)
+      ..[WorkflowStage.engineering] = historyMessage;
+    if (flowSnapshot.isComplete) {
+      updatedHistory[WorkflowStage.assembly] =
+          'Recebido da Engenharia em ${_formatDateTime(now)}';
+    }
+    final updatedOrder = selected.copyWith(
+      currentStage: nextStage,
+      engineeringChecklistStatuses: updatedStatuses,
+      assemblyWorkflowStatus: nextAssemblyStatus,
+      assemblyAssignedEmployeeEmails: flowSnapshot.isComplete
+          ? const <String>[]
+          : selected.assemblyAssignedEmployeeEmails,
+      owner: flowSnapshot.isComplete ? actorLabel : selected.owner,
+      stageOwners: flowSnapshot.isComplete
+          ? _updatedStageOwnersForAction(
+              selected,
+              WorkflowStage.engineering,
+              actorLabel,
+            )
+          : selected.stageOwners,
+      progress: _effectiveOrderProgress(previewOrder),
+      nextAction: flowSnapshot.isComplete
+          ? _defaultNextActionForStage(WorkflowStage.assembly, previewOrder)
+          : (flowSnapshot.currentTask?.label ?? 'Liberar ordem para montagem'),
       blocker: flowSnapshot.isComplete
-          ? 'Sem bloqueio. Engenharia concluída e pronta para Montagem.'
+          ? _assemblyWorkflowBlocker(
+              previewOrder,
+              AssemblyWorkflowStatus.waiting,
+            )
           : 'Kanban da engenharia em ${flowSnapshot.currentTask!.label}.',
-      history: Map<WorkflowStage, String>.from(selected.history)
-        ..[WorkflowStage.engineering] = historyMessage,
+      history: updatedHistory,
     );
 
     final savedOrder = await _runBusyTask(
@@ -4522,6 +4557,13 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     }
 
     _mergeOrderLocally(savedOrder);
+    if (flowSnapshot.isComplete) {
+      setState(() {
+        _selectedViewKey = 'stage:${WorkflowStage.assembly.name}';
+        _stageWorkspaceSubtabs[WorkflowStage.assembly] = 0;
+        _selectedOrderCode = savedOrder.code;
+      });
+    }
     unawaited(
       _appendPlatformLog(
         action: status == EngineeringChecklistStatus.done
@@ -4610,27 +4652,63 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
 
     final flowSnapshot = _engineeringFlowSnapshotFromStatuses(updatedStatuses);
     final now = DateTime.now();
+    final actorLabel = _currentOrderOwnerLabel();
     final historyMessage = flowSnapshot.isComplete
         ? 'Kanban da engenharia concluído em ${_formatDateTime(now)}'
         : scheduledTarget != null
         ? '${flowSnapshot.currentTask!.label} agendada para ${_formatDateTime(scheduledTarget.scheduledAt)}'
         : 'Kanban da engenharia movido para ${flowSnapshot.currentTask!.label} em ${_formatDateTime(now)}';
+    final nextStage = flowSnapshot.isComplete
+        ? WorkflowStage.assembly
+        : order.currentStage;
+    final nextAssemblyStatus = flowSnapshot.isComplete
+        ? AssemblyWorkflowStatus.waiting
+        : order.assemblyWorkflowStatus;
+    final previewOrder = order.copyWith(
+      currentStage: nextStage,
+      engineeringChecklistStatuses: updatedStatuses,
+      assemblyWorkflowStatus: nextAssemblyStatus,
+      assemblyAssignedEmployeeEmails: flowSnapshot.isComplete
+          ? const <String>[]
+          : order.assemblyAssignedEmployeeEmails,
+    );
+    final updatedHistory = Map<WorkflowStage, String>.from(order.history)
+      ..[WorkflowStage.engineering] = historyMessage;
+    if (flowSnapshot.isComplete) {
+      updatedHistory[WorkflowStage.assembly] =
+          'Recebido da Engenharia em ${_formatDateTime(now)}';
+    }
     final updatedOrder = order.copyWith(
+      currentStage: nextStage,
       engineeringChecklistStatuses: updatedStatuses,
       engineeringActivitySchedules: updatedSchedules,
-      progress: _effectiveOrderProgress(
-        order.copyWith(engineeringChecklistStatuses: updatedStatuses),
-      ),
-      nextAction: scheduledTarget != null
+      assemblyWorkflowStatus: nextAssemblyStatus,
+      assemblyAssignedEmployeeEmails: flowSnapshot.isComplete
+          ? const <String>[]
+          : order.assemblyAssignedEmployeeEmails,
+      owner: flowSnapshot.isComplete ? actorLabel : order.owner,
+      stageOwners: flowSnapshot.isComplete
+          ? _updatedStageOwnersForAction(
+              order,
+              WorkflowStage.engineering,
+              actorLabel,
+            )
+          : order.stageOwners,
+      progress: _effectiveOrderProgress(previewOrder),
+      nextAction: flowSnapshot.isComplete
+          ? _defaultNextActionForStage(WorkflowStage.assembly, previewOrder)
+          : scheduledTarget != null
           ? historyMessage
           : (flowSnapshot.currentTask?.label ?? 'Liberar ordem para montagem'),
       blocker: flowSnapshot.isComplete
-          ? 'Sem bloqueio. Engenharia concluída e pronta para Montagem.'
+          ? _assemblyWorkflowBlocker(
+              previewOrder,
+              AssemblyWorkflowStatus.waiting,
+            )
           : scheduledTarget != null
           ? 'Aguardando execução de atividade agendada pela Engenharia.'
           : 'Kanban da engenharia em ${flowSnapshot.currentTask!.label}.',
-      history: Map<WorkflowStage, String>.from(order.history)
-        ..[WorkflowStage.engineering] = historyMessage,
+      history: updatedHistory,
     );
 
     final savedOrder = await _runBusyTask(
@@ -4644,7 +4722,13 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     }
 
     _mergeOrderLocally(savedOrder);
-    if (_selectedOrderCode == savedOrder.code) {
+    if (_selectedOrderCode == savedOrder.code && flowSnapshot.isComplete) {
+      setState(() {
+        _selectedViewKey = 'stage:${WorkflowStage.assembly.name}';
+        _stageWorkspaceSubtabs[WorkflowStage.assembly] = 0;
+        _selectedOrderCode = savedOrder.code;
+      });
+    } else if (_selectedOrderCode == savedOrder.code) {
       setState(() {
         _selectedOrderCode = savedOrder.code;
       });
@@ -4943,6 +5027,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       updatedStatuses,
     );
     final now = DateTime.now();
+    final actorLabel = _currentOrderOwnerLabel();
     final historyMessage = status == EngineeringChecklistStatus.done
         ? flowSnapshot.isComplete
               ? 'Kanban do contrato concluído em ${_formatDateTime(now)}'
@@ -4964,6 +5049,14 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     final updatedOrder = selected.copyWith(
       currentStage: nextStage,
       financeContractStatuses: updatedStatuses,
+      owner: flowSnapshot.isComplete ? actorLabel : selected.owner,
+      stageOwners: flowSnapshot.isComplete
+          ? _updatedStageOwnersForAction(
+              selected,
+              WorkflowStage.finance,
+              actorLabel,
+            )
+          : selected.stageOwners,
       progress: _effectiveOrderProgress(previewOrder),
       nextAction: flowSnapshot.isComplete
           ? _defaultNextActionForStage(WorkflowStage.relationship, previewOrder)
@@ -5140,6 +5233,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       updatedStatuses,
     );
     final now = DateTime.now();
+    final actorLabel = _currentOrderOwnerLabel();
     final historyMessage = flowSnapshot.isComplete
         ? 'Kanban do contrato concluído em ${_formatDateTime(now)}'
         : 'Kanban do contrato movido para ${flowSnapshot.currentTask!.label} em ${_formatDateTime(now)}';
@@ -5159,6 +5253,14 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     final updatedOrder = order.copyWith(
       currentStage: nextStage,
       financeContractStatuses: updatedStatuses,
+      owner: flowSnapshot.isComplete ? actorLabel : order.owner,
+      stageOwners: flowSnapshot.isComplete
+          ? _updatedStageOwnersForAction(
+              order,
+              WorkflowStage.finance,
+              actorLabel,
+            )
+          : order.stageOwners,
       progress: _effectiveOrderProgress(previewOrder),
       nextAction: flowSnapshot.isComplete
           ? _defaultNextActionForStage(WorkflowStage.relationship, previewOrder)
@@ -9108,6 +9210,8 @@ class _StageWorkspaceSection extends StatelessWidget {
               .where((entry) => entry.key == currentProfileOwnerLabel)
               .toList(growable: false);
     final estimatingCompletedHistoryOrders = <WorkflowOrder>[];
+    final financeCompletedHistoryOrders = <WorkflowOrder>[];
+    final engineeringCompletedHistoryOrders = <WorkflowOrder>[];
     final assemblyCompletedHistoryOrders = <WorkflowOrder>[];
     final relationshipCompletedHistoryOrders = <WorkflowOrder>[];
     final financeApprovedServiceOrdersHistory = <WorkflowOrder>[];
@@ -9160,8 +9264,32 @@ class _StageWorkspaceSection extends StatelessWidget {
         }
       }
     }
+    if (stage == WorkflowStage.engineering) {
+      final seenCodes = <String>{};
+      for (final entry in visibleCompletedOwnerEntries) {
+        for (final order in entry.value) {
+          if (!_engineeringFlowSnapshot(order).isComplete) {
+            continue;
+          }
+          if (seenCodes.add(order.code)) {
+            engineeringCompletedHistoryOrders.add(order);
+          }
+        }
+      }
+    }
     if (stage == WorkflowStage.finance) {
       final seenCodes = <String>{};
+      for (final entry in visibleCompletedOwnerEntries) {
+        for (final order in entry.value) {
+          if (order.isServiceOrder ||
+              !_financeContractFlowSnapshot(order).isComplete) {
+            continue;
+          }
+          if (seenCodes.add(order.code)) {
+            financeCompletedHistoryOrders.add(order);
+          }
+        }
+      }
       for (final order in currentKanbanOrders) {
         if (!order.isServiceOrder || !order.financeClientApproved) {
           continue;
@@ -9542,18 +9670,19 @@ class _StageWorkspaceSection extends StatelessWidget {
             _OrdersKanbanColumnData(
               title: 'Concluído',
               subtitle:
-                  '${currentKanbanOrders.where((order) => !order.isServiceOrder && _financeContractFlowSnapshot(order).isComplete).length} clientes',
+                  '${financeCompletedHistoryOrders.length + currentKanbanOrders.where((order) => !order.isServiceOrder && _financeContractFlowSnapshot(order).isComplete).length} no histórico',
               accent: const Color(0xFF15803D),
               icon: Icons.task_alt_rounded,
               emptyMessage: 'Nenhum contrato concluído no Financeiro.',
               isFinanceCompletionTarget: true,
-              orders: currentKanbanOrders
-                  .where(
-                    (order) =>
-                        !order.isServiceOrder &&
-                        _financeContractFlowSnapshot(order).isComplete,
-                  )
-                  .toList(growable: false),
+              orders: [
+                ...currentKanbanOrders.where(
+                  (order) =>
+                      !order.isServiceOrder &&
+                      _financeContractFlowSnapshot(order).isComplete,
+                ),
+                ...financeCompletedHistoryOrders,
+              ],
             ),
           ]
         : stage == WorkflowStage.relationship && showingWorkQueue
@@ -9625,14 +9754,17 @@ class _StageWorkspaceSection extends StatelessWidget {
             _OrdersKanbanColumnData(
               title: 'Concluído',
               subtitle:
-                  '${currentKanbanOrders.where((order) => _engineeringFlowSnapshot(order).isComplete).length} clientes',
+                  '${engineeringCompletedHistoryOrders.length + currentKanbanOrders.where((order) => _engineeringFlowSnapshot(order).isComplete).length} no histórico',
               accent: const Color(0xFF10B981),
               icon: Icons.task_alt_rounded,
               emptyMessage: 'Nenhum cliente com a engenharia concluída.',
               isEngineeringCompletionTarget: true,
-              orders: currentKanbanOrders
-                  .where((order) => _engineeringFlowSnapshot(order).isComplete)
-                  .toList(growable: false),
+              orders: [
+                ...currentKanbanOrders.where(
+                  (order) => _engineeringFlowSnapshot(order).isComplete,
+                ),
+                ...engineeringCompletedHistoryOrders,
+              ],
             ),
           ]
         : <_OrdersKanbanColumnData>[
@@ -11288,6 +11420,7 @@ class _OrderDetailsPanel extends StatelessWidget {
     final canEditEngineeringSection = showFlowActions && isEngineeringStage;
     final showFinanceContractSection =
         !isServiceOrder &&
+        !isRelationshipStage &&
         (isFinanceStage ||
             hasPassedFinance ||
             hasContractFile ||
@@ -11297,6 +11430,9 @@ class _OrderDetailsPanel extends StatelessWidget {
         (isRelationshipStage ||
             hasPassedRelationship ||
             order!.relationshipKanbanStatuses.isNotEmpty);
+    final showEditOrderAction =
+        onEditOrder != null &&
+        order!.currentStage == WorkflowStage.customerRegistration;
     final assemblyChecklistSection = !hasReachedAssembly
         ? null
         : _CollapsibleDetailSection(
@@ -11359,7 +11495,7 @@ class _OrderDetailsPanel extends StatelessWidget {
                 : 'Conversa',
           ),
         ),
-      if (onEditOrder != null)
+      if (showEditOrderAction)
         OutlinedButton.icon(
           onPressed: () async {
             await onEditOrder!();
@@ -11490,7 +11626,7 @@ class _OrderDetailsPanel extends StatelessWidget {
           )
         : null;
     final showStandaloneEditAction =
-        !showFlowActions && headerActions.length == 1 && onEditOrder != null;
+        !showFlowActions && headerActions.length == 1 && showEditOrderAction;
     final headerActionPanel = headerActions.isEmpty
         ? null
         : showStandaloneEditAction
@@ -14140,8 +14276,7 @@ class _StageOrdersKanbanBoardState extends State<_StageOrdersKanbanBoard> {
                     onOrderSelected: widget.onOrderSelected,
                     onOpenOrderConversation: widget.onOpenOrderConversation,
                     workspaceProfiles: widget.workspaceProfiles,
-                    onMoveAssemblyKanbanOrder:
-                        widget.onMoveAssemblyKanbanOrder,
+                    onMoveAssemblyKanbanOrder: widget.onMoveAssemblyKanbanOrder,
                     canAcceptAssemblyKanbanDrop:
                         widget.canAcceptAssemblyKanbanDrop,
                     onMoveEngineeringKanbanOrder:
