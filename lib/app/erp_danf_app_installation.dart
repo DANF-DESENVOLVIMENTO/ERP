@@ -658,6 +658,63 @@ class _InstallationExecutionDraft {
   final String notes;
 }
 
+class _InstallationChecklistSelector extends StatefulWidget {
+  const _InstallationChecklistSelector({
+    required this.selectedItems,
+    required this.onChanged,
+  });
+
+  final Set<String> selectedItems;
+  final void Function(String item, bool selected) onChanged;
+
+  @override
+  State<_InstallationChecklistSelector> createState() =>
+      _InstallationChecklistSelectorState();
+}
+
+class _InstallationChecklistSelectorState
+    extends State<_InstallationChecklistSelector> {
+  static const double _visibleItemCount = 3;
+  static const double _itemExtent = 56;
+
+  final ScrollController _scrollController = ScrollController();
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final items = WorkflowStage.installation.checklist;
+
+    return SizedBox(
+      height: _visibleItemCount * _itemExtent,
+      child: Scrollbar(
+        controller: _scrollController,
+        thumbVisibility: items.length > _visibleItemCount,
+        child: ListView.builder(
+          controller: _scrollController,
+          primary: false,
+          itemExtent: _itemExtent,
+          padding: EdgeInsets.zero,
+          itemCount: items.length,
+          itemBuilder: (context, index) {
+            final item = items[index];
+            return CheckboxListTile(
+              value: widget.selectedItems.contains(item),
+              contentPadding: EdgeInsets.zero,
+              title: Text(item),
+              onChanged: (value) => widget.onChanged(item, value == true),
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
 class _InstallationExecutionDialog extends StatefulWidget {
   const _InstallationExecutionDialog({required this.order});
 
@@ -798,22 +855,18 @@ class _InstallationExecutionDialogState
                       ),
                     ),
                     const SizedBox(height: 10),
-                    ...WorkflowStage.installation.checklist.map((item) {
-                      return CheckboxListTile(
-                        value: _selectedItems.contains(item),
-                        contentPadding: EdgeInsets.zero,
-                        title: Text(item),
-                        onChanged: (value) {
-                          setState(() {
-                            if (value == true) {
-                              _selectedItems.add(item);
-                            } else {
-                              _selectedItems.remove(item);
-                            }
-                          });
-                        },
-                      );
-                    }),
+                    _InstallationChecklistSelector(
+                      selectedItems: _selectedItems,
+                      onChanged: (item, value) {
+                        setState(() {
+                          if (value) {
+                            _selectedItems.add(item);
+                          } else {
+                            _selectedItems.remove(item);
+                          }
+                        });
+                      },
+                    ),
                     const SizedBox(height: 14),
                     _DialogField(
                       controller: _customItemsController,
@@ -1101,22 +1154,18 @@ class _InstallationScheduleDialogState
                       ),
                     ),
                     const SizedBox(height: 10),
-                    ...WorkflowStage.installation.checklist.map((item) {
-                      return CheckboxListTile(
-                        value: _selectedItems.contains(item),
-                        contentPadding: EdgeInsets.zero,
-                        title: Text(item),
-                        onChanged: (value) {
-                          setState(() {
-                            if (value == true) {
-                              _selectedItems.add(item);
-                            } else {
-                              _selectedItems.remove(item);
-                            }
-                          });
-                        },
-                      );
-                    }),
+                    _InstallationChecklistSelector(
+                      selectedItems: _selectedItems,
+                      onChanged: (item, value) {
+                        setState(() {
+                          if (value) {
+                            _selectedItems.add(item);
+                          } else {
+                            _selectedItems.remove(item);
+                          }
+                        });
+                      },
+                    ),
                     const SizedBox(height: 14),
                     _DialogField(
                       controller: _customItemsController,

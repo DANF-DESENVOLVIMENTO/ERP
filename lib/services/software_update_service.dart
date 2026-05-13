@@ -44,8 +44,7 @@ class SoftwareUpdateService {
     }
 
     final manifest = SoftwareUpdateManifest.fromJson(decoded);
-    final hasUpdate =
-        _compareVersions(manifest.version, erpDanfAppVersion) != 0;
+    final hasUpdate = _compareVersions(manifest.version, erpDanfAppVersion) > 0;
     return SoftwareUpdateCheckResult(
       configured: true,
       hasUpdate: hasUpdate,

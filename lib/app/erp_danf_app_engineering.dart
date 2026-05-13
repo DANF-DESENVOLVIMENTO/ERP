@@ -1228,6 +1228,8 @@ double _stageProgressFraction(WorkflowOrder order) {
       InstallationWorkflowStatus.doing => 0.70,
       InstallationWorkflowStatus.done => 1.0,
     },
+    WorkflowStage.warehouse => 0,
+    WorkflowStage.stock => 0,
   };
 }
 

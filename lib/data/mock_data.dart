@@ -3,7 +3,17 @@ import 'package:flutter/material.dart';
 import '../auth/workspace_credentials.dart';
 import '../models/erp_models.dart';
 
-const workflowStages = WorkflowStage.values;
+const workflowStages = [
+  WorkflowStage.customerRegistration,
+  WorkflowStage.estimating,
+  WorkflowStage.finance,
+  WorkflowStage.relationship,
+  WorkflowStage.engineering,
+  WorkflowStage.assembly,
+  WorkflowStage.installation,
+];
+
+const workspaceStages = WorkflowStage.values;
 
 const List<ClientProfile> clients = [];
 
@@ -24,6 +34,8 @@ final List<EmployeeWorkspaceProfile> workspaceProfiles = [
       WorkflowStage.engineering,
       WorkflowStage.assembly,
       WorkflowStage.installation,
+      WorkflowStage.warehouse,
+      WorkflowStage.stock,
     ],
     accent: Color(0xFF12372A),
     accessCodeHash: hashWorkspaceAccessCode('1234'),

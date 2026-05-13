@@ -107,6 +107,8 @@ String _stageOwnerSummaryLabel(WorkflowStage stage) {
     WorkflowStage.engineering => 'Engenharia',
     WorkflowStage.assembly => 'Montagem',
     WorkflowStage.installation => 'Instalação',
+    WorkflowStage.warehouse => 'Almoxarifado',
+    WorkflowStage.stock => 'Estoque',
   };
 }
 
@@ -420,6 +422,13 @@ int _completedVisitCountForOrder(WorkflowOrder order) {
   return completedCount;
 }
 
+int _remainingVisitCountForOrder(WorkflowOrder order) {
+  final plannedCount = _plannedVisitCountForOrder(order);
+  final completedCount = _completedVisitCountForOrder(order);
+  final remainingCount = plannedCount - completedCount;
+  return remainingCount < 0 ? 0 : remainingCount;
+}
+
 String? _visitProgressLabelForOrder(WorkflowOrder order) {
   if (order.isServiceOrder) {
     return null;
@@ -538,6 +547,11 @@ const Set<WorkflowStage> _workAndCatalogStages = {
   WorkflowStage.installation,
 };
 
+const Set<WorkflowStage> _standaloneWorkspaceStages = {
+  WorkflowStage.warehouse,
+  WorkflowStage.stock,
+};
+
 enum _StageOrdersView { list, kanban }
 
 class ErpDashboardPage extends StatefulWidget {
@@ -591,7 +605,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
   bool _didCheckLocalDriveBackend = false;
   _DriveSyncStatus _driveSyncStatus = _DriveSyncStatus.checking;
   final Map<WorkflowStage, _StageOrdersView> _stageOrdersViews = {
-    for (final stage in workflowStages) stage: _StageOrdersView.kanban,
+    for (final stage in workspaceStages) stage: _StageOrdersView.kanban,
   };
   DateTime _selectedInstallationCalendarDate = DateUtils.dateOnly(
     DateTime.now(),
@@ -1256,15 +1270,16 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
         icon: Icons.workspaces_outline,
         color: Color(0xFF12372A),
       ),
-      ...profile.allowedStages.map(
-        (stage) => _FlowNavItem(
-          routeKey: 'stage:${stage.name}',
-          label: stage.title,
-          icon: stage.icon,
-          color: stage.color,
-          stage: stage,
-        ),
-      ),
+      ...(profile.isAdministrator ? workspaceStages : profile.allowedStages)
+          .map(
+            (stage) => _FlowNavItem(
+              routeKey: 'stage:${stage.name}',
+              label: stage.title,
+              icon: stage.icon,
+              color: stage.color,
+              stage: stage,
+            ),
+          ),
       if (profile.isAdministrator)
         const _FlowNavItem(
           routeKey: 'admin',
@@ -1295,6 +1310,10 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     return _workAndCatalogStages.contains(stage);
   }
 
+  bool _isStandaloneWorkspaceStage(WorkflowStage stage) {
+    return _standaloneWorkspaceStages.contains(stage);
+  }
+
   int _stageWorkspaceSubtabIndex(WorkflowStage stage) {
     return _stageWorkspaceSubtabs[stage] ?? 0;
   }
@@ -1316,6 +1335,10 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       return _orders
           .where((order) => order.currentStage == stage)
           .toList(growable: false);
+    }
+
+    if (_isStandaloneWorkspaceStage(stage)) {
+      return const <WorkflowOrder>[];
     }
 
     return _orders;
@@ -1544,12 +1567,12 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
 
     final allowedStages =
         draft.isAdministrator
-              ? List<WorkflowStage>.from(workflowStages)
+              ? List<WorkflowStage>.from(workspaceStages)
               : List<WorkflowStage>.from(draft.allowedStages)
           ..sort(
-            (left, right) => workflowStages
+            (left, right) => workspaceStages
                 .indexOf(left)
-                .compareTo(workflowStages.indexOf(right)),
+                .compareTo(workspaceStages.indexOf(right)),
           );
 
     final profile = EmployeeWorkspaceProfile(
@@ -1635,12 +1658,12 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
 
     final updatedStages =
         draft.isAdministrator
-              ? List<WorkflowStage>.from(workflowStages)
+              ? List<WorkflowStage>.from(workspaceStages)
               : List<WorkflowStage>.from(draft.allowedStages)
           ..sort(
-            (left, right) => workflowStages
+            (left, right) => workspaceStages
                 .indexOf(left)
-                .compareTo(workflowStages.indexOf(right)),
+                .compareTo(workspaceStages.indexOf(right)),
           );
 
     final updatedProfile = profile.copyWith(
@@ -1824,8 +1847,9 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     }
 
     updatedStages.sort(
-      (left, right) =>
-          workflowStages.indexOf(left).compareTo(workflowStages.indexOf(right)),
+      (left, right) => workspaceStages
+          .indexOf(left)
+          .compareTo(workspaceStages.indexOf(right)),
     );
 
     setState(() {
@@ -1952,6 +1976,34 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       SnackBar(
         content: Text(message),
         backgroundColor: isError ? const Color(0xFFB91C1C) : null,
+      ),
+    );
+  }
+
+  Future<void> _showSingleRemainingVisitAlertIfNeeded(
+    WorkflowOrder order,
+  ) async {
+    if (!mounted || order.isServiceOrder) {
+      return;
+    }
+
+    if (_remainingVisitCountForOrder(order) != 1) {
+      return;
+    }
+
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Atenção às visitas'),
+        content: const Text(
+          'Só tem mais uma visita disponível para este pedido.',
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Entendi'),
+          ),
+        ],
       ),
     );
   }
@@ -2201,6 +2253,10 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     }
 
     final stage = tab.stage!;
+    if (stage == WorkflowStage.stock) {
+      return const _StockWorkspaceSection();
+    }
+
     final selectedOrderMatchesStage =
         _selectedOrder != null && _selectedOrder!.currentStage == stage;
     return _StageWorkspaceSection(
@@ -2831,6 +2887,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       _selectedInstallationCalendarDate = DateUtils.dateOnly(draft.scheduledAt);
     });
     _mergeOrderLocally(savedOrder);
+    await _showSingleRemainingVisitAlertIfNeeded(savedOrder);
     unawaited(
       _appendPlatformLog(
         action: hadSchedule ? 'Reagendou instalação' : 'Agendou instalação',
@@ -3433,7 +3490,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
             'Painel concluído. Liberar para instalação',
         },
         WorkflowStage.installation => _installationNextAction(order),
-        _ => stage.checklist.first,
+        _ => stage.checklist.isEmpty ? stage.title : stage.checklist.first,
       };
     }
 
@@ -3475,7 +3532,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       return _installationNextAction(order);
     }
 
-    return stage.checklist.first;
+    return stage.checklist.isEmpty ? stage.title : stage.checklist.first;
   }
 
   String _serviceOrderFinanceNextAction(WorkflowOrder order) {
@@ -3585,7 +3642,12 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
 
   List<EmployeeWorkspaceProfile> _installationEligibleProfiles() {
     final profiles = _workspaceProfiles
-        .where((profile) => profile.email.trim().isNotEmpty)
+        .where(
+          (profile) =>
+              profile.email.trim().isNotEmpty &&
+              (profile.isAdministrator ||
+                  profile.allowedStages.contains(WorkflowStage.installation)),
+        )
         .toList(growable: false);
     profiles.sort((left, right) {
       final leftName = left.name.trim().isEmpty ? left.login : left.name;
@@ -6427,6 +6489,8 @@ class _DesktopShellHeader extends StatelessWidget {
                     fontSize: 13,
                   ),
                 ),
+                const SizedBox(height: 8),
+                const _SoftwareVersionLabel(),
               ],
             ),
           ),
@@ -6475,6 +6539,50 @@ class _DesktopShellHeader extends StatelessWidget {
             expanded: true,
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _SoftwareVersionLabel extends StatelessWidget {
+  const _SoftwareVersionLabel({this.compact = false});
+
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    final foregroundColor = isDarkMode
+        ? const Color(0xFFE7F1EC)
+        : const Color(0xFF17211E);
+    final backgroundColor = isDarkMode
+        ? const Color(0xFF1C2A26)
+        : const Color(0xFFEFF4F0);
+    final borderColor = isDarkMode
+        ? const Color(0xFF2B3B36)
+        : const Color(0xFFDCE7DF);
+
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: backgroundColor,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: borderColor),
+      ),
+      child: Padding(
+        padding: EdgeInsets.symmetric(
+          horizontal: compact ? 8 : 10,
+          vertical: compact ? 4 : 5,
+        ),
+        child: Text(
+          'Versao $erpDanfAppVersion',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            color: foregroundColor,
+            fontSize: compact ? 11 : 12,
+            fontWeight: FontWeight.w800,
+          ),
+        ),
       ),
     );
   }
@@ -8101,7 +8209,7 @@ class _WorkspaceUserDialogState extends State<_WorkspaceUserDialog> {
                   Wrap(
                     spacing: 8,
                     runSpacing: 8,
-                    children: workflowStages
+                    children: workspaceStages
                         .map(
                           (stage) => _StatusBadge(
                             label: stage.title,
@@ -8114,7 +8222,7 @@ class _WorkspaceUserDialogState extends State<_WorkspaceUserDialog> {
                   Wrap(
                     spacing: 10,
                     runSpacing: 10,
-                    children: workflowStages
+                    children: workspaceStages
                         .map(
                           (stage) => FilterChip(
                             selected: _selectedStages.contains(stage),
@@ -8265,7 +8373,7 @@ class _AdminAccessSection extends StatelessWidget {
     );
     final fullyReleasedCount = profiles
         .where(
-          (profile) => profile.allowedStages.length == workflowStages.length,
+          (profile) => profile.allowedStages.length == workspaceStages.length,
         )
         .length;
 
@@ -8546,7 +8654,7 @@ class _AdminHeroHighlightCard extends StatelessWidget {
           Text(
             profile == null
                 ? 'As permissões de visualização são publicadas assim que você altera os setores.'
-                : '${profile.name} está com ${profile.allowedStages.length} de ${workflowStages.length} setores liberados.',
+                : '${profile.name} está com ${profile.allowedStages.length} de ${workspaceStages.length} setores liberados.',
             style: const TextStyle(color: Color(0xFFE2E8F0), height: 1.45),
           ),
           const SizedBox(height: 16),
@@ -8757,7 +8865,7 @@ class _AdminUserListPanel extends StatelessWidget {
                             minHeight: 8,
                             value:
                                 selectedProfile.allowedStages.length /
-                                workflowStages.length,
+                                workspaceStages.length,
                             backgroundColor: Colors.white.withValues(
                               alpha: 0.55,
                             ),
@@ -8851,7 +8959,7 @@ class _AdminUserListPanel extends StatelessWidget {
                           minHeight: 7,
                           value:
                               profile.allowedStages.length /
-                              workflowStages.length,
+                              workspaceStages.length,
                           backgroundColor:
                               Theme.of(context).brightness == Brightness.dark
                               ? const Color(0xFF20312C)
@@ -8876,7 +8984,7 @@ class _AdminUserListPanel extends StatelessWidget {
                           ),
                           _StatusBadge(
                             label:
-                                '${profile.allowedStages.length}/${workflowStages.length} setores',
+                                '${profile.allowedStages.length}/${workspaceStages.length} setores',
                             color: profile.accent,
                           ),
                           _StatusBadge(
@@ -8936,8 +9044,10 @@ class _AdminPermissionsPanel extends StatelessWidget {
     }
 
     final managedProfile = profile!;
-    final releasedStageCount = managedProfile.allowedStages.length;
-    final blockedStageCount = workflowStages.length - releasedStageCount;
+    final releasedStageCount = managedProfile.isAdministrator
+        ? workspaceStages.length
+        : managedProfile.allowedStages.length;
+    final blockedStageCount = workspaceStages.length - releasedStageCount;
 
     return Container(
       padding: const EdgeInsets.all(24),
@@ -9104,7 +9214,7 @@ class _AdminPermissionsPanel extends StatelessWidget {
               return Wrap(
                 spacing: 14,
                 runSpacing: 14,
-                children: workflowStages
+                children: workspaceStages
                     .map(
                       (stage) => SizedBox(
                         width: cardWidth,
@@ -9455,6 +9565,1067 @@ class _AdminCompactInfoCard extends StatelessWidget {
   }
 }
 
+class _StockItem {
+  const _StockItem({
+    required this.id,
+    required this.code,
+    required this.name,
+    required this.category,
+    required this.location,
+    required this.unit,
+    required this.quantity,
+    required this.minimumQuantity,
+    required this.supplier,
+    required this.notes,
+    required this.updatedAt,
+  });
+
+  final String id;
+  final String code;
+  final String name;
+  final String category;
+  final String location;
+  final String unit;
+  final double quantity;
+  final double minimumQuantity;
+  final String supplier;
+  final String notes;
+  final DateTime updatedAt;
+
+  bool get isLowStock => quantity <= minimumQuantity;
+  double get stockValue => quantity;
+
+  _StockItem copyWith({
+    String? code,
+    String? name,
+    String? category,
+    String? location,
+    String? unit,
+    double? quantity,
+    double? minimumQuantity,
+    String? supplier,
+    String? notes,
+    DateTime? updatedAt,
+  }) {
+    return _StockItem(
+      id: id,
+      code: code ?? this.code,
+      name: name ?? this.name,
+      category: category ?? this.category,
+      location: location ?? this.location,
+      unit: unit ?? this.unit,
+      quantity: quantity ?? this.quantity,
+      minimumQuantity: minimumQuantity ?? this.minimumQuantity,
+      supplier: supplier ?? this.supplier,
+      notes: notes ?? this.notes,
+      updatedAt: updatedAt ?? this.updatedAt,
+    );
+  }
+
+  Map<String, Object?> toMap() {
+    return {
+      'id': id,
+      'code': code,
+      'name': name,
+      'category': category,
+      'location': location,
+      'unit': unit,
+      'quantity': quantity,
+      'minimumQuantity': minimumQuantity,
+      'supplier': supplier,
+      'notes': notes,
+      'updatedAt': updatedAt.toIso8601String(),
+    };
+  }
+
+  factory _StockItem.fromMap(Map<String, dynamic> map) {
+    return _StockItem(
+      id: (map['id'] ?? '').toString(),
+      code: (map['code'] ?? '').toString(),
+      name: (map['name'] ?? '').toString(),
+      category: (map['category'] ?? '').toString(),
+      location: (map['location'] ?? '').toString(),
+      unit: (map['unit'] ?? 'un').toString(),
+      quantity: _readStockDouble(map['quantity']),
+      minimumQuantity: _readStockDouble(map['minimumQuantity']),
+      supplier: (map['supplier'] ?? '').toString(),
+      notes: (map['notes'] ?? '').toString(),
+      updatedAt:
+          DateTime.tryParse((map['updatedAt'] ?? '').toString()) ??
+          DateTime.now(),
+    );
+  }
+}
+
+double _readStockDouble(Object? value) {
+  if (value is num) {
+    return value.toDouble();
+  }
+  return double.tryParse(value?.toString().replaceAll(',', '.') ?? '') ?? 0;
+}
+
+String _formatStockNumber(double value) {
+  if (value == value.roundToDouble()) {
+    return value.toStringAsFixed(0);
+  }
+  return value.toStringAsFixed(2).replaceAll('.', ',');
+}
+
+class _StockWorkspaceSection extends StatefulWidget {
+  const _StockWorkspaceSection();
+
+  @override
+  State<_StockWorkspaceSection> createState() => _StockWorkspaceSectionState();
+}
+
+class _StockWorkspaceSectionState extends State<_StockWorkspaceSection> {
+  static const _storageKey = 'erp_danf_stock_items';
+
+  final TextEditingController _searchController = TextEditingController();
+  List<_StockItem> _items = const [];
+  bool _showOnlyLowStock = false;
+  bool _loaded = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _searchController.addListener(() => setState(() {}));
+    unawaited(_loadItems());
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadItems() async {
+    final preferences = await SharedPreferences.getInstance();
+    final rawItems = preferences.getStringList(_storageKey) ?? const [];
+    final items = rawItems
+        .map((raw) => jsonDecode(raw))
+        .whereType<Map<String, dynamic>>()
+        .map(_StockItem.fromMap)
+        .where((item) => item.id.trim().isNotEmpty)
+        .toList(growable: false);
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _items = items;
+      _loaded = true;
+    });
+  }
+
+  Future<void> _saveItems(List<_StockItem> items) async {
+    final preferences = await SharedPreferences.getInstance();
+    await preferences.setStringList(
+      _storageKey,
+      items.map((item) => jsonEncode(item.toMap())).toList(growable: false),
+    );
+  }
+
+  Future<void> _upsertItem(_StockItem item) async {
+    final items = List<_StockItem>.from(_items);
+    final index = items.indexWhere((entry) => entry.id == item.id);
+    if (index == -1) {
+      items.insert(0, item);
+    } else {
+      items[index] = item;
+    }
+    setState(() => _items = items);
+    await _saveItems(items);
+  }
+
+  Future<void> _deleteItem(_StockItem item) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Remover item'),
+        content: Text('Remover "${item.name}" do estoque?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Remover'),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true) {
+      return;
+    }
+    final items = _items.where((entry) => entry.id != item.id).toList();
+    setState(() => _items = items);
+    await _saveItems(items);
+  }
+
+  Future<void> _openItemDialog({_StockItem? item}) async {
+    final categories =
+        _items
+            .map((entry) => entry.category.trim())
+            .where((category) => category.isNotEmpty)
+            .toSet()
+            .toList()
+          ..sort(
+            (left, right) => left.toLowerCase().compareTo(right.toLowerCase()),
+          );
+    final draft = await Navigator.of(context).push<_StockItem>(
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (context) =>
+            _StockItemPage(initialItem: item, categories: categories),
+      ),
+    );
+    if (draft == null) {
+      return;
+    }
+    await _upsertItem(draft);
+  }
+
+  Future<void> _openMovementDialog(_StockItem item) async {
+    final updatedItem = await showDialog<_StockItem>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => _StockMovementDialog(item: item),
+    );
+    if (updatedItem == null) {
+      return;
+    }
+    await _upsertItem(updatedItem);
+  }
+
+  List<_StockItem> get _filteredItems {
+    final query = _searchController.text.trim().toLowerCase();
+    return _items
+        .where((item) {
+          if (_showOnlyLowStock && !item.isLowStock) {
+            return false;
+          }
+          if (query.isEmpty) {
+            return true;
+          }
+          return item.code.toLowerCase().contains(query) ||
+              item.name.toLowerCase().contains(query) ||
+              item.category.toLowerCase().contains(query) ||
+              item.location.toLowerCase().contains(query) ||
+              item.supplier.toLowerCase().contains(query);
+        })
+        .toList(growable: false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final filteredItems = _filteredItems;
+    final totalQuantity = _items.fold<double>(
+      0,
+      (total, item) => total + item.quantity,
+    );
+    final lowStockCount = _items.where((item) => item.isLowStock).length;
+    final categoryCount = _items
+        .map((item) => item.category.trim().toLowerCase())
+        .where((category) => category.isNotEmpty)
+        .toSet()
+        .length;
+
+    return ListView(
+      padding: const EdgeInsets.all(20),
+      children: [
+        _CustomerRegistrationUtilityCard(
+          icon: WorkflowStage.stock.icon,
+          accent: WorkflowStage.stock.color,
+          title: 'Estoque',
+          description:
+              'Cadastre itens, acompanhe saldos, defina mínimos e registre entradas ou saídas.',
+          headerTrailing: FilledButton.icon(
+            onPressed: () => _openItemDialog(),
+            icon: const Icon(Icons.add_box_outlined),
+            label: const Text('Novo item'),
+          ),
+          child: null,
+        ),
+        const SizedBox(height: 18),
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final useFourColumns = constraints.maxWidth >= 920;
+            final cardWidth = useFourColumns
+                ? (constraints.maxWidth - 36) / 4
+                : constraints.maxWidth >= 620
+                ? (constraints.maxWidth - 12) / 2
+                : constraints.maxWidth;
+            return Wrap(
+              spacing: 12,
+              runSpacing: 12,
+              children: [
+                SizedBox(
+                  width: cardWidth,
+                  child: _MetricCard(
+                    title: 'Itens cadastrados',
+                    value: _items.length.toString(),
+                    icon: Icons.inventory_2_outlined,
+                    accent: WorkflowStage.stock.color,
+                  ),
+                ),
+                SizedBox(
+                  width: cardWidth,
+                  child: _MetricCard(
+                    title: 'Saldo total',
+                    value: _formatStockNumber(totalQuantity),
+                    icon: Icons.functions_outlined,
+                    accent: const Color(0xFF2563EB),
+                  ),
+                ),
+                SizedBox(
+                  width: cardWidth,
+                  child: _MetricCard(
+                    title: 'Baixo estoque',
+                    value: lowStockCount.toString(),
+                    icon: Icons.warning_amber_outlined,
+                    accent: const Color(0xFFB45309),
+                  ),
+                ),
+                SizedBox(
+                  width: cardWidth,
+                  child: _MetricCard(
+                    title: 'Categorias',
+                    value: categoryCount.toString(),
+                    icon: Icons.category_outlined,
+                    accent: const Color(0xFF7C3AED),
+                  ),
+                ),
+              ],
+            );
+          },
+        ),
+        const SizedBox(height: 18),
+        _CustomerRegistrationUtilityCard(
+          icon: Icons.manage_search_outlined,
+          accent: WorkflowStage.stock.color,
+          title: 'Consulta',
+          description:
+              'Busque por código, produto, categoria, local ou fornecedor.',
+          child: Column(
+            children: [
+              TextField(
+                controller: _searchController,
+                decoration: InputDecoration(
+                  labelText: 'Pesquisar no estoque',
+                  prefixIcon: const Icon(Icons.search),
+                  suffixIcon: _searchController.text.trim().isEmpty
+                      ? null
+                      : IconButton(
+                          onPressed: _searchController.clear,
+                          icon: const Icon(Icons.close),
+                        ),
+                ),
+              ),
+              const SizedBox(height: 10),
+              SwitchListTile.adaptive(
+                value: _showOnlyLowStock,
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Mostrar apenas baixo estoque'),
+                onChanged: (value) {
+                  setState(() => _showOnlyLowStock = value);
+                },
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 18),
+        if (!_loaded)
+          const Center(child: CircularProgressIndicator())
+        else if (filteredItems.isEmpty)
+          _CustomerRegistrationUtilityCard(
+            icon: Icons.inventory_outlined,
+            accent: WorkflowStage.stock.color,
+            title: 'Nenhum item encontrado',
+            description: _items.isEmpty
+                ? 'Cadastre o primeiro item para começar o controle de estoque.'
+                : 'Ajuste a busca ou os filtros para visualizar outros itens.',
+            child: _items.isEmpty
+                ? Align(
+                    alignment: Alignment.centerLeft,
+                    child: FilledButton.icon(
+                      onPressed: () => _openItemDialog(),
+                      icon: const Icon(Icons.add_box_outlined),
+                      label: const Text('Cadastrar item'),
+                    ),
+                  )
+                : null,
+          )
+        else
+          _StockItemsList(
+            items: filteredItems,
+            onEdit: (item) => _openItemDialog(item: item),
+            onMove: _openMovementDialog,
+            onDelete: _deleteItem,
+          ),
+      ],
+    );
+  }
+}
+
+class _StockItemsList extends StatelessWidget {
+  const _StockItemsList({
+    required this.items,
+    required this.onEdit,
+    required this.onMove,
+    required this.onDelete,
+  });
+
+  final List<_StockItem> items;
+  final ValueChanged<_StockItem> onEdit;
+  final ValueChanged<_StockItem> onMove;
+  final ValueChanged<_StockItem> onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: _panelDecoration(context),
+      clipBehavior: Clip.antiAlias,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final tableWidth = constraints.maxWidth < 860
+              ? 860.0
+              : constraints.maxWidth;
+          return SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: SizedBox(
+              width: tableWidth,
+              child: Column(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 10,
+                    ),
+                    color: WorkflowStage.stock.color.withValues(alpha: 0.06),
+                    child: const Row(
+                      children: [
+                        Expanded(flex: 4, child: Text('Item')),
+                        Expanded(flex: 2, child: Text('Categoria')),
+                        Expanded(flex: 2, child: Text('Local')),
+                        SizedBox(width: 92, child: Text('Saldo')),
+                        SizedBox(width: 92, child: Text('Mínimo')),
+                        SizedBox(width: 132, child: Text('Ações')),
+                      ],
+                    ),
+                  ),
+                  for (var index = 0; index < items.length; index++) ...[
+                    _StockItemListRow(
+                      item: items[index],
+                      onEdit: () => onEdit(items[index]),
+                      onMove: () => onMove(items[index]),
+                      onDelete: () => onDelete(items[index]),
+                    ),
+                    if (index < items.length - 1)
+                      const Divider(height: 1, color: Color(0xFFE2E8F0)),
+                  ],
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _StockItemListRow extends StatelessWidget {
+  const _StockItemListRow({
+    required this.item,
+    required this.onEdit,
+    required this.onMove,
+    required this.onDelete,
+  });
+
+  final _StockItem item;
+  final VoidCallback onEdit;
+  final VoidCallback onMove;
+  final VoidCallback onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = item.isLowStock
+        ? const Color(0xFFB45309)
+        : WorkflowStage.stock.color;
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onEdit,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          child: Row(
+            children: [
+              Expanded(
+                flex: 4,
+                child: Row(
+                  children: [
+                    Container(
+                      width: 34,
+                      height: 34,
+                      decoration: BoxDecoration(
+                        color: accent.withValues(alpha: 0.10),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Icon(
+                        Icons.inventory_2_outlined,
+                        color: accent,
+                        size: 18,
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            item.name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(fontWeight: FontWeight.w800),
+                          ),
+                          Text(
+                            item.code.isEmpty ? 'Sem código' : item.code,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: Color(0xFF64748B),
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Expanded(
+                flex: 2,
+                child: Text(
+                  item.category,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              Expanded(
+                flex: 2,
+                child: Text(
+                  item.location,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              SizedBox(
+                width: 92,
+                child: Text(
+                  '${_formatStockNumber(item.quantity)} ${item.unit}',
+                  style: TextStyle(color: accent, fontWeight: FontWeight.w800),
+                ),
+              ),
+              SizedBox(
+                width: 92,
+                child: Text(
+                  '${_formatStockNumber(item.minimumQuantity)} ${item.unit}',
+                ),
+              ),
+              SizedBox(
+                width: 132,
+                child: Row(
+                  children: [
+                    IconButton(
+                      onPressed: onMove,
+                      tooltip: 'Movimentar',
+                      icon: const Icon(Icons.sync_alt_outlined),
+                    ),
+                    IconButton(
+                      onPressed: onEdit,
+                      tooltip: 'Editar',
+                      icon: const Icon(Icons.edit_outlined),
+                    ),
+                    IconButton(
+                      onPressed: onDelete,
+                      tooltip: 'Remover',
+                      icon: const Icon(Icons.delete_outline),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _StockItemPage extends StatefulWidget {
+  const _StockItemPage({this.initialItem, required this.categories});
+
+  final _StockItem? initialItem;
+  final List<String> categories;
+
+  @override
+  State<_StockItemPage> createState() => _StockItemPageState();
+}
+
+class _StockItemPageState extends State<_StockItemPage> {
+  final _formKey = GlobalKey<FormState>();
+  late final TextEditingController _codeController;
+  late final TextEditingController _nameController;
+  late final TextEditingController _categoryController;
+  late final TextEditingController _locationController;
+  late final TextEditingController _quantityController;
+  late final TextEditingController _minimumController;
+  late final TextEditingController _supplierController;
+  late final TextEditingController _notesController;
+  late String _selectedUnit;
+
+  @override
+  void initState() {
+    super.initState();
+    final item = widget.initialItem;
+    _codeController = TextEditingController(text: item?.code ?? '');
+    _nameController = TextEditingController(text: item?.name ?? '');
+    _categoryController = TextEditingController(text: item?.category ?? '');
+    _locationController = TextEditingController(text: item?.location ?? '');
+    _selectedUnit = switch ((item?.unit ?? 'Un').trim().toLowerCase()) {
+      'cx' => 'Cx',
+      _ => 'Un',
+    };
+    _quantityController = TextEditingController(
+      text: item == null ? '0' : _formatStockNumber(item.quantity),
+    );
+    _minimumController = TextEditingController(
+      text: item == null ? '0' : _formatStockNumber(item.minimumQuantity),
+    );
+    _supplierController = TextEditingController(text: item?.supplier ?? '');
+    _notesController = TextEditingController(text: item?.notes ?? '');
+  }
+
+  @override
+  void dispose() {
+    _codeController.dispose();
+    _nameController.dispose();
+    _categoryController.dispose();
+    _locationController.dispose();
+    _quantityController.dispose();
+    _minimumController.dispose();
+    _supplierController.dispose();
+    _notesController.dispose();
+    super.dispose();
+  }
+
+  String? _required(String? value) {
+    return (value ?? '').trim().isEmpty ? 'Campo obrigatório.' : null;
+  }
+
+  String? _number(String? value) {
+    if (double.tryParse((value ?? '').trim().replaceAll(',', '.')) == null) {
+      return 'Informe um número válido.';
+    }
+    return null;
+  }
+
+  double _parse(String value) {
+    return double.tryParse(value.trim().replaceAll(',', '.')) ?? 0;
+  }
+
+  void _submit() {
+    if (!_formKey.currentState!.validate()) {
+      return;
+    }
+    final now = DateTime.now();
+    Navigator.of(context).pop(
+      _StockItem(
+        id: widget.initialItem?.id ?? now.microsecondsSinceEpoch.toString(),
+        code: _codeController.text.trim(),
+        name: _nameController.text.trim(),
+        category: _categoryController.text.trim(),
+        location: _locationController.text.trim(),
+        unit: _selectedUnit,
+        quantity: _parse(_quantityController.text),
+        minimumQuantity: _parse(_minimumController.text),
+        supplier: _supplierController.text.trim(),
+        notes: _notesController.text.trim(),
+        updatedAt: now,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final title = widget.initialItem == null ? 'Novo item' : 'Editar item';
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(title),
+        actions: [
+          TextButton.icon(
+            onPressed: _submit,
+            icon: const Icon(Icons.save_outlined),
+            label: const Text('Salvar'),
+          ),
+          const SizedBox(width: 8),
+        ],
+      ),
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(20),
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 860),
+              child: Form(
+                key: _formKey,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    _CustomerRegistrationUtilityCard(
+                      icon: Icons.inventory_2_outlined,
+                      accent: WorkflowStage.stock.color,
+                      title: title,
+                      description:
+                          'Informe os dados do produto, saldo atual e parâmetros de controle.',
+                      child: null,
+                    ),
+                    const SizedBox(height: 18),
+                    _DialogField(
+                      controller: _nameController,
+                      label: 'Produto',
+                      validator: _required,
+                    ),
+                    const SizedBox(height: 12),
+                    _DialogField(
+                      controller: _codeController,
+                      label: 'Código',
+                      validator: (_) => null,
+                    ),
+                    const SizedBox(height: 12),
+                    LayoutBuilder(
+                      builder: (context, constraints) {
+                        final useColumns = constraints.maxWidth >= 620;
+                        final fieldWidth = useColumns
+                            ? (constraints.maxWidth - 12) / 2
+                            : constraints.maxWidth;
+                        return Wrap(
+                          spacing: 12,
+                          runSpacing: 12,
+                          children: [
+                            SizedBox(
+                              width: fieldWidth,
+                              child: _StockCategoryField(
+                                controller: _categoryController,
+                                categories: widget.categories,
+                                validator: _required,
+                              ),
+                            ),
+                            SizedBox(
+                              width: fieldWidth,
+                              child: _DialogField(
+                                controller: _locationController,
+                                label: 'Local',
+                                validator: _required,
+                              ),
+                            ),
+                          ],
+                        );
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                    LayoutBuilder(
+                      builder: (context, constraints) {
+                        final useColumns = constraints.maxWidth >= 720;
+                        final fieldWidth = useColumns
+                            ? (constraints.maxWidth - 24) / 3
+                            : constraints.maxWidth;
+                        return Wrap(
+                          spacing: 12,
+                          runSpacing: 12,
+                          children: [
+                            SizedBox(
+                              width: fieldWidth,
+                              child: _DialogField(
+                                controller: _quantityController,
+                                label: 'Quantidade',
+                                keyboardType: TextInputType.number,
+                                validator: _number,
+                              ),
+                            ),
+                            SizedBox(
+                              width: fieldWidth,
+                              child: _DialogField(
+                                controller: _minimumController,
+                                label: 'Mínimo',
+                                keyboardType: TextInputType.number,
+                                validator: _number,
+                              ),
+                            ),
+                            SizedBox(
+                              width: fieldWidth,
+                              child: DropdownButtonFormField<String>(
+                                initialValue: _selectedUnit,
+                                decoration: const InputDecoration(
+                                  labelText: 'Unidade',
+                                ),
+                                items: const [
+                                  DropdownMenuItem(
+                                    value: 'Un',
+                                    child: Text('Un'),
+                                  ),
+                                  DropdownMenuItem(
+                                    value: 'Cx',
+                                    child: Text('Cx'),
+                                  ),
+                                ],
+                                onChanged: (value) {
+                                  if (value == null) {
+                                    return;
+                                  }
+                                  setState(() => _selectedUnit = value);
+                                },
+                              ),
+                            ),
+                          ],
+                        );
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                    _DialogField(
+                      controller: _supplierController,
+                      label: 'Fornecedor',
+                      validator: (_) => null,
+                    ),
+                    const SizedBox(height: 12),
+                    _DialogField(
+                      controller: _notesController,
+                      label: 'Observações',
+                      validator: (_) => null,
+                      maxLines: 4,
+                    ),
+                    const SizedBox(height: 24),
+                    Align(
+                      alignment: Alignment.centerRight,
+                      child: Wrap(
+                        spacing: 12,
+                        runSpacing: 12,
+                        children: [
+                          OutlinedButton(
+                            onPressed: () => Navigator.of(context).pop(),
+                            child: const Text('Cancelar'),
+                          ),
+                          FilledButton.icon(
+                            onPressed: _submit,
+                            icon: const Icon(Icons.save_outlined),
+                            label: const Text('Salvar item'),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _StockCategoryField extends StatefulWidget {
+  const _StockCategoryField({
+    required this.controller,
+    required this.categories,
+    required this.validator,
+  });
+
+  final TextEditingController controller;
+  final List<String> categories;
+  final String? Function(String?) validator;
+
+  @override
+  State<_StockCategoryField> createState() => _StockCategoryFieldState();
+}
+
+class _StockCategoryFieldState extends State<_StockCategoryField> {
+  final FocusNode _focusNode = FocusNode();
+
+  @override
+  void dispose() {
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return RawAutocomplete<String>(
+      textEditingController: widget.controller,
+      focusNode: _focusNode,
+      optionsBuilder: (textEditingValue) {
+        final query = textEditingValue.text.trim().toLowerCase();
+        if (query.isEmpty) {
+          return widget.categories;
+        }
+        return widget.categories.where(
+          (category) => category.toLowerCase().contains(query),
+        );
+      },
+      fieldViewBuilder:
+          (context, textEditingController, focusNode, onFieldSubmitted) {
+            return TextFormField(
+              controller: textEditingController,
+              focusNode: focusNode,
+              decoration: const InputDecoration(
+                labelText: 'Categoria',
+                hintText: 'Selecione ou crie uma categoria',
+              ),
+              validator: widget.validator,
+              onFieldSubmitted: (_) => onFieldSubmitted(),
+            );
+          },
+      optionsViewBuilder: (context, onSelected, options) {
+        final optionList = options.toList(growable: false);
+        return Align(
+          alignment: Alignment.topLeft,
+          child: Material(
+            elevation: 6,
+            borderRadius: BorderRadius.circular(12),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 220, maxWidth: 360),
+              child: ListView.builder(
+                padding: EdgeInsets.zero,
+                shrinkWrap: true,
+                itemCount: optionList.length,
+                itemBuilder: (context, index) {
+                  final option = optionList[index];
+                  return ListTile(
+                    dense: true,
+                    title: Text(option),
+                    onTap: () => onSelected(option),
+                  );
+                },
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _StockMovementDialog extends StatefulWidget {
+  const _StockMovementDialog({required this.item});
+
+  final _StockItem item;
+
+  @override
+  State<_StockMovementDialog> createState() => _StockMovementDialogState();
+}
+
+class _StockMovementDialogState extends State<_StockMovementDialog> {
+  final _formKey = GlobalKey<FormState>();
+  final TextEditingController _quantityController = TextEditingController();
+  final TextEditingController _notesController = TextEditingController();
+  bool _isEntry = true;
+
+  @override
+  void dispose() {
+    _quantityController.dispose();
+    _notesController.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    if (!_formKey.currentState!.validate()) {
+      return;
+    }
+    final quantity =
+        double.tryParse(_quantityController.text.trim().replaceAll(',', '.')) ??
+        0;
+    final nextQuantity = _isEntry
+        ? widget.item.quantity + quantity
+        : widget.item.quantity - quantity;
+    Navigator.of(context).pop(
+      widget.item.copyWith(
+        quantity: nextQuantity < 0 ? 0 : nextQuantity,
+        notes: _notesController.text.trim().isEmpty
+            ? widget.item.notes
+            : _notesController.text.trim(),
+        updatedAt: DateTime.now(),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text('Movimentar ${widget.item.name}'),
+      content: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 420),
+        child: Form(
+          key: _formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SegmentedButton<bool>(
+                segments: const [
+                  ButtonSegment(
+                    value: true,
+                    icon: Icon(Icons.add),
+                    label: Text('Entrada'),
+                  ),
+                  ButtonSegment(
+                    value: false,
+                    icon: Icon(Icons.remove),
+                    label: Text('Saída'),
+                  ),
+                ],
+                selected: {_isEntry},
+                onSelectionChanged: (value) {
+                  setState(() => _isEntry = value.first);
+                },
+              ),
+              const SizedBox(height: 14),
+              _DialogField(
+                controller: _quantityController,
+                label: 'Quantidade',
+                keyboardType: TextInputType.number,
+                validator: (value) {
+                  final quantity = double.tryParse(
+                    (value ?? '').trim().replaceAll(',', '.'),
+                  );
+                  if (quantity == null || quantity <= 0) {
+                    return 'Informe uma quantidade maior que zero.';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 12),
+              _DialogField(
+                controller: _notesController,
+                label: 'Observação',
+                validator: (_) => null,
+                maxLines: 3,
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancelar'),
+        ),
+        FilledButton(onPressed: _submit, child: const Text('Salvar')),
+      ],
+    );
+  }
+}
+
 class _StageWorkspaceSection extends StatelessWidget {
   const _StageWorkspaceSection({
     required this.stage,
@@ -9600,7 +10771,11 @@ class _StageWorkspaceSection extends StatelessWidget {
   Widget build(BuildContext context) {
     final isMedium = MediaQuery.sizeOf(context).width >= 680;
     final registrationStage = WorkflowStage.customerRegistration;
+    final isStandaloneWorkspaceStage = _standaloneWorkspaceStages.contains(
+      stage,
+    );
     final hasWorkAndCatalogSubtabs =
+        !isStandaloneWorkspaceStage &&
         _workAndCatalogStages.contains(stage) &&
         stageWorkspaceSubtab != null &&
         onStageWorkspaceSubtabChanged != null;
@@ -9609,7 +10784,9 @@ class _StageWorkspaceSection extends StatelessWidget {
         customerRegistrationSubtab != null &&
         onCustomerRegistrationSubtabChanged != null;
     final showingSharedCatalog =
-        !isCustomerRegistration && !hasWorkAndCatalogSubtabs;
+        !isStandaloneWorkspaceStage &&
+        !isCustomerRegistration &&
+        !hasWorkAndCatalogSubtabs;
     final showingRegistrationInProgress =
         isCustomerRegistration && customerRegistrationSubtab == 0;
     final showingRegisteredClients =
@@ -9619,7 +10796,8 @@ class _StageWorkspaceSection extends StatelessWidget {
         stage == WorkflowStage.engineering;
     final registeredCatalogTabIndex = hasCalendarTab ? 2 : 1;
     final showingWorkQueue =
-        hasWorkAndCatalogSubtabs && stageWorkspaceSubtab == 0;
+        isStandaloneWorkspaceStage ||
+        (hasWorkAndCatalogSubtabs && stageWorkspaceSubtab == 0);
     final showingInstallationCalendar =
         stage == WorkflowStage.installation &&
         hasWorkAndCatalogSubtabs &&
@@ -10047,7 +11225,26 @@ class _StageWorkspaceSection extends StatelessWidget {
               ),
           ]
         : const <_OrdersKanbanColumnData>[];
-    final kanbanColumns = stage == WorkflowStage.assembly && showingWorkQueue
+    final kanbanColumns = stage == WorkflowStage.warehouse && showingWorkQueue
+        ? <_OrdersKanbanColumnData>[
+            for (final item in WorkflowStage.warehouse.checklist)
+              _OrdersKanbanColumnData(
+                title: item,
+                subtitle: '0 produtos',
+                accent: stage.color,
+                icon: switch (item) {
+                  'Pedir Produto' => Icons.add_shopping_cart_outlined,
+                  'Consultar com fornecedor' => Icons.storefront_outlined,
+                  'Aguardando aprovação do financeiro' =>
+                    Icons.account_balance_wallet_outlined,
+                  'Comprado' => Icons.shopping_bag_outlined,
+                  _ => Icons.task_alt_rounded,
+                },
+                emptyMessage: 'Nenhum produto nesta etapa.',
+                orders: const <WorkflowOrder>[],
+              ),
+          ]
+        : stage == WorkflowStage.assembly && showingWorkQueue
         ? <_OrdersKanbanColumnData>[
             _OrdersKanbanColumnData(
               title: 'Aguardando',
@@ -10956,6 +12153,8 @@ class _FlowTopNavbar extends StatelessWidget {
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(fontSize: 12, color: Color(0xFF52605C)),
                     ),
+                    SizedBox(height: 6),
+                    _SoftwareVersionLabel(compact: true),
                   ],
                 ),
               ),
@@ -11993,6 +13192,7 @@ class _OrderDetailsPanel extends StatelessWidget {
         !isServiceOrder &&
         !isEngineeringStage &&
         !isRelationshipStage &&
+        !isInstallationStage &&
         (isFinanceStage ||
             hasPassedFinance ||
             hasContractFile ||
@@ -12000,6 +13200,7 @@ class _OrderDetailsPanel extends StatelessWidget {
     final showRelationshipSection =
         !isServiceOrder &&
         !isEngineeringStage &&
+        !isInstallationStage &&
         (isRelationshipStage ||
             hasPassedRelationship ||
             order!.relationshipKanbanStatuses.isNotEmpty);
@@ -12010,7 +13211,7 @@ class _OrderDetailsPanel extends StatelessWidget {
         showFlowActions &&
         isEstimatingStage &&
         onSetEstimatingWasEstimate != null;
-    final assemblyChecklistSection = !hasReachedAssembly
+    final assemblyChecklistSection = !hasReachedAssembly || isInstallationStage
         ? null
         : _CollapsibleDetailSection(
             title: 'Checklist da montagem',

@@ -8,6 +8,8 @@ enum WorkflowStage {
   engineering,
   assembly,
   installation,
+  warehouse,
+  stock,
 }
 
 extension WorkflowStagePresentation on WorkflowStage {
@@ -19,6 +21,8 @@ extension WorkflowStagePresentation on WorkflowStage {
     WorkflowStage.engineering => 'Engenharia',
     WorkflowStage.assembly => 'Montagem',
     WorkflowStage.installation => 'Instalação',
+    WorkflowStage.warehouse => 'Almoxarifado',
+    WorkflowStage.stock => 'Estoque',
   };
 
   String get subtitle => switch (this) {
@@ -30,6 +34,9 @@ extension WorkflowStagePresentation on WorkflowStage {
     WorkflowStage.engineering => 'Projeto executivo, detalhamento e liberação.',
     WorkflowStage.assembly => 'Preparação interna, produção e conferência.',
     WorkflowStage.installation => 'Execução em campo, entrega e aceite final.',
+    WorkflowStage.warehouse =>
+      'Solicitações, compras e acompanhamento de produtos.',
+    WorkflowStage.stock => 'Controle de itens e movimentações internas.',
   };
 
   String get sla => switch (this) {
@@ -40,6 +47,8 @@ extension WorkflowStagePresentation on WorkflowStage {
     WorkflowStage.engineering => 'SLA 5 dias',
     WorkflowStage.assembly => 'SLA 4 dias',
     WorkflowStage.installation => 'SLA 2 dias',
+    WorkflowStage.warehouse => 'Kanban interno',
+    WorkflowStage.stock => 'Sistema interno',
   };
 
   IconData get icon => switch (this) {
@@ -50,6 +59,8 @@ extension WorkflowStagePresentation on WorkflowStage {
     WorkflowStage.engineering => Icons.architecture_outlined,
     WorkflowStage.assembly => Icons.precision_manufacturing_outlined,
     WorkflowStage.installation => Icons.home_repair_service_outlined,
+    WorkflowStage.warehouse => Icons.warehouse_outlined,
+    WorkflowStage.stock => Icons.inventory_2_outlined,
   };
 
   Color get color => switch (this) {
@@ -60,6 +71,8 @@ extension WorkflowStagePresentation on WorkflowStage {
     WorkflowStage.engineering => const Color(0xFFC2410C),
     WorkflowStage.assembly => const Color(0xFF7C3AED),
     WorkflowStage.installation => const Color(0xFFBE123C),
+    WorkflowStage.warehouse => const Color(0xFF0369A1),
+    WorkflowStage.stock => const Color(0xFF0F766E),
   };
 
   List<String> get checklist => switch (this) {
@@ -94,10 +107,25 @@ extension WorkflowStagePresentation on WorkflowStage {
       'Planejar logística de instalação',
     ],
     WorkflowStage.installation => const [
-      'Agendar equipe em campo',
-      'Executar instalação e testes',
-      'Coletar aceite e concluir entrega',
+      'Instalar Painel',
+      'Instalar controlart',
+      'Instalar Unifi',
+      'configurar rede',
+      'Levantamento',
+      'Alexa',
+      'Configurar Som',
+      'Instalar caixas de som',
+      'Instalar pulsadores',
+      'Instalar Aspiração central',
     ],
+    WorkflowStage.warehouse => const [
+      'Pedir Produto',
+      'Consultar com fornecedor',
+      'Aguardando aprovação do financeiro',
+      'Comprado',
+      'Concluido',
+    ],
+    WorkflowStage.stock => const [],
   };
 }
 
