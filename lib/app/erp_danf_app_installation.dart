@@ -42,9 +42,9 @@ class _InstallationScheduleCard extends StatelessWidget {
               )
               .join(', ')
         : order.installationAssignedTeam.trim();
-    final notes = order.installationNotes.trim();
-    final status = order.installationWorkflowStatus;
     final plannedVisit = _plannedVisitForCurrentInstallationSchedule(order);
+    final notes = plannedVisit?.notes.trim() ?? order.installationNotes.trim();
+    final status = order.installationWorkflowStatus;
     final plannedItems = plannedVisit?.plannedItems ?? const <String>[];
 
     return Container(

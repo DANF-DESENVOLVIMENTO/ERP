@@ -129,6 +129,123 @@ String _workspaceProfileOwnerLabel(EmployeeWorkspaceProfile profile) {
   return '$name (@$login)';
 }
 
+class _ServiceOrderFlowStepData {
+  const _ServiceOrderFlowStepData({
+    required this.label,
+    required this.icon,
+    required this.color,
+  });
+
+  final String label;
+  final IconData icon;
+  final Color color;
+}
+
+const List<_ServiceOrderFlowStepData> _serviceOrderFlowSteps = [
+  _ServiceOrderFlowStepData(
+    label: 'Solicitada OS',
+    icon: Icons.assignment_outlined,
+    color: Color(0xFFB45309),
+  ),
+  _ServiceOrderFlowStepData(
+    label: 'PDF da OS',
+    icon: Icons.picture_as_pdf_outlined,
+    color: Color(0xFF2563EB),
+  ),
+  _ServiceOrderFlowStepData(
+    label: 'OS Aprovada',
+    icon: Icons.verified_outlined,
+    color: Color(0xFF15803D),
+  ),
+  _ServiceOrderFlowStepData(
+    label: 'Instalação',
+    icon: Icons.home_repair_service_outlined,
+    color: Color(0xFFBE123C),
+  ),
+  _ServiceOrderFlowStepData(
+    label: 'OS Realizada',
+    icon: Icons.assignment_turned_in_outlined,
+    color: Color(0xFF4F46E5),
+  ),
+  _ServiceOrderFlowStepData(
+    label: 'OS Concluída',
+    icon: Icons.task_alt_rounded,
+    color: Color(0xFF2563EB),
+  ),
+  _ServiceOrderFlowStepData(
+    label: 'OS Paga',
+    icon: Icons.paid_outlined,
+    color: Color(0xFF0F766E),
+  ),
+];
+
+int _serviceOrderFlowStageIndex(WorkflowOrder order) {
+  if (order.serviceOrderFinanceStatus == ServiceOrderFinanceStatus.paid) {
+    return 6;
+  }
+  if (order.serviceOrderFinanceStatus == ServiceOrderFinanceStatus.concluded) {
+    return 5;
+  }
+  if (order.installationWorkflowStatus == InstallationWorkflowStatus.done &&
+      order.currentStage == WorkflowStage.estimating &&
+      order.financeClientApproved) {
+    return 4;
+  }
+  if (order.currentStage == WorkflowStage.installation ||
+      order.installationWorkflowStatus != InstallationWorkflowStatus.waiting) {
+    return 3;
+  }
+  if (order.financeClientApproved ||
+      order.serviceOrderFinanceStatus == ServiceOrderFinanceStatus.approved) {
+    return 2;
+  }
+  if (order.serviceOrderFileName.trim().isNotEmpty) {
+    return 1;
+  }
+  return 0;
+}
+
+String _serviceOrderFlowHistory(WorkflowOrder order, int stepIndex) {
+  switch (stepIndex) {
+    case 0:
+      return order.history[WorkflowStage.relationship] ??
+          'Aguardando criação da OS';
+    case 1:
+      return order.serviceOrderFileName.trim().isNotEmpty
+          ? (order.history[WorkflowStage.estimating] ?? 'PDF da OS emitido')
+          : 'Aguardando PDF da OS';
+    case 2:
+      return order.financeClientApproved
+          ? (order.history[WorkflowStage.finance] ??
+                'OS aprovada no Financeiro')
+          : 'Aguardando aprovação do cliente';
+    case 3:
+      return order.installationWorkflowStatus ==
+              InstallationWorkflowStatus.waiting
+          ? 'Aguardando instalação'
+          : (order.history[WorkflowStage.installation] ??
+                'Instalação em andamento');
+    case 4:
+      return order.installationWorkflowStatus == InstallationWorkflowStatus.done
+          ? (order.history[WorkflowStage.estimating] ?? 'OS realizada')
+          : 'Aguardando OS realizada';
+    case 5:
+      return order.serviceOrderFinanceStatus.index >=
+              ServiceOrderFinanceStatus.concluded.index
+          ? (order.serviceOrderFinanceStatus == ServiceOrderFinanceStatus.paid
+                ? 'OS concluída e enviada para pagamento.'
+                : (order.history[WorkflowStage.finance] ?? 'OS concluída'))
+          : 'Aguardando OS concluída';
+    case 6:
+      return order.serviceOrderFinanceStatus == ServiceOrderFinanceStatus.paid
+          ? (order.history[WorkflowStage.finance] ??
+                'Pagamento da OS registrado')
+          : 'Aguardando pagamento da OS';
+    default:
+      return 'Aguardando etapa';
+  }
+}
+
 List<EmployeeWorkspaceProfile> _assemblyAssignedProfilesForOrder(
   WorkflowOrder order,
   List<EmployeeWorkspaceProfile> profiles,
@@ -266,11 +383,53 @@ bool _hasEstimatingWorksheetData(WorkflowOrder order) {
     return false;
   }
   return order.estimatingMaterials.every(
-    (entry) =>
-        entry.quantity.trim().isNotEmpty &&
-        entry.description.trim().isNotEmpty &&
-        entry.model.trim().isNotEmpty,
-  );
+        (entry) =>
+            entry.quantity.trim().isNotEmpty &&
+            entry.description.trim().isNotEmpty &&
+            entry.model.trim().isNotEmpty,
+      ) &&
+      (order.estimatingWasEstimate.trim() == 'Sim' ||
+          order.estimatingWasEstimate.trim() == 'Não');
+}
+
+int _plannedVisitCountForOrder(WorkflowOrder order) {
+  return order.estimatingIncludedVisits.fold<int>(0, (total, entry) {
+    return total + (int.tryParse(entry.days.trim()) ?? 0);
+  });
+}
+
+int _completedVisitCountForOrder(WorkflowOrder order) {
+  var completedCount = 0;
+  if (_normalizeEngineeringChecklistStatus(
+        order.engineeringChecklistStatuses['meeting_electrician'] ??
+            EngineeringChecklistStatus.notStarted,
+      ) ==
+      EngineeringChecklistStatus.done) {
+    completedCount += 1;
+  }
+  if (_normalizeEngineeringChecklistStatus(
+        order.engineeringChecklistStatuses['conference_done'] ??
+            EngineeringChecklistStatus.notStarted,
+      ) ==
+      EngineeringChecklistStatus.done) {
+    completedCount += 1;
+  }
+  completedCount += order.installationVisitHistory
+      .where((visit) => visit.plannedItems.isNotEmpty)
+      .length;
+  return completedCount;
+}
+
+String? _visitProgressLabelForOrder(WorkflowOrder order) {
+  if (order.isServiceOrder) {
+    return null;
+  }
+  final plannedCount = _plannedVisitCountForOrder(order);
+  if (plannedCount <= 0) {
+    return null;
+  }
+  final completedCount = _completedVisitCountForOrder(order);
+  return '$completedCount/$plannedCount';
 }
 
 ThemeData _buildTheme({required Color seed, required Brightness brightness}) {
@@ -1023,6 +1182,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
           onSendToInstallation: () =>
               _routeSelectedOrderToStage(WorkflowStage.installation),
           onAttachMaterials: _attachMaterialsToSelectedOrder,
+          onSetEstimatingWasEstimate: _setEstimatingWasEstimateForSelectedOrder,
           onAttachElectricalProject: _attachElectricalProjectToSelectedOrder,
           onAttachPanelLayout: _attachPanelLayoutToSelectedOrder,
           onAttachPushButtonTable: _attachPushButtonTableToSelectedOrder,
@@ -2062,6 +2222,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       onSendToInstallation: () =>
           _routeSelectedOrderToStage(WorkflowStage.installation),
       onAttachMaterials: _attachMaterialsToSelectedOrder,
+      onSetEstimatingWasEstimate: _setEstimatingWasEstimateForSelectedOrder,
       onAttachElectricalProject: _attachElectricalProjectToSelectedOrder,
       onAttachPanelLayout: _attachPanelLayoutToSelectedOrder,
       onAttachPushButtonTable: _attachPushButtonTableToSelectedOrder,
@@ -2355,11 +2516,13 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       serviceOrderFileName: '',
       serviceOrderFilePath: null,
       financeClientApproved: false,
+      serviceOrderFinanceStatus: ServiceOrderFinanceStatus.waitingApproval,
       installationWorkflowStatus: InstallationWorkflowStatus.waiting,
       installationScheduledAt: null,
       installationAssignedEmployeeEmails: const [],
       installationAssignedTeam: '',
       installationNotes: '',
+      estimatingWasEstimate: '',
       installationVisitHistory: const [],
       value:
           double.tryParse(
@@ -2445,7 +2608,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     final now = DateTime.now();
     final actorLabel = _currentOrderOwnerLabel();
     final newOrderCode = _nextServiceOrderCode(draft.client.id);
-    final newOrder = WorkflowOrder(
+    final draftOrder = WorkflowOrder(
       code: newOrderCode,
       client: draft.client,
       workName: draft.serviceTitle.trim(),
@@ -2496,11 +2659,13 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       serviceOrderFileName: '',
       serviceOrderFilePath: null,
       financeClientApproved: false,
+      serviceOrderFinanceStatus: ServiceOrderFinanceStatus.waitingApproval,
       installationWorkflowStatus: InstallationWorkflowStatus.waiting,
       installationScheduledAt: null,
       installationAssignedEmployeeEmails: const [],
       installationAssignedTeam: '',
       installationNotes: '',
+      estimatingWasEstimate: '',
       installationVisitHistory: const [],
       value: 0,
       commercialProposalNumber: '',
@@ -2522,7 +2687,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       whatsappGroupMembers: const [],
       whatsappGroupObservation: '',
       deadline: now.add(const Duration(days: 2)),
-      progress: 2 / workflowStages.length,
+      progress: 0,
       nextAction: 'Emitir PDF da ordem de serviço',
       blocker: 'Aguardando emissão da ordem de serviço pelo Orçamentista.',
       tags: const ['Ordem de serviço'],
@@ -2533,6 +2698,9 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
         WorkflowStage.estimating:
             'Encaminhada ao Orçamentista em ${_formatDateTime(now)}',
       },
+    );
+    final newOrder = draftOrder.copyWith(
+      progress: _effectiveOrderProgress(draftOrder),
     );
 
     final savedOrder = await _runBusyTask(
@@ -2633,7 +2801,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       installationScheduledAt: draft.scheduledAt,
       installationAssignedEmployeeEmails: const [],
       installationAssignedTeam: '',
-      installationNotes: draft.notes.trim(),
+      installationNotes: selected.isServiceOrder ? '' : draft.notes.trim(),
       installationVisitHistory: nextVisitHistory,
       progress: _effectiveOrderProgress(previewOrder),
       nextAction: _defaultNextActionForStage(
@@ -2863,36 +3031,66 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
         left.minute == right.minute;
   }
 
-  Future<String?> _promptInstallationServiceTime({
-    required String initialValue,
+  Future<({String serviceTime, String conclusionObservation})?>
+  _promptServiceOrderCompletionData({
+    required String initialServiceTime,
+    required String initialConclusionObservation,
   }) async {
-    final controller = TextEditingController(text: initialValue);
-    final result = await showDialog<String>(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => AlertDialog(
-        title: const Text('Tempo de serviço'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(
-            labelText: 'Tempo de serviço',
-            hintText: 'Ex.: 2h 30min',
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Cancelar'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(controller.text.trim()),
-            child: const Text('Salvar'),
-          ),
-        ],
-      ),
+    final serviceTimeController = TextEditingController(
+      text: initialServiceTime,
     );
-    controller.dispose();
+    final observationController = TextEditingController(
+      text: initialConclusionObservation,
+    );
+    final result =
+        await showDialog<({String serviceTime, String conclusionObservation})>(
+          context: context,
+          barrierDismissible: false,
+          builder: (context) => AlertDialog(
+            title: const Text('Conclusão da OS'),
+            content: SizedBox(
+              width: 420,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: serviceTimeController,
+                    autofocus: true,
+                    decoration: const InputDecoration(
+                      labelText: 'Tempo de serviço',
+                      hintText: 'Ex.: 2h 30min',
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: observationController,
+                    maxLines: 4,
+                    decoration: const InputDecoration(
+                      labelText: 'Observação conclusão OS',
+                      hintText:
+                          'Informe o resultado da instalação para retorno ao Orçamentista.',
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('Cancelar'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(context).pop((
+                  serviceTime: serviceTimeController.text.trim(),
+                  conclusionObservation: observationController.text.trim(),
+                )),
+                child: const Text('Salvar'),
+              ),
+            ],
+          ),
+        );
+    serviceTimeController.dispose();
+    observationController.dispose();
     return result;
   }
 
@@ -2924,18 +3122,33 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     }
 
     var serviceTime = activeVisit.serviceTime.trim();
-    if (selected.isServiceOrder && serviceTime.isEmpty) {
-      final informedServiceTime = await _promptInstallationServiceTime(
-        initialValue: serviceTime,
+    var completionObservation = selected.isServiceOrder
+        ? ''
+        : selected.installationNotes.trim();
+    if (selected.isServiceOrder) {
+      final completionData = await _promptServiceOrderCompletionData(
+        initialServiceTime: serviceTime,
+        initialConclusionObservation: completionObservation,
       );
-      if (informedServiceTime == null || informedServiceTime.trim().isEmpty) {
+      if (completionData == null) {
+        return;
+      }
+      if (completionData.serviceTime.trim().isEmpty) {
         _showAppMessage(
           'Informe o tempo de serviço para concluir a ordem de serviço.',
           isError: true,
         );
         return;
       }
-      serviceTime = informedServiceTime.trim();
+      if (completionData.conclusionObservation.trim().isEmpty) {
+        _showAppMessage(
+          'Informe a observação conclusão OS para concluir a ordem de serviço.',
+          isError: true,
+        );
+        return;
+      }
+      serviceTime = completionData.serviceTime.trim();
+      completionObservation = completionData.conclusionObservation.trim();
     }
 
     final now = DateTime.now();
@@ -2956,7 +3169,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       report:
           'Conclusão registrada em ${_formatDateTime(now)}.'
           '${serviceTime.isEmpty ? '' : ' Tempo de serviço: $serviceTime.'}'
-          '${selected.installationNotes.trim().isEmpty ? '' : ' Observações: ${selected.installationNotes.trim()}'}',
+          '${completionObservation.isEmpty ? '' : ' Observação conclusão OS: $completionObservation'}',
     );
     final returnedToEstimatingOrder = selected.copyWith(
       currentStage: WorkflowStage.estimating,
@@ -2967,6 +3180,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
         ? selected.copyWith(
             currentStage: WorkflowStage.estimating,
             installationWorkflowStatus: InstallationWorkflowStatus.done,
+            installationNotes: completionObservation,
             installationVisitHistory: [...updatedVisits, completionReport],
             progress: _effectiveOrderProgress(returnedToEstimatingOrder),
             nextAction: 'OS Realizada',
@@ -3201,7 +3415,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     if (order.isServiceOrder) {
       return switch (stage) {
         WorkflowStage.estimating => 'Emitir PDF da ordem de serviço',
-        WorkflowStage.finance => 'Confirmar aprovação do cliente',
+        WorkflowStage.finance => _serviceOrderFinanceNextAction(order),
         WorkflowStage.relationship =>
           'Definir destino final da ordem de serviço',
         WorkflowStage.engineering =>
@@ -3262,6 +3476,39 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     }
 
     return stage.checklist.first;
+  }
+
+  String _serviceOrderFinanceNextAction(WorkflowOrder order) {
+    if (!order.financeClientApproved ||
+        order.serviceOrderFinanceStatus ==
+            ServiceOrderFinanceStatus.waitingApproval) {
+      return 'Confirmar aprovação do cliente';
+    }
+    return switch (order.serviceOrderFinanceStatus) {
+      ServiceOrderFinanceStatus.waitingApproval =>
+        'Confirmar aprovação do cliente',
+      ServiceOrderFinanceStatus.approved =>
+        'Aguardar OS realizada do Orçamentista',
+      ServiceOrderFinanceStatus.concluded => 'Registrar pagamento da OS',
+      ServiceOrderFinanceStatus.paid => 'OS paga',
+    };
+  }
+
+  String _serviceOrderFinanceBlocker(WorkflowOrder order) {
+    if (!order.financeClientApproved ||
+        order.serviceOrderFinanceStatus ==
+            ServiceOrderFinanceStatus.waitingApproval) {
+      return 'Aguardando confirmação do cliente no Financeiro.';
+    }
+    return switch (order.serviceOrderFinanceStatus) {
+      ServiceOrderFinanceStatus.waitingApproval =>
+        'Aguardando confirmação do cliente no Financeiro.',
+      ServiceOrderFinanceStatus.approved =>
+        'Cliente aprovado. Aguardando retorno da OS realizada pelo Orçamentista.',
+      ServiceOrderFinanceStatus.concluded =>
+        'OS concluída no Orçamentista. Aguardando baixa do pagamento.',
+      ServiceOrderFinanceStatus.paid => 'Pagamento da OS registrado.',
+    };
   }
 
   String _assemblyWorkflowBlocker(
@@ -3795,11 +4042,13 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       serviceOrderFileName: '',
       serviceOrderFilePath: null,
       financeClientApproved: false,
+      serviceOrderFinanceStatus: ServiceOrderFinanceStatus.waitingApproval,
       installationWorkflowStatus: InstallationWorkflowStatus.waiting,
       installationScheduledAt: null,
       installationAssignedEmployeeEmails: const [],
       installationAssignedTeam: '',
       installationNotes: '',
+      estimatingWasEstimate: '',
       installationVisitHistory: const [],
       value: primaryOrder.value,
       commercialProposalNumber: primaryOrder.commercialProposalNumber,
@@ -3878,7 +4127,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
 
       if (!selected.isServiceOrder && !_hasEstimatingWorksheetData(selected)) {
         _showAppMessage(
-          'Preencha a lista de visitas e materiais no Orçamentista antes de avançar a etapa.',
+          'Preencha a lista de visitas, materiais e o campo de estimativa no Orçamentista antes de avançar a etapa.',
           isError: true,
         );
         return;
@@ -3894,6 +4143,159 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
         isError: true,
       );
       return;
+    }
+
+    if (selected.isServiceOrder &&
+        direction > 0 &&
+        selected.currentStage == WorkflowStage.estimating &&
+        selected.financeClientApproved &&
+        selected.installationWorkflowStatus ==
+            InstallationWorkflowStatus.done) {
+      final now = DateTime.now();
+      final actorLabel = _currentOrderOwnerLabel();
+      final previewOrder = selected.copyWith(
+        currentStage: WorkflowStage.finance,
+        serviceOrderFinanceStatus: ServiceOrderFinanceStatus.concluded,
+      );
+      final updatedOrder = selected.copyWith(
+        currentStage: WorkflowStage.finance,
+        serviceOrderFinanceStatus: ServiceOrderFinanceStatus.concluded,
+        owner: actorLabel,
+        stageOwners: _updatedStageOwnersForAction(
+          selected,
+          WorkflowStage.estimating,
+          actorLabel,
+        ),
+        progress: _effectiveOrderProgress(previewOrder),
+        nextAction: _serviceOrderFinanceNextAction(previewOrder),
+        blocker: _serviceOrderFinanceBlocker(previewOrder),
+        history: Map<WorkflowStage, String>.from(selected.history)
+          ..[WorkflowStage.estimating] =
+              'OS concluída enviada ao Financeiro em ${_formatDateTime(now)}'
+          ..[WorkflowStage.finance] =
+              'OS concluída recebida do Orçamentista em ${_formatDateTime(now)}',
+      );
+      final savedOrder = await _runBusyTask(
+        () => _repository.saveOrder(updatedOrder),
+        busyMessage: 'Enviando OS concluída ao Financeiro...',
+        successMessage: 'OS concluída enviada ao Financeiro.',
+        errorPrefix: 'Não foi possível enviar a OS concluída ao Financeiro',
+      );
+      if (savedOrder == null) {
+        return;
+      }
+      _mergeOrderLocally(savedOrder);
+      setState(() {
+        _selectedViewKey = 'stage:${WorkflowStage.finance.name}';
+        _stageWorkspaceSubtabs[WorkflowStage.finance] = 0;
+        _selectedOrderCode = savedOrder.code;
+      });
+      return;
+    }
+
+    if (selected.isServiceOrder &&
+        selected.currentStage == WorkflowStage.finance &&
+        selected.financeClientApproved) {
+      if (direction > 0 &&
+          selected.serviceOrderFinanceStatus ==
+              ServiceOrderFinanceStatus.concluded) {
+        final now = DateTime.now();
+        final previewOrder = selected.copyWith(
+          serviceOrderFinanceStatus: ServiceOrderFinanceStatus.paid,
+        );
+        final updatedOrder = selected.copyWith(
+          serviceOrderFinanceStatus: ServiceOrderFinanceStatus.paid,
+          progress: _effectiveOrderProgress(previewOrder),
+          nextAction: _serviceOrderFinanceNextAction(previewOrder),
+          blocker: _serviceOrderFinanceBlocker(previewOrder),
+          history: Map<WorkflowStage, String>.from(selected.history)
+            ..[WorkflowStage.finance] =
+                'Pagamento da OS registrado em ${_formatDateTime(now)}',
+        );
+        final savedOrder = await _runBusyTask(
+          () => _repository.saveOrder(updatedOrder),
+          busyMessage: 'Registrando pagamento da OS...',
+          successMessage: 'OS marcada como paga.',
+          errorPrefix: 'Não foi possível registrar o pagamento da OS',
+        );
+        if (savedOrder != null) {
+          _mergeOrderLocally(savedOrder);
+        }
+        return;
+      }
+
+      if (direction < 0 &&
+          selected.serviceOrderFinanceStatus ==
+              ServiceOrderFinanceStatus.paid) {
+        final now = DateTime.now();
+        final previewOrder = selected.copyWith(
+          serviceOrderFinanceStatus: ServiceOrderFinanceStatus.concluded,
+        );
+        final updatedOrder = selected.copyWith(
+          serviceOrderFinanceStatus: ServiceOrderFinanceStatus.concluded,
+          progress: _effectiveOrderProgress(previewOrder),
+          nextAction: _serviceOrderFinanceNextAction(previewOrder),
+          blocker: _serviceOrderFinanceBlocker(previewOrder),
+          history: Map<WorkflowStage, String>.from(selected.history)
+            ..[WorkflowStage.finance] =
+                'Pagamento da OS reaberto em ${_formatDateTime(now)}',
+        );
+        final savedOrder = await _runBusyTask(
+          () => _repository.saveOrder(updatedOrder),
+          busyMessage: 'Reabrindo pagamento da OS...',
+          successMessage: 'OS retornada para concluída.',
+          errorPrefix: 'Não foi possível reabrir o pagamento da OS',
+        );
+        if (savedOrder != null) {
+          _mergeOrderLocally(savedOrder);
+        }
+        return;
+      }
+
+      if (direction < 0 &&
+          selected.serviceOrderFinanceStatus ==
+              ServiceOrderFinanceStatus.concluded) {
+        final now = DateTime.now();
+        final actorLabel = _currentOrderOwnerLabel();
+        final previewOrder = selected.copyWith(
+          currentStage: WorkflowStage.estimating,
+          serviceOrderFinanceStatus: ServiceOrderFinanceStatus.approved,
+        );
+        final updatedOrder = selected.copyWith(
+          currentStage: WorkflowStage.estimating,
+          serviceOrderFinanceStatus: ServiceOrderFinanceStatus.approved,
+          owner: actorLabel,
+          stageOwners: _updatedStageOwnersForAction(
+            selected,
+            WorkflowStage.finance,
+            actorLabel,
+          ),
+          progress: _effectiveOrderProgress(previewOrder),
+          nextAction: 'OS Realizada',
+          blocker: 'OS retornada ao Orçamentista para ajuste final.',
+          history: Map<WorkflowStage, String>.from(selected.history)
+            ..[WorkflowStage.finance] =
+                'OS concluída reaberta em ${_formatDateTime(now)}'
+            ..[WorkflowStage.estimating] =
+                'OS realizada reaberta no Orçamentista em ${_formatDateTime(now)}',
+        );
+        final savedOrder = await _runBusyTask(
+          () => _repository.saveOrder(updatedOrder),
+          busyMessage: 'Retornando OS ao Orçamentista...',
+          successMessage: 'OS retornada ao Orçamentista.',
+          errorPrefix: 'Não foi possível retornar a OS ao Orçamentista',
+        );
+        if (savedOrder == null) {
+          return;
+        }
+        _mergeOrderLocally(savedOrder);
+        setState(() {
+          _selectedViewKey = 'stage:${WorkflowStage.estimating.name}';
+          _stageWorkspaceSubtabs[WorkflowStage.estimating] = 0;
+          _selectedOrderCode = savedOrder.code;
+        });
+        return;
+      }
     }
 
     if (direction > 0 && selected.currentStage == WorkflowStage.engineering) {
@@ -4341,6 +4743,76 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     );
   }
 
+  Future<void> _setEstimatingWasEstimateForSelectedOrder() async {
+    final selected = _selectedOrder;
+    if (selected == null) {
+      return;
+    }
+
+    String? value = selected.estimatingWasEstimate.trim().isEmpty
+        ? null
+        : selected.estimatingWasEstimate.trim();
+    final chosenValue = await showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setModalState) => AlertDialog(
+          title: const Text('Foi estimativa?'),
+          content: DropdownButtonFormField<String>(
+            initialValue: value,
+            decoration: const InputDecoration(
+              labelText: 'Estimativa',
+              border: OutlineInputBorder(),
+            ),
+            items: const [
+              DropdownMenuItem(value: 'Sim', child: Text('Sim')),
+              DropdownMenuItem(value: 'Não', child: Text('Não')),
+            ],
+            onChanged: (newValue) {
+              setModalState(() {
+                value = newValue;
+              });
+            },
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Cancelar'),
+            ),
+            FilledButton(
+              onPressed: value == null
+                  ? null
+                  : () => Navigator.of(context).pop(value),
+              child: const Text('Salvar'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (chosenValue == null) {
+      return;
+    }
+
+    final now = DateTime.now();
+    final updatedOrder = selected.copyWith(
+      estimatingWasEstimate: chosenValue,
+      history: Map<WorkflowStage, String>.from(selected.history)
+        ..[WorkflowStage.estimating] =
+            'Estimativa definida como $chosenValue em ${_formatDateTime(now)}',
+    );
+    final savedOrder = await _runBusyTask(
+      () => _repository.saveOrder(updatedOrder),
+      busyMessage: 'Salvando estimativa...',
+      successMessage: 'Estimativa atualizada.',
+      errorPrefix: 'Não foi possível salvar a estimativa',
+    );
+    if (savedOrder == null) {
+      return;
+    }
+
+    _mergeOrderLocally(savedOrder);
+  }
+
   Future<void> _attachConsolidatedProposalToSelectedOrder() async {
     await _attachFileToSelectedOrder(
       logAction: 'Anexou proposta consolidada',
@@ -4478,6 +4950,9 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       return;
     }
     final task = engineeringChecklistTasks[taskIndex];
+    final updatedSchedules = Map<String, EngineeringTaskSchedule>.from(
+      selected.engineeringActivitySchedules,
+    );
     if (status == EngineeringChecklistStatus.done) {
       updatedStatuses[taskKey] = EngineeringChecklistStatus.done;
     } else {
@@ -4491,11 +4966,27 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       }
     }
     final flowSnapshot = _engineeringFlowSnapshotFromStatuses(updatedStatuses);
+    EngineeringTaskSchedule? scheduledTarget;
+    if (status == EngineeringChecklistStatus.done &&
+        !flowSnapshot.isComplete &&
+        flowSnapshot.currentTask != null &&
+        flowSnapshot.currentTask!.supportsScheduling) {
+      scheduledTarget = await _pickEngineeringActivitySchedule(
+        selected,
+        flowSnapshot.currentTask!.key,
+      );
+      if (scheduledTarget == null) {
+        return;
+      }
+      updatedSchedules[flowSnapshot.currentTask!.key] = scheduledTarget;
+    }
     final now = DateTime.now();
     final actorLabel = _currentOrderOwnerLabel();
     final historyMessage = status == EngineeringChecklistStatus.done
         ? flowSnapshot.isComplete
               ? 'Kanban da engenharia concluído em ${_formatDateTime(now)}'
+              : scheduledTarget != null
+              ? '${flowSnapshot.currentTask!.label} agendada para ${_formatDateTime(scheduledTarget.scheduledAt)}'
               : '${task.label} concluída. Próxima etapa: ${flowSnapshot.currentTask!.label}'
         : '${task.label} reaberta em ${_formatDateTime(now)}';
     final nextStage = flowSnapshot.isComplete
@@ -4507,6 +4998,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     final previewOrder = selected.copyWith(
       currentStage: nextStage,
       engineeringChecklistStatuses: updatedStatuses,
+      engineeringActivitySchedules: updatedSchedules,
       assemblyWorkflowStatus: nextAssemblyStatus,
       assemblyAssignedEmployeeEmails: flowSnapshot.isComplete
           ? const <String>[]
@@ -4521,6 +5013,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     final updatedOrder = selected.copyWith(
       currentStage: nextStage,
       engineeringChecklistStatuses: updatedStatuses,
+      engineeringActivitySchedules: updatedSchedules,
       assemblyWorkflowStatus: nextAssemblyStatus,
       assemblyAssignedEmployeeEmails: flowSnapshot.isComplete
           ? const <String>[]
@@ -4933,11 +5426,19 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     final updatedOrder = selected.copyWith(
       currentStage: targetStage,
       financeClientApproved: approved,
+      serviceOrderFinanceStatus: approved
+          ? ServiceOrderFinanceStatus.approved
+          : ServiceOrderFinanceStatus.waitingApproval,
       nextAction: approved
           ? 'Retornar ao Relacionamento para encaminhamento'
           : 'Aguardar aprovação do cliente',
       blocker: approved
-          ? 'Sem bloqueio. Cliente aprovado no Financeiro.'
+          ? _serviceOrderFinanceBlocker(
+              selected.copyWith(
+                financeClientApproved: true,
+                serviceOrderFinanceStatus: ServiceOrderFinanceStatus.approved,
+              ),
+            )
           : 'Aguardando confirmação do cliente no Financeiro.',
       owner: approved ? actorLabel : selected.owner,
       stageOwners: approved
@@ -8970,6 +9471,7 @@ class _StageWorkspaceSection extends StatelessWidget {
     required this.onSendToAssembly,
     required this.onSendToInstallation,
     this.onAttachMaterials,
+    this.onSetEstimatingWasEstimate,
     this.onAttachElectricalProject,
     this.onAttachPanelLayout,
     this.onAttachPushButtonTable,
@@ -9027,6 +9529,7 @@ class _StageWorkspaceSection extends StatelessWidget {
   final Future<void> Function() onSendToAssembly;
   final Future<void> Function() onSendToInstallation;
   final Future<void> Function()? onAttachMaterials;
+  final Future<void> Function()? onSetEstimatingWasEstimate;
   final Future<void> Function()? onAttachElectricalProject;
   final Future<void> Function()? onAttachPanelLayout;
   final Future<void> Function()? onAttachPushButtonTable;
@@ -9315,26 +9818,71 @@ class _StageWorkspaceSection extends StatelessWidget {
             _OrdersKanbanColumnData(
               title: 'Aguardando aprovação',
               subtitle:
-                  '${currentKanbanOrders.where((order) => order.isServiceOrder && !order.financeClientApproved).length} ordens de serviço',
+                  '${relationshipServiceOrderSource.where((order) => order.isServiceOrder && (!order.financeClientApproved || order.serviceOrderFinanceStatus == ServiceOrderFinanceStatus.waitingApproval)).length} ordens de serviço',
               accent: const Color(0xFFB45309),
               icon: Icons.hourglass_bottom_rounded,
               emptyMessage:
                   'Nenhuma ordem de serviço aguardando aprovação no Financeiro.',
-              orders: currentKanbanOrders
+              orders: relationshipServiceOrderSource
                   .where(
                     (order) =>
-                        order.isServiceOrder && !order.financeClientApproved,
+                        order.isServiceOrder &&
+                        (!order.financeClientApproved ||
+                            order.serviceOrderFinanceStatus ==
+                                ServiceOrderFinanceStatus.waitingApproval),
                   )
                   .toList(growable: false),
             ),
             _OrdersKanbanColumnData(
               title: 'Aprovadas',
               subtitle:
-                  '${financeApprovedServiceOrdersHistory.length} ordens de serviço',
+                  '${relationshipServiceOrderSource.where((order) => order.isServiceOrder && order.financeClientApproved && order.serviceOrderFinanceStatus == ServiceOrderFinanceStatus.approved).length} ordens de serviço',
               accent: const Color(0xFF15803D),
               icon: Icons.task_alt_rounded,
               emptyMessage: 'Nenhuma ordem de serviço aprovada no Financeiro.',
-              orders: financeApprovedServiceOrdersHistory,
+              orders: relationshipServiceOrderSource
+                  .where(
+                    (order) =>
+                        order.isServiceOrder &&
+                        order.financeClientApproved &&
+                        order.serviceOrderFinanceStatus ==
+                            ServiceOrderFinanceStatus.approved,
+                  )
+                  .toList(growable: false),
+            ),
+            _OrdersKanbanColumnData(
+              title: 'OS Concluída',
+              subtitle:
+                  '${relationshipServiceOrderSource.where((order) => order.isServiceOrder && order.financeClientApproved && order.serviceOrderFinanceStatus == ServiceOrderFinanceStatus.concluded).length} ordens de serviço',
+              accent: const Color(0xFF2563EB),
+              icon: Icons.assignment_turned_in_outlined,
+              emptyMessage: 'Nenhuma ordem de serviço concluída no Financeiro.',
+              orders: relationshipServiceOrderSource
+                  .where(
+                    (order) =>
+                        order.isServiceOrder &&
+                        order.financeClientApproved &&
+                        order.serviceOrderFinanceStatus ==
+                            ServiceOrderFinanceStatus.concluded,
+                  )
+                  .toList(growable: false),
+            ),
+            _OrdersKanbanColumnData(
+              title: 'OS Paga',
+              subtitle:
+                  '${relationshipServiceOrderSource.where((order) => order.isServiceOrder && order.financeClientApproved && order.serviceOrderFinanceStatus == ServiceOrderFinanceStatus.paid).length} ordens de serviço',
+              accent: const Color(0xFF0F766E),
+              icon: Icons.paid_outlined,
+              emptyMessage: 'Nenhuma ordem de serviço paga no Financeiro.',
+              orders: relationshipServiceOrderSource
+                  .where(
+                    (order) =>
+                        order.isServiceOrder &&
+                        order.financeClientApproved &&
+                        order.serviceOrderFinanceStatus ==
+                            ServiceOrderFinanceStatus.paid,
+                  )
+                  .toList(growable: false),
             ),
           ]
         : const <_OrdersKanbanColumnData>[];
@@ -9361,18 +9909,23 @@ class _StageWorkspaceSection extends StatelessWidget {
             _OrdersKanbanColumnData(
               title: 'Enviado ao Financeiro',
               subtitle:
-                  '${relationshipServiceOrderSource.where((order) => order.currentStage == WorkflowStage.finance).length} ordens de serviço',
+                  '${relationshipServiceOrderSource.where((order) => order.currentStage == WorkflowStage.finance && order.serviceOrderFinanceStatus == ServiceOrderFinanceStatus.waitingApproval).length} ordens de serviço',
               accent: const Color(0xFF2563EB),
               icon: Icons.forward_to_inbox_outlined,
               emptyMessage: 'Nenhuma ordem de serviço enviada ao Financeiro.',
               orders: relationshipServiceOrderSource
-                  .where((order) => order.currentStage == WorkflowStage.finance)
+                  .where(
+                    (order) =>
+                        order.currentStage == WorkflowStage.finance &&
+                        order.serviceOrderFinanceStatus ==
+                            ServiceOrderFinanceStatus.waitingApproval,
+                  )
                   .toList(growable: false),
             ),
             _OrdersKanbanColumnData(
               title: 'OS Realizada',
               subtitle:
-                  '${relationshipServiceOrderSource.where((order) => order.financeClientApproved && order.currentStage == WorkflowStage.relationship).length} ordens de serviço',
+                  '${relationshipServiceOrderSource.where((order) => order.financeClientApproved && order.currentStage == WorkflowStage.estimating && order.serviceOrderFinanceStatus == ServiceOrderFinanceStatus.approved).length} ordens de serviço',
               accent: const Color(0xFF15803D),
               icon: Icons.verified_outlined,
               emptyMessage:
@@ -9381,14 +9934,16 @@ class _StageWorkspaceSection extends StatelessWidget {
                   .where(
                     (order) =>
                         order.financeClientApproved &&
-                        order.currentStage == WorkflowStage.estimating,
+                        order.currentStage == WorkflowStage.estimating &&
+                        order.serviceOrderFinanceStatus ==
+                            ServiceOrderFinanceStatus.approved,
                   )
                   .toList(growable: false),
             ),
             _OrdersKanbanColumnData(
               title: 'Concluido',
               subtitle:
-                  '${relationshipServiceOrderSource.where((order) => order.financeClientApproved && workflowStages.indexOf(order.currentStage) > workflowStages.indexOf(WorkflowStage.estimating)).length} ordens de serviço',
+                  '${relationshipServiceOrderSource.where((order) => order.financeClientApproved && (order.serviceOrderFinanceStatus == ServiceOrderFinanceStatus.concluded || order.serviceOrderFinanceStatus == ServiceOrderFinanceStatus.paid)).length} ordens de serviço',
               accent: const Color(0xFF2563EB),
               icon: Icons.task_alt_rounded,
               emptyMessage:
@@ -9397,8 +9952,10 @@ class _StageWorkspaceSection extends StatelessWidget {
                   .where(
                     (order) =>
                         order.financeClientApproved &&
-                        workflowStages.indexOf(order.currentStage) >
-                            workflowStages.indexOf(WorkflowStage.estimating),
+                        (order.serviceOrderFinanceStatus ==
+                                ServiceOrderFinanceStatus.concluded ||
+                            order.serviceOrderFinanceStatus ==
+                                ServiceOrderFinanceStatus.paid),
                   )
                   .toList(growable: false),
             ),
@@ -9441,7 +9998,7 @@ class _StageWorkspaceSection extends StatelessWidget {
             _OrdersKanbanColumnData(
               title: 'OS Concluídas',
               subtitle:
-                  '${relationshipServiceOrderSource.where((order) => order.financeClientApproved && workflowStages.indexOf(order.currentStage) > workflowStages.indexOf(WorkflowStage.relationship)).length} ordens de serviço',
+                  '${relationshipServiceOrderSource.where((order) => order.financeClientApproved && (workflowStages.indexOf(order.currentStage) > workflowStages.indexOf(WorkflowStage.relationship) || order.serviceOrderFinanceStatus == ServiceOrderFinanceStatus.concluded || order.serviceOrderFinanceStatus == ServiceOrderFinanceStatus.paid)).length} ordens de serviço',
               accent: const Color(0xFF2563EB),
               icon: Icons.task_alt_rounded,
               emptyMessage: 'Nenhuma OS concluída no Relacionamento.',
@@ -9449,8 +10006,14 @@ class _StageWorkspaceSection extends StatelessWidget {
                   .where(
                     (order) =>
                         order.financeClientApproved &&
-                        workflowStages.indexOf(order.currentStage) >
-                            workflowStages.indexOf(WorkflowStage.relationship),
+                        (workflowStages.indexOf(order.currentStage) >
+                                workflowStages.indexOf(
+                                  WorkflowStage.relationship,
+                                ) ||
+                            order.serviceOrderFinanceStatus ==
+                                ServiceOrderFinanceStatus.concluded ||
+                            order.serviceOrderFinanceStatus ==
+                                ServiceOrderFinanceStatus.paid),
                   )
                   .toList(growable: false),
             ),
@@ -10905,6 +11468,7 @@ class _OrderDetailsScreen extends StatefulWidget {
     required this.onSendToInstallation,
     this.openConversationOnLoad = false,
     this.onAttachMaterials,
+    this.onSetEstimatingWasEstimate,
     this.onAttachElectricalProject,
     this.onAttachPanelLayout,
     this.onAttachPushButtonTable,
@@ -10943,6 +11507,7 @@ class _OrderDetailsScreen extends StatefulWidget {
   final Future<void> Function() onSendToInstallation;
   final bool openConversationOnLoad;
   final Future<void> Function()? onAttachMaterials;
+  final Future<void> Function()? onSetEstimatingWasEstimate;
   final Future<void> Function()? onAttachElectricalProject;
   final Future<void> Function()? onAttachPanelLayout;
   final Future<void> Function()? onAttachPushButtonTable;
@@ -11137,6 +11702,10 @@ class _OrderDetailsScreenState extends State<_OrderDetailsScreen> {
                 onAttachMaterials: widget.onAttachMaterials == null
                     ? null
                     : () => _runAndRefresh(widget.onAttachMaterials),
+                onSetEstimatingWasEstimate:
+                    widget.onSetEstimatingWasEstimate == null
+                    ? null
+                    : () => _runAndRefresh(widget.onSetEstimatingWasEstimate),
                 onAttachElectricalProject:
                     widget.onAttachElectricalProject == null
                     ? null
@@ -11278,6 +11847,7 @@ class _OrderDetailsPanel extends StatelessWidget {
     this.unreadConversationCount = 0,
     this.showEngineeringChecklist = false,
     this.onAttachMaterials,
+    this.onSetEstimatingWasEstimate,
     this.onAttachElectricalProject,
     this.onAttachPanelLayout,
     this.onAttachPushButtonTable,
@@ -11312,6 +11882,7 @@ class _OrderDetailsPanel extends StatelessWidget {
   final int unreadConversationCount;
   final bool showEngineeringChecklist;
   final Future<void> Function()? onAttachMaterials;
+  final Future<void> Function()? onSetEstimatingWasEstimate;
   final Future<void> Function()? onAttachElectricalProject;
   final Future<void> Function()? onAttachPanelLayout;
   final Future<void> Function()? onAttachPushButtonTable;
@@ -11420,6 +11991,7 @@ class _OrderDetailsPanel extends StatelessWidget {
     final canEditEngineeringSection = showFlowActions && isEngineeringStage;
     final showFinanceContractSection =
         !isServiceOrder &&
+        !isEngineeringStage &&
         !isRelationshipStage &&
         (isFinanceStage ||
             hasPassedFinance ||
@@ -11427,12 +11999,17 @@ class _OrderDetailsPanel extends StatelessWidget {
             order!.financeContractStatuses.isNotEmpty);
     final showRelationshipSection =
         !isServiceOrder &&
+        !isEngineeringStage &&
         (isRelationshipStage ||
             hasPassedRelationship ||
             order!.relationshipKanbanStatuses.isNotEmpty);
     final showEditOrderAction =
         onEditOrder != null &&
         order!.currentStage == WorkflowStage.customerRegistration;
+    final canSetEstimatingWasEstimate =
+        showFlowActions &&
+        isEstimatingStage &&
+        onSetEstimatingWasEstimate != null;
     final assemblyChecklistSection = !hasReachedAssembly
         ? null
         : _CollapsibleDetailSection(
@@ -11458,7 +12035,9 @@ class _OrderDetailsPanel extends StatelessWidget {
             (isServiceOrder ? hasServiceOrderPdf : hasMaterialsFile)) &&
         (!isFinanceStage ||
             (isServiceOrder
-                ? order!.financeClientApproved
+                ? (order!.financeClientApproved &&
+                      order!.serviceOrderFinanceStatus !=
+                          ServiceOrderFinanceStatus.paid)
                 : financeContractFlow.isComplete));
     const headerActionSpacing = 6.0;
     const headerActionPanelPadding = 4.0;
@@ -11593,6 +12172,14 @@ class _OrderDetailsPanel extends StatelessWidget {
                     InstallationWorkflowStatus.scheduled => 'Iniciar visita',
                     InstallationWorkflowStatus.doing => 'Concluir/retorno',
                     InstallationWorkflowStatus.done => 'Concluído',
+                  }
+                : isFinanceStage && isServiceOrder
+                ? switch (order!.serviceOrderFinanceStatus) {
+                    ServiceOrderFinanceStatus.waitingApproval =>
+                      'Aguardar aprovação',
+                    ServiceOrderFinanceStatus.approved => 'Avançar',
+                    ServiceOrderFinanceStatus.concluded => 'Marcar como paga',
+                    ServiceOrderFinanceStatus.paid => 'Concluído',
                   }
                 : 'Avançar',
           ),
@@ -11841,6 +12428,56 @@ class _OrderDetailsPanel extends StatelessWidget {
                   ),
                 ],
               ],
+            ),
+          );
+    final showEstimatingMetaSection =
+        !isServiceOrder && (isEstimatingStage || isEngineeringStage);
+    final estimatingMetaSection = !showEstimatingMetaSection
+        ? null
+        : _CollapsibleDetailSection(
+            title: 'Estimativa',
+            subtitle: isEstimatingStage
+                ? 'Campo obrigatório do Orçamentista, compartilhado com a Engenharia.'
+                : 'Informação compartilhada pelo Orçamentista para a Engenharia.',
+            initiallyExpanded: isEstimatingStage,
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(18),
+                border: Border.all(color: const Color(0xFFDCE5E1)),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  Expanded(
+                    child: _InfoRow(
+                      label: 'Foi estimativa?',
+                      value: order!.estimatingWasEstimate.trim().isEmpty
+                          ? 'Não informado'
+                          : order!.estimatingWasEstimate,
+                      emphasizeValue: order!.estimatingWasEstimate
+                          .trim()
+                          .isNotEmpty,
+                    ),
+                  ),
+                  if (canSetEstimatingWasEstimate) ...[
+                    const SizedBox(width: 12),
+                    OutlinedButton.icon(
+                      onPressed: () async {
+                        await onSetEstimatingWasEstimate!();
+                      },
+                      icon: const Icon(Icons.rule_folder_outlined),
+                      label: Text(
+                        order!.estimatingWasEstimate.trim().isEmpty
+                            ? 'Definir'
+                            : 'Editar',
+                      ),
+                    ),
+                  ],
+                ],
+              ),
             ),
           );
     final estimatingSection = isServiceOrder
@@ -12095,51 +12732,103 @@ class _OrderDetailsPanel extends StatelessWidget {
             initiallyExpanded: false,
             child: _StageOwnersSection(owners: stageOwners, showHeader: false),
           );
+    final serviceOrderFlowIndex = isServiceOrder
+        ? _serviceOrderFlowStageIndex(order!)
+        : -1;
     final flowSection = showFlowActions
         ? _CollapsibleDetailSection(
             title: 'Passagem do fluxo',
-            subtitle: 'Histórico das etapas concluídas neste pedido.',
+            subtitle: isServiceOrder
+                ? 'Histórico das etapas da ordem de serviço até a baixa financeira.'
+                : 'Histórico das etapas concluídas neste pedido.',
             initiallyExpanded: false,
             child: Wrap(
               spacing: 10,
               runSpacing: 10,
-              children: workflowStages
-                  .map((stage) {
-                    final isPast = workflowStages.indexOf(stage) <= stageIndex;
-                    return Container(
-                      width: 152,
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: isPast
-                            ? stage.color.withValues(alpha: 0.12)
-                            : subtleSurfaceColor,
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(
-                          color: isPast ? stage.color : subtleBorderColor,
-                        ),
-                      ),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Icon(stage.icon, color: stage.color),
-                          const SizedBox(height: 8),
-                          Text(
-                            stage.title,
-                            style: const TextStyle(fontWeight: FontWeight.w700),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            order!.history[stage] ?? 'Aguardando etapa',
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: secondaryTextColor,
+              children: isServiceOrder
+                  ? _serviceOrderFlowSteps
+                        .asMap()
+                        .entries
+                        .map((entry) {
+                          final stepIndex = entry.key;
+                          final step = entry.value;
+                          final isPast = stepIndex <= serviceOrderFlowIndex;
+                          return Container(
+                            width: 152,
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: isPast
+                                  ? step.color.withValues(alpha: 0.12)
+                                  : subtleSurfaceColor,
+                              borderRadius: BorderRadius.circular(16),
+                              border: Border.all(
+                                color: isPast ? step.color : subtleBorderColor,
+                              ),
                             ),
-                          ),
-                        ],
-                      ),
-                    );
-                  })
-                  .toList(growable: false),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Icon(step.icon, color: step.color),
+                                const SizedBox(height: 8),
+                                Text(
+                                  step.label,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  _serviceOrderFlowHistory(order!, stepIndex),
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: secondaryTextColor,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        })
+                        .toList(growable: false)
+                  : workflowStages
+                        .map((stage) {
+                          final isPast =
+                              workflowStages.indexOf(stage) <= stageIndex;
+                          return Container(
+                            width: 152,
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: isPast
+                                  ? stage.color.withValues(alpha: 0.12)
+                                  : subtleSurfaceColor,
+                              borderRadius: BorderRadius.circular(16),
+                              border: Border.all(
+                                color: isPast ? stage.color : subtleBorderColor,
+                              ),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Icon(stage.icon, color: stage.color),
+                                const SizedBox(height: 8),
+                                Text(
+                                  stage.title,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w700,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  order!.history[stage] ?? 'Aguardando etapa',
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    color: secondaryTextColor,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        })
+                        .toList(growable: false),
             ),
           )
         : null;
@@ -12165,6 +12854,10 @@ class _OrderDetailsPanel extends StatelessWidget {
           if (relationshipSection != null) ...[
             const SizedBox(height: 12),
             relationshipSection,
+          ],
+          if (estimatingMetaSection != null) ...[
+            const SizedBox(height: 12),
+            estimatingMetaSection,
           ],
           if (financeContractSection != null) ...[
             const SizedBox(height: 12),
@@ -12238,6 +12931,27 @@ class _ServiceOrderSummaryCard extends StatelessWidget {
     final approvalColor = order.financeClientApproved
         ? const Color(0xFF15803D)
         : const Color(0xFFB45309);
+    String? latestServiceTime() {
+      for (
+        var index = order.installationVisitHistory.length - 1;
+        index >= 0;
+        index--
+      ) {
+        final serviceTime = order.installationVisitHistory[index].serviceTime
+            .trim();
+        if (serviceTime.isNotEmpty) {
+          return serviceTime;
+        }
+      }
+      return null;
+    }
+
+    final serviceTime = order.isServiceOrder ? latestServiceTime() : null;
+    final openingObservation = order.serviceDescription.trim();
+    final completionObservation =
+        order.installationWorkflowStatus == InstallationWorkflowStatus.done
+        ? order.installationNotes.trim()
+        : '';
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -12352,6 +13066,31 @@ class _ServiceOrderSummaryCard extends StatelessWidget {
                       value: order.nextAction,
                     ),
                   ),
+                  SizedBox(
+                    width: itemWidth,
+                    child: _InfoRow(
+                      label: 'Observação para abertura de OS',
+                      value: openingObservation.isEmpty
+                          ? 'Não informado'
+                          : openingObservation,
+                    ),
+                  ),
+                  if (order.isServiceOrder)
+                    SizedBox(
+                      width: itemWidth,
+                      child: _InfoRow(
+                        label: 'Tempo de serviço',
+                        value: serviceTime ?? 'Não informado',
+                      ),
+                    ),
+                  if (completionObservation.isNotEmpty)
+                    SizedBox(
+                      width: itemWidth,
+                      child: _InfoRow(
+                        label: 'Observação conclusão OS',
+                        value: completionObservation,
+                      ),
+                    ),
                   SizedBox(
                     width: itemWidth,
                     child: Container(
@@ -12643,6 +13382,7 @@ class _OrderCard extends StatelessWidget {
         : _proposalBadgeLabel(order);
     final displayCode = _displayOrderCode(order, allOrders);
     final effectiveProgress = _effectiveOrderProgress(order);
+    final visitProgressLabel = _visitProgressLabelForOrder(order);
 
     return InkWell(
       onTap: onTap,
@@ -12744,6 +13484,28 @@ class _OrderCard extends StatelessWidget {
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
             ),
+            if (visitProgressLabel != null) ...[
+              const SizedBox(height: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 6,
+                ),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFDBEAFE),
+                  borderRadius: BorderRadius.circular(999),
+                  border: Border.all(color: const Color(0xFF93C5FD)),
+                ),
+                child: Text(
+                  visitProgressLabel,
+                  style: const TextStyle(
+                    color: Color(0xFF1D4ED8),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+            ],
             if (assemblyProfiles.isNotEmpty &&
                 order.currentStage != WorkflowStage.installation) ...[
               const SizedBox(height: 8),
@@ -14317,7 +15079,7 @@ class _KanbanScrollBehavior extends MaterialScrollBehavior {
   };
 }
 
-class _StageOrdersKanbanColumn extends StatelessWidget {
+class _StageOrdersKanbanColumn extends StatefulWidget {
   const _StageOrdersKanbanColumn({
     required this.column,
     required this.allOrders,
@@ -14364,34 +15126,53 @@ class _StageOrdersKanbanColumn extends StatelessWidget {
   final ValueChanged<Offset>? onEngineeringCardDragUpdate;
 
   @override
+  State<_StageOrdersKanbanColumn> createState() =>
+      _StageOrdersKanbanColumnState();
+}
+
+class _StageOrdersKanbanColumnState extends State<_StageOrdersKanbanColumn> {
+  bool _isExpanded = false;
+
+  @override
   Widget build(BuildContext context) {
     final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    final column = widget.column;
+    final allOrders = widget.allOrders;
+    final selectedOrderCode = widget.selectedOrderCode;
+    final onOrderSelected = widget.onOrderSelected;
+    final onOpenOrderConversation = widget.onOpenOrderConversation;
+    final workspaceProfiles = widget.workspaceProfiles;
+    final onEngineeringCardDragUpdate = widget.onEngineeringCardDragUpdate;
     final acceptsAssemblyDrop =
-        onMoveAssemblyKanbanOrder != null &&
+        widget.onMoveAssemblyKanbanOrder != null &&
         column.assemblyTargetStatus != null;
     final acceptsEngineeringDrop =
-        onMoveEngineeringKanbanOrder != null &&
+        widget.onMoveEngineeringKanbanOrder != null &&
         (column.engineeringTargetTaskKey != null ||
             column.isEngineeringCompletionTarget);
     final acceptsFinanceDrop =
-        onMoveFinanceKanbanOrder != null &&
+        widget.onMoveFinanceKanbanOrder != null &&
         (column.financeTargetTaskKey != null ||
             column.isFinanceCompletionTarget);
     final acceptsRelationshipDrop =
-        onMoveRelationshipKanbanOrder != null &&
+        widget.onMoveRelationshipKanbanOrder != null &&
         column.relationshipTargetTaskKey != null;
     final acceptsDrop =
         acceptsAssemblyDrop ||
         acceptsEngineeringDrop ||
         acceptsFinanceDrop ||
         acceptsRelationshipDrop;
+    final hasExpandableCards = column.orders.length > 2;
+    final visibleOrders = hasExpandableCards && !_isExpanded
+        ? column.orders.take(2).toList(growable: false)
+        : column.orders;
 
     return DragTarget<WorkflowOrder>(
       onWillAcceptWithDetails: acceptsDrop
           ? (details) {
               if (acceptsAssemblyDrop &&
                   details.data.currentStage == WorkflowStage.assembly) {
-                return canAcceptAssemblyKanbanDrop?.call(
+                return widget.canAcceptAssemblyKanbanDrop?.call(
                       details.data,
                       column.assemblyTargetStatus!,
                     ) ??
@@ -14399,7 +15180,7 @@ class _StageOrdersKanbanColumn extends StatelessWidget {
               }
               if (acceptsEngineeringDrop &&
                   details.data.currentStage == WorkflowStage.engineering) {
-                return canAcceptEngineeringKanbanDrop?.call(
+                return widget.canAcceptEngineeringKanbanDrop?.call(
                       details.data,
                       column.isEngineeringCompletionTarget
                           ? null
@@ -14409,7 +15190,7 @@ class _StageOrdersKanbanColumn extends StatelessWidget {
               }
               if (acceptsFinanceDrop &&
                   details.data.currentStage == WorkflowStage.finance) {
-                return canAcceptFinanceKanbanDrop?.call(
+                return widget.canAcceptFinanceKanbanDrop?.call(
                       details.data,
                       column.isFinanceCompletionTarget
                           ? null
@@ -14419,7 +15200,7 @@ class _StageOrdersKanbanColumn extends StatelessWidget {
               }
               if (acceptsRelationshipDrop &&
                   details.data.currentStage == WorkflowStage.relationship) {
-                return canAcceptRelationshipKanbanDrop?.call(
+                return widget.canAcceptRelationshipKanbanDrop?.call(
                       details.data,
                       column.relationshipTargetTaskKey!,
                     ) ??
@@ -14432,7 +15213,7 @@ class _StageOrdersKanbanColumn extends StatelessWidget {
           ? (details) async {
               if (acceptsAssemblyDrop &&
                   details.data.currentStage == WorkflowStage.assembly) {
-                await onMoveAssemblyKanbanOrder!(
+                await widget.onMoveAssemblyKanbanOrder!(
                   details.data,
                   column.assemblyTargetStatus!,
                 );
@@ -14440,7 +15221,7 @@ class _StageOrdersKanbanColumn extends StatelessWidget {
               }
               if (acceptsEngineeringDrop &&
                   details.data.currentStage == WorkflowStage.engineering) {
-                await onMoveEngineeringKanbanOrder!(
+                await widget.onMoveEngineeringKanbanOrder!(
                   details.data,
                   column.isEngineeringCompletionTarget
                       ? null
@@ -14450,7 +15231,7 @@ class _StageOrdersKanbanColumn extends StatelessWidget {
               }
               if (acceptsFinanceDrop &&
                   details.data.currentStage == WorkflowStage.finance) {
-                await onMoveFinanceKanbanOrder!(
+                await widget.onMoveFinanceKanbanOrder!(
                   details.data,
                   column.isFinanceCompletionTarget
                       ? null
@@ -14460,7 +15241,7 @@ class _StageOrdersKanbanColumn extends StatelessWidget {
               }
               if (acceptsRelationshipDrop &&
                   details.data.currentStage == WorkflowStage.relationship) {
-                await onMoveRelationshipKanbanOrder!(
+                await widget.onMoveRelationshipKanbanOrder!(
                   details.data,
                   column.relationshipTargetTaskKey!,
                 );
@@ -14577,7 +15358,7 @@ class _StageOrdersKanbanColumn extends StatelessWidget {
                   ),
                 )
               else
-                ...column.orders.map(
+                ...visibleOrders.map(
                   (order) => Padding(
                     padding: const EdgeInsets.only(bottom: 10),
                     child: acceptsDrop
@@ -14637,6 +15418,27 @@ class _StageOrdersKanbanColumn extends StatelessWidget {
                                 onOpenOrderConversation(order),
                             workspaceProfiles: workspaceProfiles,
                           ),
+                  ),
+                ),
+              if (hasExpandableCards)
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton.icon(
+                    onPressed: () {
+                      setState(() {
+                        _isExpanded = !_isExpanded;
+                      });
+                    },
+                    icon: Icon(
+                      _isExpanded
+                          ? Icons.unfold_less_rounded
+                          : Icons.unfold_more_rounded,
+                    ),
+                    label: Text(
+                      _isExpanded
+                          ? 'Mostrar menos'
+                          : 'Expandir mais ${column.orders.length - 2} cards',
+                    ),
                   ),
                 ),
             ],
@@ -15388,6 +16190,7 @@ class _OrderDetailsHero extends StatelessWidget {
     final stageColor = order.currentStage.color;
     final displayCode = _displayOrderCode(order, allOrders);
     final effectiveProgress = _effectiveOrderProgress(order);
+    final visitProgressLabel = _visitProgressLabelForOrder(order);
 
     return Container(
       padding: const EdgeInsets.all(14),
@@ -15433,6 +16236,12 @@ class _OrderDetailsHero extends StatelessWidget {
                     ? const Color(0xFFCBD5E1)
                     : const Color(0xFF475569),
               ),
+              if (visitProgressLabel != null)
+                _HeroMetaChip(
+                  icon: Icons.event_available_outlined,
+                  label: visitProgressLabel,
+                  color: Color(0xFF1D4ED8),
+                ),
             ],
           );
 

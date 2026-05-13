@@ -1166,6 +1166,31 @@ List<String> _pendingAssemblyExecutionChecklistItems(WorkflowOrder order) {
 }
 
 double _effectiveOrderProgress(WorkflowOrder order) {
+  if (order.isServiceOrder) {
+    final stepIndex = _serviceOrderFlowStageIndex(order);
+    final stepFraction = switch (stepIndex) {
+      0 => 0.70,
+      1 => 0.85,
+      2 => 0.75,
+      3 => switch (order.installationWorkflowStatus) {
+        InstallationWorkflowStatus.waiting => 0.15,
+        InstallationWorkflowStatus.scheduled => 0.35,
+        InstallationWorkflowStatus.doing => 0.70,
+        InstallationWorkflowStatus.done => 1.0,
+      },
+      4 => 0.75,
+      5 => 0.90,
+      6 => 1.0,
+      _ => 0.35,
+    };
+    final progress =
+        stepIndex == _serviceOrderFlowSteps.length - 1 &&
+            order.serviceOrderFinanceStatus == ServiceOrderFinanceStatus.paid
+        ? 1.0
+        : (stepIndex + stepFraction) / _serviceOrderFlowSteps.length;
+    return progress.clamp(0.02, 1);
+  }
+
   final stageIndex = workflowStages.indexOf(order.currentStage);
   if (stageIndex == -1) {
     return order.progress.clamp(0, 1);
@@ -1187,9 +1212,8 @@ double _stageProgressFraction(WorkflowOrder order) {
       order.isServiceOrder
           ? (order.financeClientApproved ? 0.85 : 0.40)
           : _financeContractProgressFraction(order),
-    WorkflowStage.relationship => order.isServiceOrder
-        ? 0.55
-        : _relationshipKanbanProgressFraction(order),
+    WorkflowStage.relationship =>
+      order.isServiceOrder ? 0.55 : _relationshipKanbanProgressFraction(order),
     WorkflowStage.engineering => _engineeringProgressFraction(order),
     WorkflowStage.assembly => switch (order.assemblyWorkflowStatus) {
       AssemblyWorkflowStatus.waiting => 0.05,
@@ -1685,7 +1709,8 @@ class _FinanceContractFlowTaskCard extends StatelessWidget {
                       fontWeight: FontWeight.w700,
                     ),
                   ),
-                  if (isEditable && taskState == _EngineeringFlowTaskState.current)
+                  if (isEditable &&
+                      taskState == _EngineeringFlowTaskState.current)
                     Padding(
                       padding: const EdgeInsets.only(top: 10),
                       child: OutlinedButton.icon(
@@ -1757,7 +1782,9 @@ class _FinanceContractFlowSnapshot {
 }
 
 _FinanceContractFlowSnapshot _financeContractFlowSnapshot(WorkflowOrder order) {
-  return _financeContractFlowSnapshotFromStatuses(order.financeContractStatuses);
+  return _financeContractFlowSnapshotFromStatuses(
+    order.financeContractStatuses,
+  );
 }
 
 _FinanceContractFlowSnapshot _financeContractFlowSnapshotFromStatuses(
@@ -1807,7 +1834,9 @@ class _EstimatingKanbanFlowSnapshot {
 _EstimatingKanbanFlowSnapshot _estimatingKanbanFlowSnapshot(
   WorkflowOrder order,
 ) {
-  return _estimatingKanbanFlowSnapshotFromStatuses(order.estimatingKanbanStatuses);
+  return _estimatingKanbanFlowSnapshotFromStatuses(
+    order.estimatingKanbanStatuses,
+  );
 }
 
 _EstimatingKanbanFlowSnapshot _estimatingKanbanFlowSnapshotFromStatuses(

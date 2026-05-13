@@ -685,7 +685,7 @@ class _ServiceOrderDialogState extends State<_ServiceOrderDialog> {
                         ),
                         const SizedBox(height: 4),
                         const Text(
-                          'Selecione o cliente, descreva o serviço e envie a OS para o Orçamentista.',
+                          'Selecione o cliente, informe a observação para abertura de OS e envie a OS para o Orçamentista.',
                           style: TextStyle(color: Colors.white70),
                         ),
                       ],
@@ -791,10 +791,10 @@ class _ServiceOrderDialogState extends State<_ServiceOrderDialog> {
                       const SizedBox(height: 16),
                       _DialogField(
                         controller: _serviceDescriptionController,
-                        label: 'Detalhes do serviço',
+                        label: 'Observação para abertura de OS',
                         validator: _requiredField,
                         hintText:
-                            'Descreva o escopo, materiais previstos, observações e contexto da OS.',
+                            'Descreva o escopo, materiais previstos e o contexto para abertura da OS.',
                         maxLines: 5,
                       ),
                       const SizedBox(height: 24),

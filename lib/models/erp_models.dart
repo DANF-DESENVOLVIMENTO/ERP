@@ -115,6 +115,17 @@ extension WorkflowOrderKindPresentation on WorkflowOrderKind {
   };
 }
 
+enum ServiceOrderFinanceStatus { waitingApproval, approved, concluded, paid }
+
+extension ServiceOrderFinanceStatusPresentation on ServiceOrderFinanceStatus {
+  String get title => switch (this) {
+    ServiceOrderFinanceStatus.waitingApproval => 'Aguardando aprovação',
+    ServiceOrderFinanceStatus.approved => 'Aprovadas',
+    ServiceOrderFinanceStatus.concluded => 'OS Concluída',
+    ServiceOrderFinanceStatus.paid => 'OS Paga',
+  };
+}
+
 class EngineeringChecklistTask {
   const EngineeringChecklistTask({
     required this.key,
@@ -195,14 +206,8 @@ class EstimatingKanbanTask {
 }
 
 const List<EstimatingKanbanTask> estimatingKanbanTasks = [
-  EstimatingKanbanTask(
-    key: 'waiting',
-    label: 'Aguardando',
-  ),
-  EstimatingKanbanTask(
-    key: 'doing',
-    label: 'Executando',
-  ),
+  EstimatingKanbanTask(key: 'waiting', label: 'Aguardando'),
+  EstimatingKanbanTask(key: 'doing', label: 'Executando'),
 ];
 
 class RelationshipKanbanTask {
@@ -213,22 +218,13 @@ class RelationshipKanbanTask {
 }
 
 const List<RelationshipKanbanTask> relationshipKanbanTasks = [
-  RelationshipKanbanTask(
-    key: 'in_progress',
-    label: 'Em Andamento',
-  ),
+  RelationshipKanbanTask(key: 'in_progress', label: 'Em Andamento'),
   RelationshipKanbanTask(
     key: 'create_omie_material_order',
     label: 'Criar Pedido Omie',
   ),
-  RelationshipKanbanTask(
-    key: 'update_worksheet',
-    label: 'Planilha de Obras',
-  ),
-  RelationshipKanbanTask(
-    key: 'create_whatsapp_group',
-    label: 'Grupo Whats',
-  ),
+  RelationshipKanbanTask(key: 'update_worksheet', label: 'Planilha de Obras'),
+  RelationshipKanbanTask(key: 'create_whatsapp_group', label: 'Grupo Whats'),
 ];
 
 class EngineeringTaskSchedule {
@@ -896,11 +892,13 @@ class WorkflowOrder {
     required this.serviceOrderFileName,
     this.serviceOrderFilePath,
     required this.financeClientApproved,
+    required this.serviceOrderFinanceStatus,
     required this.installationWorkflowStatus,
     this.installationScheduledAt,
     required this.installationAssignedEmployeeEmails,
     required this.installationAssignedTeam,
     required this.installationNotes,
+    required this.estimatingWasEstimate,
     required this.installationVisitHistory,
     required this.value,
     required this.commercialProposalNumber,
@@ -977,11 +975,13 @@ class WorkflowOrder {
   final String serviceOrderFileName;
   final String? serviceOrderFilePath;
   final bool financeClientApproved;
+  final ServiceOrderFinanceStatus serviceOrderFinanceStatus;
   final InstallationWorkflowStatus installationWorkflowStatus;
   final DateTime? installationScheduledAt;
   final List<String> installationAssignedEmployeeEmails;
   final String installationAssignedTeam;
   final String installationNotes;
+  final String estimatingWasEstimate;
   final List<InstallationVisitLog> installationVisitHistory;
   final double value;
   final String commercialProposalNumber;
@@ -1037,12 +1037,14 @@ class WorkflowOrder {
     String? serviceOrderFileName,
     String? serviceOrderFilePath,
     bool? financeClientApproved,
+    ServiceOrderFinanceStatus? serviceOrderFinanceStatus,
     InstallationWorkflowStatus? installationWorkflowStatus,
     DateTime? installationScheduledAt,
     bool clearInstallationScheduledAt = false,
     List<String>? installationAssignedEmployeeEmails,
     String? installationAssignedTeam,
     String? installationNotes,
+    String? estimatingWasEstimate,
     List<InstallationVisitLog>? installationVisitHistory,
     double? value,
     String? commercialProposalNumber,
@@ -1180,6 +1182,8 @@ class WorkflowOrder {
       serviceOrderFilePath: serviceOrderFilePath ?? this.serviceOrderFilePath,
       financeClientApproved:
           financeClientApproved ?? this.financeClientApproved,
+      serviceOrderFinanceStatus:
+          serviceOrderFinanceStatus ?? this.serviceOrderFinanceStatus,
       installationWorkflowStatus:
           installationWorkflowStatus ?? this.installationWorkflowStatus,
       installationScheduledAt: clearInstallationScheduledAt
@@ -1191,6 +1195,8 @@ class WorkflowOrder {
       installationAssignedTeam:
           installationAssignedTeam ?? this.installationAssignedTeam,
       installationNotes: installationNotes ?? this.installationNotes,
+      estimatingWasEstimate:
+          estimatingWasEstimate ?? this.estimatingWasEstimate,
       installationVisitHistory:
           installationVisitHistory ??
           List<InstallationVisitLog>.from(this.installationVisitHistory),
@@ -1301,11 +1307,13 @@ class WorkflowOrder {
       'serviceOrderFileName': serviceOrderFileName,
       'serviceOrderFilePath': serviceOrderFilePath,
       'financeClientApproved': financeClientApproved,
+      'serviceOrderFinanceStatus': serviceOrderFinanceStatus.name,
       'installationWorkflowStatus': installationWorkflowStatus.name,
       'installationScheduledAt': installationScheduledAt,
       'installationAssignedEmployeeEmails': installationAssignedEmployeeEmails,
       'installationAssignedTeam': installationAssignedTeam,
       'installationNotes': installationNotes,
+      'estimatingWasEstimate': estimatingWasEstimate,
       'installationVisitHistory': installationVisitHistory
           .map((visit) => visit.toMap())
           .toList(growable: false),
@@ -1494,6 +1502,10 @@ class WorkflowOrder {
       serviceOrderFileName: (map['serviceOrderFileName'] ?? '').toString(),
       serviceOrderFilePath: _readOptionalString(map['serviceOrderFilePath']),
       financeClientApproved: _readBool(map['financeClientApproved']),
+      serviceOrderFinanceStatus: _readServiceOrderFinanceStatus(
+        (map['serviceOrderFinanceStatus'] ?? '').toString(),
+        financeClientApproved: _readBool(map['financeClientApproved']),
+      ),
       installationWorkflowStatus: _readInstallationWorkflowStatus(
         (map['installationWorkflowStatus'] ?? '').toString(),
         map['installationScheduledAt'],
@@ -1511,6 +1523,7 @@ class WorkflowOrder {
       installationAssignedTeam: (map['installationAssignedTeam'] ?? '')
           .toString(),
       installationNotes: (map['installationNotes'] ?? '').toString(),
+      estimatingWasEstimate: (map['estimatingWasEstimate'] ?? '').toString(),
       installationVisitHistory: rawInstallationVisitHistory is Iterable
           ? rawInstallationVisitHistory
                 .map(
@@ -1707,9 +1720,7 @@ Map<String, EngineeringTaskSchedule> _readEngineeringActivitySchedules(
 Map<String, EngineeringChecklistStatus> _readFinanceContractStatuses(
   Map<String, dynamic> rawStatuses,
 ) {
-  final validTaskKeys = financeContractTasks
-      .map((task) => task.key)
-      .toSet();
+  final validTaskKeys = financeContractTasks.map((task) => task.key).toSet();
   final normalized = rawStatuses.entries
       .where((entry) => validTaskKeys.contains(entry.key))
       .map(
@@ -1760,7 +1771,8 @@ Map<String, EngineeringChecklistStatus> _readRelationshipKanbanStatuses(
       normalized['in_progress'] = EngineeringChecklistStatus.done;
     }
     if (wrongCompletedCount > 1) {
-      normalized['create_omie_material_order'] = EngineeringChecklistStatus.done;
+      normalized['create_omie_material_order'] =
+          EngineeringChecklistStatus.done;
     }
   }
   return normalized;
@@ -1792,6 +1804,18 @@ WorkflowOrderKind _readWorkflowOrderKind(String rawValue) {
   return WorkflowOrderKind.values.firstWhere(
     (kind) => kind.name == rawValue,
     orElse: () => WorkflowOrderKind.standard,
+  );
+}
+
+ServiceOrderFinanceStatus _readServiceOrderFinanceStatus(
+  String rawValue, {
+  required bool financeClientApproved,
+}) {
+  return ServiceOrderFinanceStatus.values.firstWhere(
+    (status) => status.name == rawValue,
+    orElse: () => financeClientApproved
+        ? ServiceOrderFinanceStatus.approved
+        : ServiceOrderFinanceStatus.waitingApproval,
   );
 }
 
