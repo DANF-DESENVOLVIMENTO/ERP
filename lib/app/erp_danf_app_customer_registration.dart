@@ -528,6 +528,10 @@ const List<String> _yesNoOptions = ['Sim', 'Não'];
 const List<String> _paymentTypeOptions = ['Pix', 'Cartão de crédito', 'Boleto'];
 const List<String> _paymentMethodOptions = ['À vista', 'Parcelado', 'Outro'];
 
+List<TextInputFormatter> _currencyInputFormatters() {
+  return [FilteringTextInputFormatter.allow(RegExp(r'[0-9.,]'))];
+}
+
 class _ProposalServiceFormRow {
   _ProposalServiceFormRow({required this.serviceName})
     : consolidatedController = TextEditingController(),
@@ -834,12 +838,18 @@ class _AdditionalProposalDraft {
     required this.address,
     required this.proposalFileName,
     this.proposalFilePath,
+    required this.commercialProposalNumber,
+    required this.consolidatedValue,
+    required this.observation,
   });
 
   final String workName;
   final String address;
   final String proposalFileName;
   final String? proposalFilePath;
+  final String commercialProposalNumber;
+  final String consolidatedValue;
+  final String observation;
 }
 
 class _AdditionalProposalClientPickerDialog extends StatefulWidget {
@@ -1117,6 +1127,9 @@ class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
   final _workNameController = TextEditingController();
   final _addressController = TextEditingController();
   final _proposalController = TextEditingController();
+  final _commercialProposalNumberController = TextEditingController();
+  final _consolidatedValueController = TextEditingController();
+  final _observationController = TextEditingController();
   String? _proposalFilePath;
 
   @override
@@ -1131,6 +1144,9 @@ class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
     _workNameController.dispose();
     _addressController.dispose();
     _proposalController.dispose();
+    _commercialProposalNumberController.dispose();
+    _consolidatedValueController.dispose();
+    _observationController.dispose();
     super.dispose();
   }
 
@@ -1188,12 +1204,11 @@ class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
   }
 
   String? _validateAttachment(String? value) {
-    final requiredError = _requiredField(value);
-    if (requiredError != null) {
-      return requiredError;
+    final normalized = (value ?? '').trim().toLowerCase();
+    if (normalized.isEmpty) {
+      return null;
     }
 
-    final normalized = value!.trim().toLowerCase();
     if (normalized.endsWith('.pdf') ||
         normalized.endsWith('.xls') ||
         normalized.endsWith('.xlsx')) {
@@ -1201,6 +1216,28 @@ class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
     }
 
     return 'Use arquivo PDF, XLS ou XLSX.';
+  }
+
+  String? _validateOptionalDigits(String? value, {required String label}) {
+    final normalized = (value ?? '').trim();
+    if (normalized.isEmpty) {
+      return null;
+    }
+    if (!RegExp(r'^[0-9]+$').hasMatch(normalized)) {
+      return '$label deve conter apenas números.';
+    }
+    return null;
+  }
+
+  String? _validateOptionalCurrency(String? value, {required String label}) {
+    final normalized = (value ?? '').trim();
+    if (normalized.isEmpty) {
+      return null;
+    }
+    if (!RegExp(r'^[0-9.,]+$').hasMatch(normalized)) {
+      return '$label deve conter apenas números, pontos ou vírgulas.';
+    }
+    return null;
   }
 
   void _submit() {
@@ -1214,6 +1251,10 @@ class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
         address: _addressController.text.trim(),
         proposalFileName: _proposalController.text.trim(),
         proposalFilePath: _proposalFilePath,
+        commercialProposalNumber: _commercialProposalNumberController.text
+            .trim(),
+        consolidatedValue: _consolidatedValueController.text.trim(),
+        observation: _observationController.text.trim(),
       ),
     );
   }
@@ -1346,10 +1387,53 @@ class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
                         maxLines: 2,
                       ),
                       const SizedBox(height: 16),
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Expanded(
+                            child: _DialogField(
+                              controller: _commercialProposalNumberController,
+                              label: 'Número da proposta (opcional)',
+                              validator: (value) => _validateOptionalDigits(
+                                value,
+                                label: 'o número da proposta',
+                              ),
+                              keyboardType: TextInputType.number,
+                              inputFormatters: [
+                                FilteringTextInputFormatter.digitsOnly,
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 16),
+                          Expanded(
+                            child: _DialogField(
+                              controller: _consolidatedValueController,
+                              label: 'Valor consolidado (opcional)',
+                              validator: (value) => _validateOptionalCurrency(
+                                value,
+                                label: 'o valor consolidado',
+                              ),
+                              keyboardType:
+                                  const TextInputType.numberWithOptions(
+                                    decimal: true,
+                                  ),
+                              inputFormatters: _currencyInputFormatters(),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 16),
+                      _DialogField(
+                        controller: _observationController,
+                        label: 'Observação (opcional)',
+                        validator: (_) => null,
+                        maxLines: 2,
+                      ),
+                      const SizedBox(height: 16),
                       _AttachmentPickerField(
-                        label: 'Arquivo da nova proposta',
+                        label: 'Arquivo da nova proposta (opcional)',
                         helper:
-                            'Anexe o arquivo da proposta que seguirá no fluxo.',
+                            'Anexe o arquivo da proposta, se já estiver disponível.',
                         controller: _proposalController,
                         onPick: _pickProposalFile,
                         validator: _validateAttachment,
@@ -1702,13 +1786,24 @@ class _CustomerRegistrationDialogState
     return null;
   }
 
-  String? _validateDecimalWithComma(String? value, {required String label}) {
+  String? _validateCurrency(String? value, {required String label}) {
     final normalized = (value ?? '').trim();
     if (normalized.isEmpty) {
       return 'Informe $label.';
     }
-    if (!RegExp(r'^[0-9]+(,[0-9]{1,2})?$').hasMatch(normalized)) {
-      return '$label deve estar no formato 0,00.';
+    if (!RegExp(r'^[0-9.,]+$').hasMatch(normalized)) {
+      return '$label deve conter apenas números, pontos ou vírgulas.';
+    }
+    return null;
+  }
+
+  String? _validateOptionalCurrency(String? value, {required String label}) {
+    final normalized = (value ?? '').trim();
+    if (normalized.isEmpty) {
+      return null;
+    }
+    if (!RegExp(r'^[0-9.,]+$').hasMatch(normalized)) {
+      return '$label deve conter apenas números, pontos ou vírgulas.';
     }
     return null;
   }
@@ -2230,14 +2325,16 @@ class _CustomerRegistrationDialogState
                                     child: _DialogField(
                                       controller: _consolidatedValueController,
                                       label: 'Valor consolidado',
-                                      validator: (value) => _validateDigitsOnly(
+                                      validator: (value) => _validateCurrency(
                                         value,
                                         label: 'o valor consolidado',
                                       ),
-                                      keyboardType: TextInputType.number,
-                                      inputFormatters: [
-                                        FilteringTextInputFormatter.digitsOnly,
-                                      ],
+                                      keyboardType:
+                                          const TextInputType.numberWithOptions(
+                                            decimal: true,
+                                          ),
+                                      inputFormatters:
+                                          _currencyInputFormatters(),
                                     ),
                                   ),
                                 ],
@@ -2291,20 +2388,16 @@ class _CustomerRegistrationDialogState
                                     child: _DialogField(
                                       controller: _installmentValueController,
                                       label: 'Valor da parcela',
-                                      validator: (value) =>
-                                          _validateDecimalWithComma(
-                                            value,
-                                            label: 'o valor da parcela',
-                                          ),
+                                      validator: (value) => _validateCurrency(
+                                        value,
+                                        label: 'o valor da parcela',
+                                      ),
                                       keyboardType:
                                           const TextInputType.numberWithOptions(
                                             decimal: true,
                                           ),
-                                      inputFormatters: [
-                                        FilteringTextInputFormatter.allow(
-                                          RegExp(r'[0-9,]'),
-                                        ),
-                                      ],
+                                      inputFormatters:
+                                          _currencyInputFormatters(),
                                     ),
                                   ),
                                   const SizedBox(width: 16),
@@ -2339,14 +2432,17 @@ class _CustomerRegistrationDialogState
                                     child: _DialogField(
                                       controller: _integratorValueController,
                                       label: 'Valor integrador',
-                                      validator: (value) => _validateDigitsOnly(
-                                        value,
-                                        label: 'o valor integrador',
-                                      ),
-                                      keyboardType: TextInputType.number,
-                                      inputFormatters: [
-                                        FilteringTextInputFormatter.digitsOnly,
-                                      ],
+                                      validator: (value) =>
+                                          _validateOptionalCurrency(
+                                            value,
+                                            label: 'o valor integrador',
+                                          ),
+                                      keyboardType:
+                                          const TextInputType.numberWithOptions(
+                                            decimal: true,
+                                          ),
+                                      inputFormatters:
+                                          _currencyInputFormatters(),
                                     ),
                                   ),
                                   const SizedBox(width: 16),
@@ -2354,7 +2450,7 @@ class _CustomerRegistrationDialogState
                                     child: _DialogField(
                                       controller: _integratorNameController,
                                       label: 'Nome do integrador',
-                                      validator: _requiredField,
+                                      validator: (_) => null,
                                     ),
                                   ),
                                 ],
@@ -2383,14 +2479,17 @@ class _CustomerRegistrationDialogState
                                     child: _DialogField(
                                       controller: _rtValueController,
                                       label: 'Valor RT',
-                                      validator: (value) => _validateDigitsOnly(
-                                        value,
-                                        label: 'o valor RT',
-                                      ),
-                                      keyboardType: TextInputType.number,
-                                      inputFormatters: [
-                                        FilteringTextInputFormatter.digitsOnly,
-                                      ],
+                                      validator: (value) =>
+                                          _validateOptionalCurrency(
+                                            value,
+                                            label: 'o valor RT',
+                                          ),
+                                      keyboardType:
+                                          const TextInputType.numberWithOptions(
+                                            decimal: true,
+                                          ),
+                                      inputFormatters:
+                                          _currencyInputFormatters(),
                                     ),
                                   ),
                                   const SizedBox(width: 16),
@@ -2922,6 +3021,7 @@ class _DialogField extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isMultiline = maxLines != 1;
     return TextFormField(
       enabled: enabled,
       controller: controller,
@@ -2929,6 +3029,12 @@ class _DialogField extends StatelessWidget {
       keyboardType: keyboardType,
       inputFormatters: inputFormatters,
       validator: validator,
+      textInputAction: isMultiline
+          ? TextInputAction.newline
+          : TextInputAction.next,
+      onFieldSubmitted: isMultiline
+          ? null
+          : (_) => FocusScope.of(context).nextFocus(),
       decoration: InputDecoration(
         labelText: label,
         hintText: hintText,

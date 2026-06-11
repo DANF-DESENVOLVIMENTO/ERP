@@ -1216,7 +1216,11 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
           onUpdateFinanceContractStatus: _updateFinanceContractStatus,
           onUpdateRelationshipKanbanStatus: _updateRelationshipKanbanStatus,
           onEditOrder:
-              !_currentWorkspaceProfile.isAdministrator || order.isServiceOrder
+              (!_currentWorkspaceProfile.isAdministrator &&
+                      !_currentWorkspaceProfile.allowedStages.contains(
+                        WorkflowStage.customerRegistration,
+                      )) ||
+                  order.isServiceOrder
               ? null
               : () =>
                     _openCustomerRegistrationForm(_findOrderByCode(order.code)),
@@ -4112,11 +4116,22 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       installationNotes: '',
       estimatingWasEstimate: '',
       installationVisitHistory: const [],
-      value: primaryOrder.value,
-      commercialProposalNumber: primaryOrder.commercialProposalNumber,
+      value: draft.consolidatedValue.trim().isEmpty
+          ? primaryOrder.value
+          : double.tryParse(
+                  draft.consolidatedValue
+                      .replaceAll('.', '')
+                      .replaceAll(',', '.'),
+                ) ??
+                primaryOrder.value,
+      commercialProposalNumber: draft.commercialProposalNumber.trim().isEmpty
+          ? primaryOrder.commercialProposalNumber
+          : draft.commercialProposalNumber.trim(),
       paymentType: primaryOrder.paymentType,
       paymentMethod: primaryOrder.paymentMethod,
-      paymentObservation: primaryOrder.paymentObservation,
+      paymentObservation: draft.observation.trim().isEmpty
+          ? primaryOrder.paymentObservation
+          : draft.observation.trim(),
       installmentValue: primaryOrder.installmentValue,
       installmentCount: primaryOrder.installmentCount,
       paymentDate: primaryOrder.paymentDate,
@@ -5061,6 +5076,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       currentStage: nextStage,
       engineeringChecklistStatuses: updatedStatuses,
       engineeringActivitySchedules: updatedSchedules,
+      engineeringDependsOnClient: false,
       assemblyWorkflowStatus: nextAssemblyStatus,
       assemblyAssignedEmployeeEmails: flowSnapshot.isComplete
           ? const <String>[]
@@ -5076,6 +5092,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       currentStage: nextStage,
       engineeringChecklistStatuses: updatedStatuses,
       engineeringActivitySchedules: updatedSchedules,
+      engineeringDependsOnClient: false,
       assemblyWorkflowStatus: nextAssemblyStatus,
       assemblyAssignedEmployeeEmails: flowSnapshot.isComplete
           ? const <String>[]
@@ -5139,6 +5156,20 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       return false;
     }
 
+    // "Depende do Cliente" não segue o fluxo: aceita pedidos vindos de
+    // qualquer etapa e pode ser devolvido para qualquer etapa do fluxo.
+    if (order.engineeringDependsOnClient) {
+      if (targetTaskKey == null ||
+          targetTaskKey == engineeringDependsOnClientTask.key) {
+        return false;
+      }
+      return engineeringChecklistTasks.any((task) => task.key == targetTaskKey);
+    }
+
+    if (targetTaskKey == engineeringDependsOnClientTask.key) {
+      return _engineeringFlowSnapshot(order).currentTask != null;
+    }
+
     final snapshot = _engineeringFlowSnapshot(order);
     final currentTask = snapshot.currentTask;
     if (currentTask == null) {
@@ -5171,6 +5202,45 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     String? targetTaskKey,
   ) async {
     if (!_canMoveEngineeringOrderToTarget(order, targetTaskKey)) {
+      return;
+    }
+
+    if (targetTaskKey == engineeringDependsOnClientTask.key) {
+      final now = DateTime.now();
+      final historyMessage =
+          'Marcado como ${engineeringDependsOnClientTask.label} em ${_formatDateTime(now)}';
+      final updatedOrder = order.copyWith(
+        engineeringDependsOnClient: true,
+        nextAction: engineeringDependsOnClientTask.label,
+        blocker: 'Depende de retorno do cliente para avançar na Engenharia.',
+        history: Map<WorkflowStage, String>.from(order.history)
+          ..[WorkflowStage.engineering] = historyMessage,
+      );
+
+      final savedOrder = await _runBusyTask(
+        () => _repository.saveOrder(updatedOrder),
+        busyMessage: 'Movendo card da engenharia...',
+        successMessage: 'Kanban da engenharia atualizado.',
+        errorPrefix: 'Não foi possível mover o card da engenharia',
+      );
+      if (savedOrder == null) {
+        return;
+      }
+
+      _mergeOrderLocally(savedOrder);
+      if (_selectedOrderCode == savedOrder.code) {
+        setState(() {
+          _selectedOrderCode = savedOrder.code;
+        });
+      }
+      unawaited(
+        _appendPlatformLog(
+          action: 'Moveu card no kanban da engenharia',
+          area: 'Engenharia',
+          details:
+              '${_displayOrderCode(savedOrder)} • ${engineeringDependsOnClientTask.label}',
+        ),
+      );
       return;
     }
 
@@ -5222,6 +5292,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     final previewOrder = order.copyWith(
       currentStage: nextStage,
       engineeringChecklistStatuses: updatedStatuses,
+      engineeringDependsOnClient: false,
       assemblyWorkflowStatus: nextAssemblyStatus,
       assemblyAssignedEmployeeEmails: flowSnapshot.isComplete
           ? const <String>[]
@@ -5237,6 +5308,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       currentStage: nextStage,
       engineeringChecklistStatuses: updatedStatuses,
       engineeringActivitySchedules: updatedSchedules,
+      engineeringDependsOnClient: false,
       assemblyWorkflowStatus: nextAssemblyStatus,
       assemblyAssignedEmployeeEmails: flowSnapshot.isComplete
           ? const <String>[]
@@ -6908,7 +6980,19 @@ class _ShellProfileMenuButton extends StatelessWidget {
                 borderRadius: BorderRadius.circular(14),
               ),
               child: imageProvider != null
-                  ? Image(image: imageProvider, fit: BoxFit.cover)
+                  ? Image(
+                      image: imageProvider,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, _, _) => Center(
+                        child: Text(
+                          initials,
+                          style: TextStyle(
+                            color: profile.accent,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ),
+                    )
                   : Center(
                       child: Text(
                         initials,
@@ -11493,11 +11577,11 @@ class _StageWorkspaceSection extends StatelessWidget {
           ]
         : stage == WorkflowStage.engineering && showingWorkQueue
         ? <_OrdersKanbanColumnData>[
-            for (final task in engineeringChecklistTasks)
+            for (final task in engineeringChecklistTasks) ...[
               _OrdersKanbanColumnData(
                 title: task.label,
                 subtitle:
-                    '${currentKanbanOrders.where((order) => _engineeringFlowSnapshot(order).currentTask?.key == task.key).length} clientes',
+                    '${currentKanbanOrders.where((order) => !order.engineeringDependsOnClient && _engineeringFlowSnapshot(order).currentTask?.key == task.key).length} clientes',
                 accent: _engineeringTaskAccent(task.key),
                 icon: _engineeringTaskIcon(task.key),
                 emptyMessage:
@@ -11506,11 +11590,30 @@ class _StageWorkspaceSection extends StatelessWidget {
                 orders: currentKanbanOrders
                     .where(
                       (order) =>
+                          !order.engineeringDependsOnClient &&
                           _engineeringFlowSnapshot(order).currentTask?.key ==
-                          task.key,
+                              task.key,
                     )
                     .toList(growable: false),
               ),
+              if (task.key == 'in_progress')
+                _OrdersKanbanColumnData(
+                  title: engineeringDependsOnClientTask.label,
+                  subtitle:
+                      '${currentKanbanOrders.where((order) => order.engineeringDependsOnClient).length} clientes',
+                  accent: _engineeringTaskAccent(
+                    engineeringDependsOnClientTask.key,
+                  ),
+                  icon: _engineeringTaskIcon(
+                    engineeringDependsOnClientTask.key,
+                  ),
+                  emptyMessage: 'Nenhum cliente depende do cliente.',
+                  engineeringTargetTaskKey: engineeringDependsOnClientTask.key,
+                  orders: currentKanbanOrders
+                      .where((order) => order.engineeringDependsOnClient)
+                      .toList(growable: false),
+                ),
+            ],
             _OrdersKanbanColumnData(
               title: 'Concluído',
               subtitle:
@@ -13512,6 +13615,8 @@ class _OrderDetailsPanel extends StatelessWidget {
               info('Cliente', order!.client.name, emphasize: true),
               info('Telefone', order!.client.phone),
               infoFull('Endereço', order!.address),
+              if (order!.currentStage == WorkflowStage.estimating)
+                info('Número da proposta', order!.commercialProposalNumber),
               if (showFullCustomerRegistrationData) ...[
                 info('Data de nascimento', order!.client.birthDate),
                 info('E-mail', order!.client.email),
@@ -13883,6 +13988,7 @@ class _OrderDetailsPanel extends StatelessWidget {
                               backgroundImage: _resolveProfileImageProvider(
                                 profile.photoFilePath,
                               ),
+                              onBackgroundImageError: (_, _) {},
                               child:
                                   profile.photoFilePath == null ||
                                       profile.photoFilePath!.trim().isEmpty
@@ -14668,6 +14774,18 @@ class _OrderCard extends StatelessWidget {
               'Cliente ${order.client.id}',
               style: TextStyle(color: secondaryTextColor, fontSize: 12),
             ),
+            if (order.currentStage == WorkflowStage.estimating &&
+                order.commercialProposalNumber.trim().isNotEmpty) ...[
+              const SizedBox(height: 2),
+              Text(
+                'Pedido nº ${order.commercialProposalNumber}',
+                style: TextStyle(
+                  color: secondaryTextColor,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
             const SizedBox(height: 10),
             ClipRRect(
               borderRadius: BorderRadius.circular(99),
@@ -14727,6 +14845,7 @@ class _OrderCard extends StatelessWidget {
                           backgroundImage: _resolveProfileImageProvider(
                             profile.photoFilePath,
                           ),
+                          onBackgroundImageError: (_, _) {},
                           child:
                               profile.photoFilePath == null ||
                                   profile.photoFilePath!.trim().isEmpty
@@ -16199,9 +16318,7 @@ class _StageOrdersKanbanBoardState extends State<_StageOrdersKanbanBoard> {
       return;
     }
 
-    final delta = event.scrollDelta.dx == 0
-        ? event.scrollDelta.dy
-        : event.scrollDelta.dx;
+    final delta = event.scrollDelta.dx;
     if (delta == 0) {
       return;
     }

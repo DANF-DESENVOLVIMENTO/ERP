@@ -13,6 +13,8 @@ class SoftwareUpdateService {
 
   static const String manifestUrl = String.fromEnvironment(
     'ERP_DANF_UPDATE_MANIFEST_URL',
+    defaultValue:
+        'https://drive.google.com/open?id=1IqOBq-_AJZlayEEDeV-AqsLs4M7gOVw_&usp=drive_fs',
   );
 
   final http.Client _client;

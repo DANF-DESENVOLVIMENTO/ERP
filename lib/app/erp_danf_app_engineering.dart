@@ -1924,6 +1924,7 @@ class _RelationshipChecklistCard extends StatelessWidget {
           const SizedBox(height: 14),
           _RelationshipFlowKanban(
             flowSnapshot: flowSnapshot,
+            whatsappGroupMembers: order.whatsappGroupMembers,
             isDarkMode: isDarkMode,
             borderColor: borderColor,
             isEditable: isEditable,
@@ -1938,6 +1939,7 @@ class _RelationshipChecklistCard extends StatelessWidget {
 class _RelationshipFlowKanban extends StatelessWidget {
   const _RelationshipFlowKanban({
     required this.flowSnapshot,
+    required this.whatsappGroupMembers,
     required this.isDarkMode,
     required this.borderColor,
     required this.isEditable,
@@ -1945,6 +1947,7 @@ class _RelationshipFlowKanban extends StatelessWidget {
   });
 
   final _RelationshipKanbanFlowSnapshot flowSnapshot;
+  final List<WhatsappGroupMember> whatsappGroupMembers;
   final bool isDarkMode;
   final Color borderColor;
   final bool isEditable;
@@ -1965,6 +1968,7 @@ class _RelationshipFlowKanban extends StatelessWidget {
             accent: const Color(0xFF15803D),
             tasks: flowSnapshot.completedTasks,
             emptyMessage: 'Nenhuma etapa concluída ainda.',
+            whatsappGroupMembers: whatsappGroupMembers,
             isDarkMode: isDarkMode,
             borderColor: borderColor,
             isEditable: isEditable,
@@ -1978,6 +1982,7 @@ class _RelationshipFlowKanban extends StatelessWidget {
                 ? const <RelationshipKanbanTask>[]
                 : [flowSnapshot.currentTask!],
             emptyMessage: 'Fluxo do relacionamento concluído.',
+            whatsappGroupMembers: whatsappGroupMembers,
             isDarkMode: isDarkMode,
             borderColor: borderColor,
             isEditable: isEditable,
@@ -1989,6 +1994,7 @@ class _RelationshipFlowKanban extends StatelessWidget {
             accent: const Color(0xFF64748B),
             tasks: flowSnapshot.upcomingTasks,
             emptyMessage: 'Não existem próximas etapas pendentes.',
+            whatsappGroupMembers: whatsappGroupMembers,
             isDarkMode: isDarkMode,
             borderColor: borderColor,
             isEditable: isEditable,
@@ -2028,6 +2034,7 @@ class _RelationshipFlowKanbanColumn extends StatelessWidget {
     required this.accent,
     required this.tasks,
     required this.emptyMessage,
+    required this.whatsappGroupMembers,
     required this.isDarkMode,
     required this.borderColor,
     required this.isEditable,
@@ -2039,6 +2046,7 @@ class _RelationshipFlowKanbanColumn extends StatelessWidget {
   final Color accent;
   final List<RelationshipKanbanTask> tasks;
   final String emptyMessage;
+  final List<WhatsappGroupMember> whatsappGroupMembers;
   final bool isDarkMode;
   final Color borderColor;
   final bool isEditable;
@@ -2129,6 +2137,7 @@ class _RelationshipFlowKanbanColumn extends StatelessWidget {
                   task: task,
                   taskState: taskState,
                   accent: accent,
+                  whatsappGroupMembers: whatsappGroupMembers,
                   isDarkMode: isDarkMode,
                   isEditable: isEditable,
                   onStatusChanged: onStatusChanged,
@@ -2146,6 +2155,7 @@ class _RelationshipFlowTaskCard extends StatelessWidget {
     required this.task,
     required this.taskState,
     required this.accent,
+    required this.whatsappGroupMembers,
     required this.isDarkMode,
     required this.isEditable,
     this.onStatusChanged,
@@ -2154,6 +2164,7 @@ class _RelationshipFlowTaskCard extends StatelessWidget {
   final RelationshipKanbanTask task;
   final _EngineeringFlowTaskState taskState;
   final Color accent;
+  final List<WhatsappGroupMember> whatsappGroupMembers;
   final bool isDarkMode;
   final bool isEditable;
   final Future<void> Function(
@@ -2198,6 +2209,13 @@ class _RelationshipFlowTaskCard extends StatelessWidget {
               fontSize: 12,
             ),
           ),
+          if (task.key == 'create_whatsapp_group') ...[
+            const SizedBox(height: 10),
+            _RelationshipWhatsappMembersList(
+              members: whatsappGroupMembers,
+              isDarkMode: isDarkMode,
+            ),
+          ],
           if (isEditable && onStatusChanged != null) ...[
             const SizedBox(height: 10),
             if (taskState == _EngineeringFlowTaskState.current)
@@ -2225,6 +2243,82 @@ class _RelationshipFlowTaskCard extends StatelessWidget {
           ],
         ],
       ),
+    );
+  }
+}
+
+class _RelationshipWhatsappMembersList extends StatelessWidget {
+  const _RelationshipWhatsappMembersList({
+    required this.members,
+    required this.isDarkMode,
+  });
+
+  final List<WhatsappGroupMember> members;
+  final bool isDarkMode;
+
+  @override
+  Widget build(BuildContext context) {
+    final mutedTextColor = isDarkMode
+        ? const Color(0xFFD2E1DB)
+        : const Color(0xFF52605C);
+    final cardColor = isDarkMode
+        ? Colors.black.withValues(alpha: 0.18)
+        : Colors.white.withValues(alpha: 0.6);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Pessoas para adicionar no grupo',
+          style: TextStyle(
+            fontWeight: FontWeight.w700,
+            fontSize: 12,
+            color: mutedTextColor,
+          ),
+        ),
+        const SizedBox(height: 6),
+        if (members.isEmpty)
+          Text(
+            'Nenhum membro informado no cadastro do cliente.',
+            style: TextStyle(color: mutedTextColor, height: 1.3, fontSize: 12),
+          )
+        else
+          ...members.map(
+            (member) => Container(
+              width: double.infinity,
+              margin: const EdgeInsets.only(bottom: 6),
+              padding: const EdgeInsets.symmetric(
+                horizontal: 10,
+                vertical: 8,
+              ),
+              decoration: BoxDecoration(
+                color: cardColor,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    member.name.trim().isEmpty
+                        ? 'Não informado'
+                        : member.name,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w700,
+                      fontSize: 12,
+                    ),
+                  ),
+                  Text(
+                    [
+                      if (member.phone.trim().isNotEmpty) member.phone,
+                      if (member.role.trim().isNotEmpty) member.role,
+                    ].join(' • '),
+                    style: TextStyle(color: mutedTextColor, fontSize: 12),
+                  ),
+                ],
+              ),
+            ),
+          ),
+      ],
     );
   }
 }
@@ -2415,6 +2509,8 @@ EngineeringChecklistTask? _engineeringChecklistTaskByKey(String taskKey) {
 Color _engineeringTaskAccent(String taskKey) {
   return switch (taskKey) {
     'depending_on_client' => const Color(0xFF94A3B8),
+    'in_progress' => const Color(0xFFC2410C),
+    'depends_on_client' => const Color(0xFFB45309),
     'awaiting_presentation' => const Color(0xFF737373),
     'presentation_done' => const Color(0xFF00D084),
     'meeting_electrician' => const Color(0xFFA3E635),
@@ -2428,6 +2524,8 @@ Color _engineeringTaskAccent(String taskKey) {
 IconData _engineeringTaskIcon(String taskKey) {
   return switch (taskKey) {
     'depending_on_client' => Icons.chevron_right_rounded,
+    'in_progress' => Icons.play_circle_outline_rounded,
+    'depends_on_client' => Icons.pause_circle_outline_rounded,
     'awaiting_presentation' => Icons.chevron_right_rounded,
     'presentation_done' => Icons.chevron_right_rounded,
     'meeting_electrician' => Icons.chevron_right_rounded,

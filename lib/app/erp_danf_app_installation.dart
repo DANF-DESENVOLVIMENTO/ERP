@@ -175,6 +175,7 @@ class _InstallationScheduleCard extends StatelessWidget {
                         backgroundImage: _resolveProfileImageProvider(
                           profile.photoFilePath,
                         ),
+                        onBackgroundImageError: (_, _) {},
                         child:
                             profile.photoFilePath == null ||
                                 profile.photoFilePath!.trim().isEmpty

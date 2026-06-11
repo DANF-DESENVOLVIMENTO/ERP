@@ -168,6 +168,7 @@ class EngineeringChecklistTask {
 
 const List<EngineeringChecklistTask> engineeringChecklistTasks = [
   EngineeringChecklistTask(key: 'depending_on_client', label: 'Aguardando'),
+  EngineeringChecklistTask(key: 'in_progress', label: 'Em Andamento'),
   EngineeringChecklistTask(
     key: 'awaiting_presentation',
     label: 'Aguardando Apresentação',
@@ -196,6 +197,13 @@ const List<EngineeringChecklistTask> engineeringChecklistTasks = [
     label: 'Conferencia realizada',
   ),
 ];
+
+// Etapa fora do fluxo sequencial: aceita pedidos vindos de qualquer etapa.
+const EngineeringChecklistTask engineeringDependsOnClientTask =
+    EngineeringChecklistTask(
+      key: 'depends_on_client',
+      label: 'Depende do Cliente',
+    );
 
 const List<String> _legacyEngineeringTaskKeys = [
   'project_presentation',
@@ -904,6 +912,7 @@ class WorkflowOrder {
     this.engineeringDataFilePath,
     required this.engineeringChecklistStatuses,
     required this.engineeringActivitySchedules,
+    this.engineeringDependsOnClient = false,
     required this.financeContractStatuses,
     required this.estimatingKanbanStatuses,
     required this.relationshipKanbanStatuses,
@@ -987,6 +996,7 @@ class WorkflowOrder {
   final String? engineeringDataFilePath;
   final Map<String, EngineeringChecklistStatus> engineeringChecklistStatuses;
   final Map<String, EngineeringTaskSchedule> engineeringActivitySchedules;
+  final bool engineeringDependsOnClient;
   final Map<String, EngineeringChecklistStatus> financeContractStatuses;
   final Map<String, EngineeringChecklistStatus> estimatingKanbanStatuses;
   final Map<String, EngineeringChecklistStatus> relationshipKanbanStatuses;
@@ -1111,6 +1121,7 @@ class WorkflowOrder {
     String? engineeringDataFilePath,
     Map<String, EngineeringChecklistStatus>? engineeringChecklistStatuses,
     Map<String, EngineeringTaskSchedule>? engineeringActivitySchedules,
+    bool? engineeringDependsOnClient,
     Map<String, EngineeringChecklistStatus>? financeContractStatuses,
     Map<String, EngineeringChecklistStatus>? estimatingKanbanStatuses,
     Map<String, EngineeringChecklistStatus>? relationshipKanbanStatuses,
@@ -1175,6 +1186,8 @@ class WorkflowOrder {
           Map<String, EngineeringTaskSchedule>.from(
             this.engineeringActivitySchedules,
           ),
+      engineeringDependsOnClient:
+          engineeringDependsOnClient ?? this.engineeringDependsOnClient,
       financeContractStatuses:
           financeContractStatuses ??
           Map<String, EngineeringChecklistStatus>.from(
@@ -1308,6 +1321,7 @@ class WorkflowOrder {
         for (final entry in engineeringActivitySchedules.entries)
           entry.key: entry.value.toMap(),
       },
+      'engineeringDependsOnClient': engineeringDependsOnClient,
       'financeContractStatuses': {
         for (final entry in financeContractStatuses.entries)
           entry.key: entry.value.name,
@@ -1479,6 +1493,7 @@ class WorkflowOrder {
               Map<String, dynamic>.from(rawEngineeringActivitySchedules),
             )
           : const {},
+      engineeringDependsOnClient: map['engineeringDependsOnClient'] == true,
       financeContractStatuses: rawFinanceContractStatuses is Map
           ? _readFinanceContractStatuses(
               Map<String, dynamic>.from(rawFinanceContractStatuses),
