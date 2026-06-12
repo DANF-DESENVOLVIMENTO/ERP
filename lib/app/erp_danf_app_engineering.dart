@@ -59,12 +59,12 @@ class _EngineeringStageCalendarBoardState
   Widget build(BuildContext context) {
     final isDarkMode = Theme.of(context).brightness == Brightness.dark;
     final borderColor = isDarkMode
-        ? const Color(0xFF29403A)
-        : const Color(0xFFE2E8F0);
-    final surfaceColor = isDarkMode ? const Color(0xFF121E1B) : Colors.white;
+        ? const Color(0xFF3E4044)
+        : const Color(0xFFE8E8E5);
+    final surfaceColor = isDarkMode ? const Color(0xFF1C1D20) : Colors.white;
     final secondaryTextColor = isDarkMode
-        ? const Color(0xFF9FB2AC)
-        : const Color(0xFF52605C);
+        ? const Color(0xFFA3A39E)
+        : const Color(0xFF6B6B68);
     final stageOrders = widget.orders
         .where((order) => order.currentStage == WorkflowStage.engineering)
         .toList(growable: false);
@@ -189,7 +189,7 @@ class _EngineeringStageCalendarBoardState
                         decoration: BoxDecoration(
                           color: isDarkMode
                               ? Colors.black.withValues(alpha: 0.12)
-                              : const Color(0xFFF8FAFC),
+                              : const Color(0xFFF5F5F3),
                           borderRadius: BorderRadius.circular(14),
                           border: Border.all(color: borderColor),
                         ),
@@ -218,8 +218,8 @@ class _EngineeringStageCalendarBoardState
                                     ? WorkflowStage.engineering.color
                                           .withValues(alpha: 0.08)
                                     : isDarkMode
-                                    ? const Color(0xFF0E1715)
-                                    : const Color(0xFFF8FAFC),
+                                    ? const Color(0xFF1C1D20)
+                                    : const Color(0xFFF5F5F3),
                                 borderRadius: BorderRadius.circular(14),
                                 border: Border.all(
                                   color: isSelected
@@ -492,7 +492,7 @@ class _EngineeringActivityScheduleDialogState
       child: Container(
         constraints: const BoxConstraints(maxWidth: 720),
         decoration: BoxDecoration(
-          color: const Color(0xFFF5F7F2),
+          color: const Color(0xFFF5F5F3),
           borderRadius: BorderRadius.circular(28),
         ),
         child: Column(
@@ -502,7 +502,7 @@ class _EngineeringActivityScheduleDialogState
               padding: const EdgeInsets.all(24),
               decoration: const BoxDecoration(
                 borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-                color: Color(0xFF14211D),
+                color: Color(0xFF1A1A1A),
               ),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -643,14 +643,14 @@ class _EngineeringChecklistCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final isDarkMode = Theme.of(context).brightness == Brightness.dark;
     final secondaryTextColor = isDarkMode
-        ? const Color(0xFF9FB2AC)
-        : const Color(0xFF52605C);
+        ? const Color(0xFFA3A39E)
+        : const Color(0xFF6B6B68);
     final surfaceColor = isDarkMode
-        ? const Color(0xFF121E1B)
-        : const Color(0xFFF8FAFC);
+        ? const Color(0xFF1C1D20)
+        : const Color(0xFFF5F5F3);
     final borderColor = isDarkMode
-        ? const Color(0xFF29403A)
-        : const Color(0xFFE2E8F0);
+        ? const Color(0xFF3E4044)
+        : const Color(0xFFE8E8E5);
     final flowSnapshot = _engineeringFlowSnapshot(order);
 
     return Container(
@@ -709,10 +709,10 @@ class _EngineeringTaskScheduleLine extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final surfaceColor = isDarkMode ? const Color(0xFF0E1715) : Colors.white;
+    final surfaceColor = isDarkMode ? const Color(0xFF1C1D20) : Colors.white;
     final mutedTextColor = isDarkMode
-        ? const Color(0xFF9FB2AC)
-        : const Color(0xFF52605C);
+        ? const Color(0xFFA3A39E)
+        : const Color(0xFF6B6B68);
     final hasSchedule = schedule != null;
 
     return Container(
@@ -904,11 +904,11 @@ class _EngineeringFlowKanbanColumn extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final surfaceColor = isDarkMode
-        ? const Color(0xFF0E1715)
+        ? const Color(0xFF1C1D20)
         : const Color(0xFFFFFFFF);
     final mutedTextColor = isDarkMode
-        ? const Color(0xFF9FB2AC)
-        : const Color(0xFF52605C);
+        ? const Color(0xFFA3A39E)
+        : const Color(0xFF6B6B68);
 
     return Container(
       padding: const EdgeInsets.all(14),
@@ -964,7 +964,7 @@ class _EngineeringFlowKanbanColumn extends StatelessWidget {
               decoration: BoxDecoration(
                 color: isDarkMode
                     ? Colors.black.withValues(alpha: 0.12)
-                    : const Color(0xFFF8FAFC),
+                    : const Color(0xFFF5F5F3),
                 borderRadius: BorderRadius.circular(14),
                 border: Border.all(color: borderColor),
               ),
@@ -1054,8 +1054,8 @@ class _EngineeringFlowTaskCard extends StatelessWidget {
             helperText,
             style: TextStyle(
               color: isDarkMode
-                  ? const Color(0xFFD2E1DB)
-                  : const Color(0xFF52605C),
+                  ? const Color(0xFFE0E0DD)
+                  : const Color(0xFF6B6B68),
               height: 1.3,
               fontSize: 12,
             ),
@@ -1352,14 +1352,14 @@ class _FinanceContractChecklistCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final isDarkMode = Theme.of(context).brightness == Brightness.dark;
     final secondaryTextColor = isDarkMode
-        ? const Color(0xFF9FB2AC)
-        : const Color(0xFF52605C);
+        ? const Color(0xFFA3A39E)
+        : const Color(0xFF6B6B68);
     final surfaceColor = isDarkMode
-        ? const Color(0xFF121E1B)
-        : const Color(0xFFF8FAFC);
+        ? const Color(0xFF1C1D20)
+        : const Color(0xFFF5F5F3);
     final borderColor = isDarkMode
-        ? const Color(0xFF29403A)
-        : const Color(0xFFE2E8F0);
+        ? const Color(0xFF3E4044)
+        : const Color(0xFFE8E8E5);
     final flowSnapshot = _financeContractFlowSnapshot(order);
 
     return Container(
@@ -1530,11 +1530,11 @@ class _FinanceContractFlowKanbanColumn extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final surfaceColor = isDarkMode
-        ? const Color(0xFF0E1715)
+        ? const Color(0xFF1C1D20)
         : const Color(0xFFFFFFFF);
     final mutedTextColor = isDarkMode
-        ? const Color(0xFF9FB2AC)
-        : const Color(0xFF52605C);
+        ? const Color(0xFFA3A39E)
+        : const Color(0xFF6B6B68);
 
     return Container(
       padding: const EdgeInsets.all(14),
@@ -1590,7 +1590,7 @@ class _FinanceContractFlowKanbanColumn extends StatelessWidget {
               decoration: BoxDecoration(
                 color: isDarkMode
                     ? Colors.black.withValues(alpha: 0.12)
-                    : const Color(0xFFF8FAFC),
+                    : const Color(0xFFF5F5F3),
                 borderRadius: BorderRadius.circular(14),
                 border: Border.all(color: borderColor),
               ),
@@ -1681,8 +1681,8 @@ class _FinanceContractFlowTaskCard extends StatelessWidget {
             helperText,
             style: TextStyle(
               color: isDarkMode
-                  ? const Color(0xFFD2E1DB)
-                  : const Color(0xFF52605C),
+                  ? const Color(0xFFE0E0DD)
+                  : const Color(0xFF6B6B68),
               height: 1.3,
               fontSize: 12,
             ),
@@ -1693,7 +1693,7 @@ class _FinanceContractFlowTaskCard extends StatelessWidget {
               width: double.infinity,
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: isDarkMode ? const Color(0xFF0E1715) : Colors.white,
+                color: isDarkMode ? const Color(0xFF1C1D20) : Colors.white,
                 borderRadius: BorderRadius.circular(12),
                 border: Border.all(color: borderColor),
               ),
@@ -1707,7 +1707,7 @@ class _FinanceContractFlowTaskCard extends StatelessWidget {
                     style: TextStyle(
                       color: hasContractFile
                           ? const Color(0xFF0F766E)
-                          : const Color(0xFF52605C),
+                          : const Color(0xFF6B6B68),
                       fontWeight: FontWeight.w700,
                     ),
                   ),
@@ -1890,14 +1890,14 @@ class _RelationshipChecklistCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final isDarkMode = Theme.of(context).brightness == Brightness.dark;
     final secondaryTextColor = isDarkMode
-        ? const Color(0xFF9FB2AC)
-        : const Color(0xFF52605C);
+        ? const Color(0xFFA3A39E)
+        : const Color(0xFF6B6B68);
     final surfaceColor = isDarkMode
-        ? const Color(0xFF121E1B)
-        : const Color(0xFFF8FAFC);
+        ? const Color(0xFF1C1D20)
+        : const Color(0xFFF5F5F3);
     final borderColor = isDarkMode
-        ? const Color(0xFF29403A)
-        : const Color(0xFFE2E8F0);
+        ? const Color(0xFF3E4044)
+        : const Color(0xFFE8E8E5);
     final flowSnapshot = _relationshipKanbanFlowSnapshot(order);
 
     return Container(
@@ -2060,11 +2060,11 @@ class _RelationshipFlowKanbanColumn extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final surfaceColor = isDarkMode
-        ? const Color(0xFF0E1715)
+        ? const Color(0xFF1C1D20)
         : const Color(0xFFFFFFFF);
     final mutedTextColor = isDarkMode
-        ? const Color(0xFF9FB2AC)
-        : const Color(0xFF52605C);
+        ? const Color(0xFFA3A39E)
+        : const Color(0xFF6B6B68);
 
     return Container(
       padding: const EdgeInsets.all(14),
@@ -2120,7 +2120,7 @@ class _RelationshipFlowKanbanColumn extends StatelessWidget {
               decoration: BoxDecoration(
                 color: isDarkMode
                     ? Colors.black.withValues(alpha: 0.12)
-                    : const Color(0xFFF8FAFC),
+                    : const Color(0xFFF5F5F3),
                 borderRadius: BorderRadius.circular(14),
                 border: Border.all(color: borderColor),
               ),
@@ -2203,8 +2203,8 @@ class _RelationshipFlowTaskCard extends StatelessWidget {
             helperText,
             style: TextStyle(
               color: isDarkMode
-                  ? const Color(0xFFD2E1DB)
-                  : const Color(0xFF52605C),
+                  ? const Color(0xFFE0E0DD)
+                  : const Color(0xFF6B6B68),
               height: 1.3,
               fontSize: 12,
             ),
@@ -2259,8 +2259,8 @@ class _RelationshipWhatsappMembersList extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final mutedTextColor = isDarkMode
-        ? const Color(0xFFD2E1DB)
-        : const Color(0xFF52605C);
+        ? const Color(0xFFE0E0DD)
+        : const Color(0xFF6B6B68);
     final cardColor = isDarkMode
         ? Colors.black.withValues(alpha: 0.18)
         : Colors.white.withValues(alpha: 0.6);
@@ -2287,10 +2287,7 @@ class _RelationshipWhatsappMembersList extends StatelessWidget {
             (member) => Container(
               width: double.infinity,
               margin: const EdgeInsets.only(bottom: 6),
-              padding: const EdgeInsets.symmetric(
-                horizontal: 10,
-                vertical: 8,
-              ),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
               decoration: BoxDecoration(
                 color: cardColor,
                 borderRadius: BorderRadius.circular(10),
@@ -2299,9 +2296,7 @@ class _RelationshipWhatsappMembersList extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    member.name.trim().isEmpty
-                        ? 'Não informado'
-                        : member.name,
+                    member.name.trim().isEmpty ? 'Não informado' : member.name,
                     style: const TextStyle(
                       fontWeight: FontWeight.w700,
                       fontSize: 12,

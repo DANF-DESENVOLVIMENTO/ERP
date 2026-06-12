@@ -206,7 +206,7 @@ class _EstimatingWorksheetDialogState
       child: Container(
         constraints: const BoxConstraints(maxWidth: 980, maxHeight: 860),
         decoration: BoxDecoration(
-          color: const Color(0xFFF5F7F2),
+          color: const Color(0xFFF5F5F3),
           borderRadius: BorderRadius.circular(28),
         ),
         child: Column(
@@ -215,7 +215,7 @@ class _EstimatingWorksheetDialogState
               padding: const EdgeInsets.all(24),
               decoration: const BoxDecoration(
                 borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-                color: Color(0xFF14211D),
+                color: Color(0xFF1A1A1A),
               ),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -357,7 +357,7 @@ class _EstimatingWorksheetDialogState
                                   color: Colors.white,
                                   borderRadius: BorderRadius.circular(16),
                                   border: Border.all(
-                                    color: const Color(0xFFDCE5E1),
+                                    color: const Color(0xFFE0E0DD),
                                   ),
                                 ),
                                 child: Column(
@@ -488,7 +488,7 @@ class _EstimatingWorksheetSummaryCard extends StatelessWidget {
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: const Color(0xFFDCE5E1)),
+        border: Border.all(color: const Color(0xFFE0E0DD)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -559,7 +559,7 @@ class _EstimatingWorksheetSummaryCard extends StatelessWidget {
                     style: TextStyle(
                       fontSize: 12,
                       fontWeight: FontWeight.w700,
-                      color: Color(0xFF52605C),
+                      color: Color(0xFF6B6B68),
                     ),
                   ),
                 ),
@@ -569,7 +569,7 @@ class _EstimatingWorksheetSummaryCard extends StatelessWidget {
                     style: TextStyle(
                       fontSize: 12,
                       fontWeight: FontWeight.w700,
-                      color: Color(0xFF52605C),
+                      color: Color(0xFF6B6B68),
                     ),
                   ),
                 ),
@@ -580,7 +580,7 @@ class _EstimatingWorksheetSummaryCard extends StatelessWidget {
                     style: TextStyle(
                       fontSize: 12,
                       fontWeight: FontWeight.w700,
-                      color: Color(0xFF52605C),
+                      color: Color(0xFF6B6B68),
                     ),
                   ),
                 ),
@@ -605,7 +605,7 @@ class _EstimatingWorksheetSummaryCard extends StatelessWidget {
                     Expanded(
                       child: Text(
                         material.model,
-                        style: const TextStyle(color: Color(0xFF52605C)),
+                        style: const TextStyle(color: Color(0xFF6B6B68)),
                       ),
                     ),
                   ],

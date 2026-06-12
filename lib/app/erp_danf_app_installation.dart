@@ -20,14 +20,14 @@ class _InstallationScheduleCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final isDarkMode = Theme.of(context).brightness == Brightness.dark;
     final borderColor = isDarkMode
-        ? const Color(0xFF29403A)
-        : const Color(0xFFE2E8F0);
+        ? const Color(0xFF3E4044)
+        : const Color(0xFFE8E8E5);
     final surfaceColor = isDarkMode
-        ? const Color(0xFF121E1B)
-        : const Color(0xFFF8FAFC);
+        ? const Color(0xFF1C1D20)
+        : const Color(0xFFF5F5F3);
     final secondaryTextColor = isDarkMode
-        ? const Color(0xFF9FB2AC)
-        : const Color(0xFF52605C);
+        ? const Color(0xFFA3A39E)
+        : const Color(0xFF6B6B68);
     final scheduledAt = order.installationScheduledAt;
     final hasSchedule = scheduledAt != null;
     final assignedProfiles = _profilesForEmails(
@@ -140,8 +140,8 @@ class _InstallationScheduleCard extends StatelessWidget {
               'Trabalhos planejados',
               style: TextStyle(
                 color: isDarkMode
-                    ? const Color(0xFFE7F1EC)
-                    : const Color(0xFF17211E),
+                    ? const Color(0xFFF2F2F0)
+                    : const Color(0xFF1A1A1A),
                 fontWeight: FontWeight.w800,
               ),
             ),
@@ -209,8 +209,8 @@ class _InstallationScheduleCard extends StatelessWidget {
               'Relatórios da instalação',
               style: TextStyle(
                 color: isDarkMode
-                    ? const Color(0xFFE7F1EC)
-                    : const Color(0xFF17211E),
+                    ? const Color(0xFFF2F2F0)
+                    : const Color(0xFF1A1A1A),
                 fontWeight: FontWeight.w800,
               ),
             ),
@@ -238,7 +238,7 @@ class _InstallationScheduleCard extends StatelessWidget {
                   width: double.infinity,
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
-                    color: isDarkMode ? const Color(0xFF0E1715) : Colors.white,
+                    color: isDarkMode ? const Color(0xFF1C1D20) : Colors.white,
                     borderRadius: BorderRadius.circular(14),
                     border: Border.all(color: borderColor),
                   ),
@@ -352,12 +352,12 @@ class _InstallationCalendarBoard extends StatelessWidget {
   Widget build(BuildContext context) {
     final isDarkMode = Theme.of(context).brightness == Brightness.dark;
     final borderColor = isDarkMode
-        ? const Color(0xFF29403A)
-        : const Color(0xFFE2E8F0);
-    final surfaceColor = isDarkMode ? const Color(0xFF121E1B) : Colors.white;
+        ? const Color(0xFF3E4044)
+        : const Color(0xFFE8E8E5);
+    final surfaceColor = isDarkMode ? const Color(0xFF1C1D20) : Colors.white;
     final secondaryTextColor = isDarkMode
-        ? const Color(0xFF9FB2AC)
-        : const Color(0xFF52605C);
+        ? const Color(0xFFA3A39E)
+        : const Color(0xFF6B6B68);
     final stageOrders = orders
         .where((order) => order.currentStage == WorkflowStage.installation)
         .toList(growable: false);
@@ -494,7 +494,7 @@ class _InstallationCalendarBoard extends StatelessWidget {
                         decoration: BoxDecoration(
                           color: isDarkMode
                               ? Colors.black.withValues(alpha: 0.12)
-                              : const Color(0xFFF8FAFC),
+                              : const Color(0xFFF5F5F3),
                           borderRadius: BorderRadius.circular(14),
                           border: Border.all(color: borderColor),
                         ),
@@ -521,8 +521,8 @@ class _InstallationCalendarBoard extends StatelessWidget {
                                     ? WorkflowStage.installation.color
                                           .withValues(alpha: 0.08)
                                     : isDarkMode
-                                    ? const Color(0xFF0E1715)
-                                    : const Color(0xFFF8FAFC),
+                                    ? const Color(0xFF1C1D20)
+                                    : const Color(0xFFF5F5F3),
                                 borderRadius: BorderRadius.circular(14),
                                 border: Border.all(
                                   color: selectedOrder?.code == order.code
@@ -787,7 +787,7 @@ class _InstallationExecutionDialogState
       child: Container(
         constraints: const BoxConstraints(maxWidth: 760),
         decoration: BoxDecoration(
-          color: const Color(0xFFF5F7F2),
+          color: const Color(0xFFF5F5F3),
           borderRadius: BorderRadius.circular(28),
         ),
         child: Column(
@@ -797,7 +797,7 @@ class _InstallationExecutionDialogState
               padding: const EdgeInsets.all(24),
               decoration: const BoxDecoration(
                 borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-                color: Color(0xFF14211D),
+                color: Color(0xFF1A1A1A),
               ),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -1052,7 +1052,7 @@ class _InstallationScheduleDialogState
       child: Container(
         constraints: const BoxConstraints(maxWidth: 760),
         decoration: BoxDecoration(
-          color: const Color(0xFFF5F7F2),
+          color: const Color(0xFFF5F5F3),
           borderRadius: BorderRadius.circular(28),
         ),
         child: Column(
@@ -1062,7 +1062,7 @@ class _InstallationScheduleDialogState
               padding: const EdgeInsets.all(24),
               decoration: const BoxDecoration(
                 borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-                color: Color(0xFF14211D),
+                color: Color(0xFF1A1A1A),
               ),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -1237,7 +1237,7 @@ class _SchedulePickerTile extends StatelessWidget {
         decoration: BoxDecoration(
           color: Colors.white,
           borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: const Color(0xFFDCE5E1)),
+          border: Border.all(color: const Color(0xFFE0E0DD)),
         ),
         child: Row(
           children: [
@@ -1245,10 +1245,10 @@ class _SchedulePickerTile extends StatelessWidget {
               width: 42,
               height: 42,
               decoration: BoxDecoration(
-                color: const Color(0xFF14211D).withValues(alpha: 0.06),
+                color: const Color(0xFF1A1A1A).withValues(alpha: 0.06),
                 borderRadius: BorderRadius.circular(14),
               ),
-              child: Icon(icon, color: const Color(0xFF14211D)),
+              child: Icon(icon, color: const Color(0xFF1A1A1A)),
             ),
             const SizedBox(width: 12),
             Expanded(
@@ -1258,7 +1258,7 @@ class _SchedulePickerTile extends StatelessWidget {
                   Text(
                     label,
                     style: const TextStyle(
-                      color: Color(0xFF52605C),
+                      color: Color(0xFF6B6B68),
                       fontSize: 12,
                       fontWeight: FontWeight.w700,
                     ),

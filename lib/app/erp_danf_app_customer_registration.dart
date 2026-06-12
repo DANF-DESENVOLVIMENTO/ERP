@@ -14,9 +14,9 @@ class _CustomerRegistrationSubtabs extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(
-        color: const Color(0xFFF7FAF9),
+        color: const Color(0xFFF5F5F3),
         borderRadius: BorderRadius.circular(22),
-        border: Border.all(color: const Color(0xFFDCE5E1)),
+        border: Border.all(color: const Color(0xFFE0E0DD)),
       ),
       child: LayoutBuilder(
         builder: (context, constraints) {
@@ -83,9 +83,9 @@ class _StageWorkspaceSubtabs extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(4),
       decoration: BoxDecoration(
-        color: const Color(0xFFF4F7F6),
+        color: const Color(0xFFF5F5F3),
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFFE5EBE8)),
+        border: Border.all(color: const Color(0xFFE8E8E5)),
       ),
       child: LayoutBuilder(
         builder: (context, constraints) {
@@ -169,9 +169,9 @@ class _RegisteredClientsPreviewSubtabs extends StatelessWidget {
         child: Container(
           padding: const EdgeInsets.all(4),
           decoration: BoxDecoration(
-            color: const Color(0xFFF4F7F6),
+            color: const Color(0xFFF5F5F3),
             borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: const Color(0xFFE5EBE8)),
+            border: Border.all(color: const Color(0xFFE8E8E5)),
           ),
           child: LayoutBuilder(
             builder: (context, constraints) {
@@ -262,7 +262,7 @@ class _CustomerRegistrationSubtabButton extends StatelessWidget {
           textAlign: TextAlign.center,
           style: TextStyle(
             fontWeight: FontWeight.w700,
-            color: selected ? selectedColor : const Color(0xFF14211D),
+            color: selected ? selectedColor : const Color(0xFF1A1A1A),
           ),
         ),
       ),
@@ -307,7 +307,7 @@ class _CustomerRegistrationPreviewTabButton extends StatelessWidget {
         textAlign: TextAlign.center,
         style: TextStyle(
           fontWeight: FontWeight.w700,
-          color: selected ? const Color(0xFF2563EB) : const Color(0xFF14211D),
+          color: selected ? const Color(0xFF2563EB) : const Color(0xFF1A1A1A),
         ),
       ),
     );
@@ -371,7 +371,7 @@ class _CustomerRegistrationUtilityCard extends StatelessWidget {
                     Text(
                       description,
                       style: const TextStyle(
-                        color: Color(0xFF52605C),
+                        color: Color(0xFF6B6B68),
                         fontSize: 13,
                         height: 1.35,
                       ),
@@ -647,7 +647,7 @@ class _ServiceOrderDialogState extends State<_ServiceOrderDialog> {
       child: Container(
         constraints: const BoxConstraints(maxWidth: 820),
         decoration: BoxDecoration(
-          color: const Color(0xFFF5F7F2),
+          color: const Color(0xFFF5F5F3),
           borderRadius: BorderRadius.circular(28),
         ),
         child: Column(
@@ -657,7 +657,7 @@ class _ServiceOrderDialogState extends State<_ServiceOrderDialog> {
               padding: const EdgeInsets.all(24),
               decoration: const BoxDecoration(
                 borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-                color: Color(0xFF14211D),
+                color: Color(0xFF1A1A1A),
               ),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -745,7 +745,7 @@ class _ServiceOrderDialogState extends State<_ServiceOrderDialog> {
                           decoration: BoxDecoration(
                             color: Colors.white,
                             borderRadius: BorderRadius.circular(20),
-                            border: Border.all(color: const Color(0xFFDCE5E1)),
+                            border: Border.all(color: const Color(0xFFE0E0DD)),
                           ),
                           child: Wrap(
                             spacing: 12,
@@ -904,7 +904,7 @@ class _AdditionalProposalClientPickerDialogState
       child: Container(
         constraints: const BoxConstraints(maxWidth: 820, maxHeight: 760),
         decoration: BoxDecoration(
-          color: const Color(0xFFF5F7F2),
+          color: const Color(0xFFF5F5F3),
           borderRadius: BorderRadius.circular(28),
         ),
         child: Column(
@@ -913,7 +913,7 @@ class _AdditionalProposalClientPickerDialogState
               padding: const EdgeInsets.all(24),
               decoration: const BoxDecoration(
                 borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-                color: Color(0xFF14211D),
+                color: Color(0xFF1A1A1A),
               ),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -993,7 +993,7 @@ class _AdditionalProposalClientPickerDialogState
                         enabledBorder: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(18),
                           borderSide: const BorderSide(
-                            color: Color(0xFFDCE5E1),
+                            color: Color(0xFFE0E0DD),
                           ),
                         ),
                       ),
@@ -1008,13 +1008,13 @@ class _AdditionalProposalClientPickerDialogState
                                 color: Colors.white,
                                 borderRadius: BorderRadius.circular(20),
                                 border: Border.all(
-                                  color: const Color(0xFFDCE5E1),
+                                  color: const Color(0xFFE0E0DD),
                                 ),
                               ),
                               child: const Text(
                                 'Nenhum cliente encontrado com esse filtro.',
                                 style: TextStyle(
-                                  color: Color(0xFF52605C),
+                                  color: Color(0xFF6B6B68),
                                   fontWeight: FontWeight.w600,
                                 ),
                               ),
@@ -1034,7 +1034,7 @@ class _AdditionalProposalClientPickerDialogState
                                       color: Colors.white,
                                       borderRadius: BorderRadius.circular(20),
                                       border: Border.all(
-                                        color: const Color(0xFFDCE5E1),
+                                        color: const Color(0xFFE0E0DD),
                                       ),
                                     ),
                                     child: Column(
@@ -1086,7 +1086,7 @@ class _AdditionalProposalClientPickerDialogState
                                         Text(
                                           '${order.client.phone} • ${order.address}',
                                           style: const TextStyle(
-                                            color: Color(0xFF52605C),
+                                            color: Color(0xFF6B6B68),
                                             height: 1.35,
                                           ),
                                         ),
@@ -1273,7 +1273,7 @@ class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
       child: Container(
         constraints: const BoxConstraints(maxWidth: 860),
         decoration: BoxDecoration(
-          color: const Color(0xFFF5F7F2),
+          color: const Color(0xFFF5F5F3),
           borderRadius: BorderRadius.circular(28),
         ),
         child: Column(
@@ -1283,7 +1283,7 @@ class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
               padding: const EdgeInsets.all(24),
               decoration: const BoxDecoration(
                 borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-                color: Color(0xFF14211D),
+                color: Color(0xFF1A1A1A),
               ),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -1342,7 +1342,7 @@ class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
                         decoration: BoxDecoration(
                           color: Colors.white,
                           borderRadius: BorderRadius.circular(20),
-                          border: Border.all(color: const Color(0xFFDCE5E1)),
+                          border: Border.all(color: const Color(0xFFE0E0DD)),
                         ),
                         child: Wrap(
                           spacing: 12,
@@ -1987,7 +1987,7 @@ class _CustomerRegistrationDialogState
           return Container(
             constraints: const BoxConstraints(maxWidth: 900),
             decoration: BoxDecoration(
-              color: const Color(0xFFF5F7F2),
+              color: const Color(0xFFF5F5F3),
               borderRadius: BorderRadius.circular(28),
             ),
             child: Column(
@@ -2524,7 +2524,7 @@ class _CustomerRegistrationDialogState
                                     color: Colors.white,
                                     borderRadius: BorderRadius.circular(16),
                                     border: Border.all(
-                                      color: const Color(0xFFDCE5E1),
+                                      color: const Color(0xFFE0E0DD),
                                     ),
                                   ),
                                   child: Column(
@@ -2715,7 +2715,7 @@ class _CustomerRegistrationDialogState
                                     color: Colors.white,
                                     borderRadius: BorderRadius.circular(16),
                                     border: Border.all(
-                                      color: const Color(0xFFDCE5E1),
+                                      color: const Color(0xFFE0E0DD),
                                     ),
                                   ),
                                   child: Column(
@@ -2926,7 +2926,7 @@ class _AttachmentPickerField extends FormField<String> {
                    ),
                  ),
                  const SizedBox(height: 6),
-                 Text(helper, style: const TextStyle(color: Color(0xFF52605C))),
+                 Text(helper, style: const TextStyle(color: Color(0xFF6B6B68))),
                  const SizedBox(height: 16),
                  OutlinedButton.icon(
                    onPressed: onPick == null
@@ -3065,7 +3065,7 @@ class _DialogChoiceField extends StatelessWidget {
     final Color accentColor = switch (normalizedValue) {
       'sim' => const Color(0xFF14804A),
       'não' || 'nao' => const Color(0xFFC62828),
-      _ => const Color(0xFF52605C),
+      _ => const Color(0xFF6B6B68),
     };
     final Color fillColor = switch (normalizedValue) {
       'sim' => const Color(0xFFE7F6ED),

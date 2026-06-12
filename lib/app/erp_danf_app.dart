@@ -3,11 +3,13 @@ import 'dart:convert';
 import 'dart:io' as io;
 
 import 'package:file_picker/file_picker.dart';
+import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -324,7 +326,7 @@ class _ErpDanfAppState extends State<ErpDanfApp> {
 
   @override
   Widget build(BuildContext context) {
-    const seed = Color(0xFFB8C9BE);
+    const seed = Color(0xFF2F6B4F);
 
     return ValueListenableBuilder<Object?>(
       valueListenable: widget.runtimeErrorListenable,
@@ -445,95 +447,101 @@ ThemeData _buildTheme({required Color seed, required Brightness brightness}) {
   final colorScheme = ColorScheme.fromSeed(
     seedColor: seed,
     brightness: brightness,
-  );
+  ).copyWith(surfaceTint: Colors.transparent);
   final isDark = brightness == Brightness.dark;
+
+  final backgroundColor = isDark
+      ? const Color(0xFF18191B)
+      : const Color(0xFFF7F7F5);
+  final surfaceColor = isDark ? const Color(0xFF202225) : Colors.white;
+  final surfaceVariantColor = isDark
+      ? const Color(0xFF26282B)
+      : const Color(0xFFF5F5F3);
+  final borderColor = isDark
+      ? const Color(0xFF2F3134)
+      : const Color(0xFFE8E8E5);
+  final primaryTextColor = isDark
+      ? const Color(0xFFF2F2F0)
+      : const Color(0xFF1A1A1A);
+  final secondaryTextColor = isDark
+      ? const Color(0xFFA3A39E)
+      : const Color(0xFF6B6B68);
 
   return ThemeData(
     useMaterial3: true,
     brightness: brightness,
     colorScheme: colorScheme,
-    scaffoldBackgroundColor: isDark
-        ? const Color(0xFF16211E)
-        : const Color(0xFFF4F6F2),
-    cardColor: isDark ? const Color(0xFF24302C) : const Color(0xFFFFFEFC),
-    dialogTheme: DialogThemeData(
-      backgroundColor: isDark
-          ? const Color(0xFF24302C)
-          : const Color(0xFFFFFEFC),
+    scaffoldBackgroundColor: backgroundColor,
+    cardColor: surfaceColor,
+    dialogTheme: DialogThemeData(backgroundColor: surfaceColor),
+    appBarTheme: AppBarTheme(
+      backgroundColor: backgroundColor,
+      foregroundColor: primaryTextColor,
+      surfaceTintColor: Colors.transparent,
+      elevation: 0,
+      scrolledUnderElevation: 0,
     ),
-    textTheme: (isDark ? ThemeData.dark() : ThemeData.light()).textTheme.apply(
-      bodyColor: isDark ? const Color(0xFFE7F1EC) : const Color(0xFF14211D),
-      displayColor: isDark ? const Color(0xFFE7F1EC) : const Color(0xFF14211D),
+    cardTheme: CardThemeData(
+      color: surfaceColor,
+      surfaceTintColor: Colors.transparent,
+      elevation: 0,
+      margin: EdgeInsets.zero,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(color: borderColor),
+      ),
     ),
+    dividerTheme: DividerThemeData(color: borderColor, space: 1, thickness: 1),
+    textTheme: GoogleFonts.interTextTheme(
+      (isDark ? ThemeData.dark() : ThemeData.light()).textTheme,
+    ).apply(bodyColor: primaryTextColor, displayColor: primaryTextColor),
     inputDecorationTheme: InputDecorationTheme(
       filled: true,
-      fillColor: isDark
-          ? const Color(0xFF2A3732)
-          : Colors.white.withValues(alpha: 0.92),
-      hintStyle: TextStyle(
-        color: isDark ? const Color(0xFF8FA39C) : const Color(0xFF7B8782),
-      ),
-      contentPadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+      fillColor: surfaceVariantColor,
+      hintStyle: TextStyle(color: secondaryTextColor),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
       border: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(22),
-        borderSide: BorderSide(
-          color: isDark ? const Color(0xFF4D625B) : const Color(0xFFE4EAE5),
-        ),
+        borderRadius: BorderRadius.circular(12),
+        borderSide: BorderSide(color: borderColor),
       ),
       enabledBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(22),
-        borderSide: BorderSide(
-          color: isDark ? const Color(0xFF4D625B) : const Color(0xFFE4EAE5),
-        ),
+        borderRadius: BorderRadius.circular(12),
+        borderSide: BorderSide(color: borderColor),
       ),
       focusedBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(22),
-        borderSide: BorderSide(
-          color: isDark ? const Color(0xFFB9D7C4) : const Color(0xFFB9C9BF),
-        ),
+        borderRadius: BorderRadius.circular(12),
+        borderSide: BorderSide(color: colorScheme.primary, width: 1.5),
       ),
     ),
     filledButtonTheme: FilledButtonThemeData(
       style: FilledButton.styleFrom(
-        backgroundColor: isDark
-            ? const Color(0xFFE7F1EC)
-            : const Color(0xFF14211D),
-        foregroundColor: isDark ? const Color(0xFF14211D) : Colors.white,
+        backgroundColor: colorScheme.primary,
+        foregroundColor: colorScheme.onPrimary,
         padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        textStyle: const TextStyle(fontWeight: FontWeight.w700),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        textStyle: const TextStyle(fontWeight: FontWeight.w600),
       ),
     ),
     outlinedButtonTheme: OutlinedButtonThemeData(
       style: OutlinedButton.styleFrom(
-        foregroundColor: isDark
-            ? const Color(0xFFE7F1EC)
-            : const Color(0xFF14211D),
-        side: BorderSide(
-          color: isDark ? const Color(0xFF5B7169) : const Color(0xFFD6DEDA),
-        ),
+        foregroundColor: primaryTextColor,
+        side: BorderSide(color: borderColor),
         padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        textStyle: const TextStyle(fontWeight: FontWeight.w700),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        textStyle: const TextStyle(fontWeight: FontWeight.w600),
       ),
     ),
     iconButtonTheme: IconButtonThemeData(
       style: IconButton.styleFrom(
-        backgroundColor: isDark
-            ? const Color(0xFF2A3732)
-            : Colors.white.withValues(alpha: 0.94),
-        foregroundColor: isDark
-            ? const Color(0xFFE7F1EC)
-            : const Color(0xFF14211D),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
+        backgroundColor: surfaceVariantColor,
+        foregroundColor: primaryTextColor,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ),
     ),
     snackBarTheme: SnackBarThemeData(
       behavior: SnackBarBehavior.floating,
-      backgroundColor: isDark ? const Color(0xFF1A2522) : null,
-      contentTextStyle: TextStyle(
-        color: isDark ? const Color(0xFFE7F1EC) : null,
-      ),
+      backgroundColor: isDark ? surfaceVariantColor : null,
+      contentTextStyle: TextStyle(color: isDark ? primaryTextColor : null),
     ),
   );
 }
@@ -6454,7 +6462,7 @@ class _ShellBackdrop extends StatelessWidget {
     final isDarkMode = Theme.of(context).brightness == Brightness.dark;
 
     return Container(
-      color: isDarkMode ? const Color(0xFF16211E) : const Color(0xFFF4F6F2),
+      color: isDarkMode ? const Color(0xFF18191B) : const Color(0xFFF7F7F5),
       child: Stack(
         children: [
           Positioned(
@@ -6466,8 +6474,8 @@ class _ShellBackdrop extends StatelessWidget {
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 color: isDarkMode
-                    ? const Color(0xFF33443E).withValues(alpha: 0.34)
-                    : const Color(0xFFEAF0EA),
+                    ? const Color(0xFF26282B).withValues(alpha: 0.34)
+                    : const Color(0xFFF5F5F3),
               ),
             ),
           ),
@@ -6480,8 +6488,8 @@ class _ShellBackdrop extends StatelessWidget {
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 color: isDarkMode
-                    ? const Color(0xFF2B3A35).withValues(alpha: 0.42)
-                    : const Color(0xFFF9FAF7),
+                    ? const Color(0xFF26282B).withValues(alpha: 0.42)
+                    : const Color(0xFFF5F5F3),
               ),
             ),
           ),
@@ -6494,8 +6502,8 @@ class _ShellBackdrop extends StatelessWidget {
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 color: isDarkMode
-                    ? const Color(0xFF2C3D37).withValues(alpha: 0.34)
-                    : const Color(0xFFE7EDE7),
+                    ? const Color(0xFF26282B).withValues(alpha: 0.34)
+                    : const Color(0xFFF5F5F3),
               ),
             ),
           ),
@@ -6547,8 +6555,8 @@ class _DesktopShellHeader extends StatelessWidget {
                     fontSize: 24,
                     fontWeight: FontWeight.w800,
                     color: isDarkMode
-                        ? const Color(0xFFF4FBF8)
-                        : const Color(0xFF17211E),
+                        ? const Color(0xFFF2F2F0)
+                        : const Color(0xFF1A1A1A),
                   ),
                 ),
                 const SizedBox(height: 4),
@@ -6556,8 +6564,8 @@ class _DesktopShellHeader extends StatelessWidget {
                   'Painel operacional com busca rápida e acesso direto às áreas.',
                   style: TextStyle(
                     color: isDarkMode
-                        ? const Color(0xFF9FB2AC)
-                        : const Color(0xFF67746F),
+                        ? const Color(0xFFA3A39E)
+                        : const Color(0xFF6B6B68),
                     fontSize: 13,
                   ),
                 ),
@@ -6572,21 +6580,21 @@ class _DesktopShellHeader extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
             decoration: BoxDecoration(
               color: isDarkMode
-                  ? const Color(0xFF121C19)
+                  ? const Color(0xFF202225)
                   : Colors.white.withValues(alpha: 0.92),
               borderRadius: BorderRadius.circular(20),
               border: Border.all(
                 color: isDarkMode
-                    ? const Color(0xFF23322E)
-                    : const Color(0xFFE4EAE5),
+                    ? const Color(0xFF26282B)
+                    : const Color(0xFFE8E8E5),
               ),
             ),
             child: Text(
               _formatDate(DateTime.now()),
               style: TextStyle(
                 color: isDarkMode
-                    ? const Color(0xFFE7F1EC)
-                    : const Color(0xFF17211E),
+                    ? const Color(0xFFF2F2F0)
+                    : const Color(0xFF1A1A1A),
                 fontWeight: FontWeight.w700,
               ),
             ),
@@ -6625,14 +6633,14 @@ class _SoftwareVersionLabel extends StatelessWidget {
   Widget build(BuildContext context) {
     final isDarkMode = Theme.of(context).brightness == Brightness.dark;
     final foregroundColor = isDarkMode
-        ? const Color(0xFFE7F1EC)
-        : const Color(0xFF17211E);
+        ? const Color(0xFFF2F2F0)
+        : const Color(0xFF1A1A1A);
     final backgroundColor = isDarkMode
-        ? const Color(0xFF1C2A26)
-        : const Color(0xFFEFF4F0);
+        ? const Color(0xFF26282B)
+        : const Color(0xFFF5F5F3);
     final borderColor = isDarkMode
-        ? const Color(0xFF2B3B36)
-        : const Color(0xFFDCE7DF);
+        ? const Color(0xFF3E4044)
+        : const Color(0xFFE0E0DD);
 
     return DecoratedBox(
       decoration: BoxDecoration(
@@ -6706,7 +6714,7 @@ class _DriveSyncIndicator extends StatelessWidget {
             Text(
               label,
               style: TextStyle(
-                color: isDarkMode ? const Color(0xFFE7F1EC) : color,
+                color: isDarkMode ? const Color(0xFFF2F2F0) : color,
                 fontWeight: FontWeight.w800,
                 fontSize: 12,
               ),
@@ -6752,7 +6760,7 @@ class _SoftwareUpdateCheckButton extends StatelessWidget {
             border: Border.all(
               color: isDarkMode
                   ? color.withValues(alpha: 0.28)
-                  : const Color(0xFFE4EAE5),
+                  : const Color(0xFFE8E8E5),
             ),
           ),
           child: Center(
@@ -6846,7 +6854,7 @@ class _ConversationNotificationsButton extends StatelessWidget {
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
-                          color: Color(0xFF52605C),
+                          color: Color(0xFF6B6B68),
                           fontSize: 12,
                         ),
                       ),
@@ -6872,13 +6880,13 @@ class _ConversationNotificationsButton extends StatelessWidget {
             height: compact ? 44 : 46,
             decoration: BoxDecoration(
               color: isDarkMode
-                  ? const Color(0xFF121C19)
+                  ? const Color(0xFF202225)
                   : Colors.white.withValues(alpha: 0.96),
               borderRadius: BorderRadius.circular(18),
               border: Border.all(
                 color: isDarkMode
-                    ? const Color(0xFF23322E)
-                    : const Color(0xFFE4EAE5),
+                    ? const Color(0xFF26282B)
+                    : const Color(0xFFE8E8E5),
               ),
             ),
             child: Icon(
@@ -6959,13 +6967,13 @@ class _ShellProfileMenuButton extends StatelessWidget {
         ),
         decoration: BoxDecoration(
           color: isDarkMode
-              ? const Color(0xFF121C19)
+              ? const Color(0xFF202225)
               : Colors.white.withValues(alpha: 0.96),
           borderRadius: BorderRadius.circular(20),
           border: Border.all(
             color: isDarkMode
-                ? const Color(0xFF23322E)
-                : const Color(0xFFE4EAE5),
+                ? const Color(0xFF26282B)
+                : const Color(0xFFE8E8E5),
           ),
         ),
         child: Row(
@@ -7012,8 +7020,8 @@ class _ShellProfileMenuButton extends StatelessWidget {
                     profile.name,
                     style: TextStyle(
                       color: isDarkMode
-                          ? const Color(0xFFF4FBF8)
-                          : const Color(0xFF17211E),
+                          ? const Color(0xFFF2F2F0)
+                          : const Color(0xFF1A1A1A),
                       fontWeight: FontWeight.w700,
                     ),
                   ),
@@ -7021,8 +7029,8 @@ class _ShellProfileMenuButton extends StatelessWidget {
                     profile.role,
                     style: TextStyle(
                       color: isDarkMode
-                          ? const Color(0xFF9FB2AC)
-                          : const Color(0xFF67746F),
+                          ? const Color(0xFFA3A39E)
+                          : const Color(0xFF6B6B68),
                       fontSize: 12,
                     ),
                   ),
@@ -7032,8 +7040,8 @@ class _ShellProfileMenuButton extends StatelessWidget {
               Icon(
                 Icons.expand_more_rounded,
                 color: isDarkMode
-                    ? const Color(0xFF9FB2AC)
-                    : const Color(0xFF67746F),
+                    ? const Color(0xFFA3A39E)
+                    : const Color(0xFF6B6B68),
               ),
             ],
           ],
@@ -7242,8 +7250,8 @@ class _FirebaseAccessDeniedScreen extends StatelessWidget {
         decoration: BoxDecoration(
           gradient: LinearGradient(
             colors: isDarkMode
-                ? const [Color(0xFF08110F), Color(0xFF12211E)]
-                : const [Color(0xFFF6F8F3), Color(0xFFE9EFE8)],
+                ? const [Color(0xFF18191B), Color(0xFF202225)]
+                : const [Color(0xFFF5F5F3), Color(0xFFF5F5F3)],
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
           ),
@@ -7257,7 +7265,7 @@ class _FirebaseAccessDeniedScreen extends StatelessWidget {
                 child: Container(
                   padding: const EdgeInsets.all(28),
                   decoration: BoxDecoration(
-                    color: isDarkMode ? const Color(0xFF101A18) : Colors.white,
+                    color: isDarkMode ? const Color(0xFF202225) : Colors.white,
                     borderRadius: BorderRadius.circular(28),
                     border: Border.all(color: const Color(0xFFFECACA)),
                     boxShadow: [
@@ -7293,8 +7301,8 @@ class _FirebaseAccessDeniedScreen extends StatelessWidget {
                           fontSize: 28,
                           fontWeight: FontWeight.w800,
                           color: isDarkMode
-                              ? const Color(0xFFE7F1EC)
-                              : const Color(0xFF14211D),
+                              ? const Color(0xFFF2F2F0)
+                              : const Color(0xFF1A1A1A),
                         ),
                       ),
                       const SizedBox(height: 12),
@@ -7306,7 +7314,7 @@ class _FirebaseAccessDeniedScreen extends StatelessWidget {
                           fontSize: 15,
                           height: 1.5,
                           color: isDarkMode
-                              ? const Color(0xFFB8CBC4)
+                              ? const Color(0xFFA3A39E)
                               : const Color(0xFF475569),
                         ),
                       ),
@@ -7334,8 +7342,8 @@ class _FirebaseAccessDeniedScreen extends StatelessWidget {
                         style: TextStyle(
                           fontWeight: FontWeight.w700,
                           color: isDarkMode
-                              ? const Color(0xFFE7F1EC)
-                              : const Color(0xFF14211D),
+                              ? const Color(0xFFF2F2F0)
+                              : const Color(0xFF1A1A1A),
                         ),
                       ),
                       const SizedBox(height: 10),
@@ -7350,17 +7358,17 @@ class _FirebaseAccessDeniedScreen extends StatelessWidget {
                                   vertical: 8,
                                 ),
                                 decoration: BoxDecoration(
-                                  color: const Color(0xFFF8FAFC),
+                                  color: const Color(0xFFF5F5F3),
                                   borderRadius: BorderRadius.circular(999),
                                   border: Border.all(
-                                    color: const Color(0xFFE2E8F0),
+                                    color: const Color(0xFFE8E8E5),
                                   ),
                                 ),
                                 child: Text(
                                   value,
                                   style: TextStyle(
                                     color: isDarkMode
-                                        ? const Color(0xFFE7F1EC)
+                                        ? const Color(0xFFF2F2F0)
                                         : const Color(0xFF334155),
                                     fontWeight: FontWeight.w600,
                                   ),
@@ -7376,8 +7384,8 @@ class _FirebaseAccessDeniedScreen extends StatelessWidget {
                           fontSize: 14,
                           height: 1.5,
                           color: isDarkMode
-                              ? const Color(0xFFB8CBC4)
-                              : const Color(0xFF52605C),
+                              ? const Color(0xFFA3A39E)
+                              : const Color(0xFF6B6B68),
                         ),
                       ),
                       const SizedBox(height: 22),
@@ -7415,79 +7423,10 @@ class _WorkflowSection extends StatelessWidget {
   Widget build(BuildContext context) {
     final screenWidth = MediaQuery.sizeOf(context).width;
     final isWide = screenWidth >= 900;
-    final tasksToday = tasks
-        .where((task) => task.status == WorkspaceTaskStatus.today)
-        .length;
-    final tasksDoing = tasks
-        .where((task) => task.status == WorkspaceTaskStatus.doing)
-        .length;
-    final tasksWaiting = tasks
-        .where((task) => task.status == WorkspaceTaskStatus.waiting)
-        .length;
 
     return ListView(
       padding: const EdgeInsets.all(24),
       children: [
-        _EmployeeWorkspaceHero(
-          profile: profile,
-          taskCount: tasks.length,
-          tasksToday: tasksToday,
-          allowedStageCount: profile.allowedStages.length,
-        ),
-        const SizedBox(height: 18),
-        LayoutBuilder(
-          builder: (context, constraints) {
-            final cardWidth = constraints.maxWidth >= 1100
-                ? (constraints.maxWidth - 32) / 3
-                : constraints.maxWidth >= 760
-                ? (constraints.maxWidth - 16) / 2
-                : constraints.maxWidth;
-
-            return Wrap(
-              spacing: 16,
-              runSpacing: 16,
-              children: [
-                SizedBox(
-                  width: cardWidth,
-                  child: _EmployeeWorkspaceMetric(
-                    title: 'Tarefas de hoje',
-                    value: tasksToday.toString(),
-                    subtitle: tasksToday == 1
-                        ? '1 item priorizado para hoje'
-                        : '$tasksToday itens priorizados para hoje',
-                    icon: Icons.today_outlined,
-                    accent: profile.accent,
-                  ),
-                ),
-                SizedBox(
-                  width: cardWidth,
-                  child: _EmployeeWorkspaceMetric(
-                    title: 'Em andamento',
-                    value: tasksDoing.toString(),
-                    subtitle: tasksDoing == 0
-                        ? 'Nenhuma tarefa em execução'
-                        : '$tasksDoing tarefa${tasksDoing == 1 ? '' : 's'} em execução',
-                    icon: Icons.play_circle_outline,
-                    accent: const Color(0xFF7C3AED),
-                  ),
-                ),
-                SizedBox(
-                  width: cardWidth,
-                  child: _EmployeeWorkspaceMetric(
-                    title: 'Aguardando',
-                    value: tasksWaiting.toString(),
-                    subtitle: tasksWaiting == 0
-                        ? 'Sem pendências em espera'
-                        : '$tasksWaiting pendência${tasksWaiting == 1 ? '' : 's'} aguardando retorno',
-                    icon: Icons.hourglass_empty_outlined,
-                    accent: const Color(0xFFB45309),
-                  ),
-                ),
-              ],
-            );
-          },
-        ),
-        const SizedBox(height: 22),
         if (profile.isAdministrator)
           _AdminSectorCompletionPanel(orders: allOrders)
         else
@@ -7569,7 +7508,7 @@ class _AllowedStageWorkspacePanel extends StatelessWidget {
                     SizedBox(height: 6),
                     Text(
                       'A sua área mostra somente os quadros e tarefas liberados para o seu perfil.',
-                      style: TextStyle(color: Color(0xFF52605C), height: 1.35),
+                      style: TextStyle(color: Color(0xFF6B6B68), height: 1.35),
                     ),
                   ],
                 ),
@@ -7628,14 +7567,66 @@ class _AllowedStageWorkspacePanel extends StatelessWidget {
   }
 }
 
-class _AdminSectorCompletionPanel extends StatelessWidget {
+enum _SectorCompletionViewMode { list, chart }
+
+class _AdminSectorCompletionPanel extends StatefulWidget {
   const _AdminSectorCompletionPanel({required this.orders});
 
   final List<WorkflowOrder> orders;
 
   @override
+  State<_AdminSectorCompletionPanel> createState() =>
+      _AdminSectorCompletionPanelState();
+}
+
+class _AdminSectorCompletionPanelState
+    extends State<_AdminSectorCompletionPanel> {
+  _SectorCompletionViewMode _viewMode = _SectorCompletionViewMode.list;
+  DateTimeRange? _customRange;
+  final GlobalKey _dateFilterButtonKey = GlobalKey();
+
+  Future<void> _showDateFilterPopup() async {
+    final buttonBox =
+        _dateFilterButtonKey.currentContext!.findRenderObject() as RenderBox;
+    final overlayBox =
+        Overlay.of(context).context.findRenderObject() as RenderBox;
+    final position = RelativeRect.fromRect(
+      Rect.fromPoints(
+        buttonBox.localToGlobal(
+          Offset(0, buttonBox.size.height + 8),
+          ancestor: overlayBox,
+        ),
+        buttonBox.localToGlobal(
+          buttonBox.size.bottomRight(Offset.zero),
+          ancestor: overlayBox,
+        ),
+      ),
+      Offset.zero & overlayBox.size,
+    );
+
+    final result = await showMenu<DateTimeRange>(
+      context: context,
+      position: position,
+      constraints: const BoxConstraints(maxWidth: 340),
+      items: [
+        _PopupMenuContent<DateTimeRange>(
+          child: _DateFilterPopupContent(initialRange: _customRange),
+        ),
+      ],
+    );
+
+    if (result != null && mounted) {
+      setState(() {
+        _customRange = result;
+      });
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final orders = widget.orders;
     final now = DateTime.now();
+    final customRange = _customRange;
     final periods = [
       _CompletionPeriod(
         title: 'Semana',
@@ -7655,6 +7646,21 @@ class _AdminSectorCompletionPanel extends StatelessWidget {
         start: DateTime(now.year),
         end: now,
       ),
+      if (customRange != null)
+        _CompletionPeriod(
+          title: 'Personalizado',
+          subtitle:
+              '${_formatDate(customRange.start)} a ${_formatDate(customRange.end)}',
+          start: DateUtils.dateOnly(customRange.start),
+          end: DateUtils.dateOnly(customRange.end).add(
+            const Duration(
+              hours: 23,
+              minutes: 59,
+              seconds: 59,
+              milliseconds: 999,
+            ),
+          ),
+        ),
     ];
 
     return Container(
@@ -7691,12 +7697,75 @@ class _AdminSectorCompletionPanel extends StatelessWidget {
                     ),
                     SizedBox(height: 6),
                     Text(
-                      'Acompanhe quantos pedidos foram concluídos em cada setor na semana, no mês e no ano.',
-                      style: TextStyle(color: Color(0xFF52605C), height: 1.35),
+                      'Acompanhe quantos pedidos estão em andamento e quantos foram concluídos em cada setor na semana, no mês, no ano ou em um período personalizado.',
+                      style: TextStyle(color: Color(0xFF6B6B68), height: 1.35),
                     ),
                   ],
                 ),
               ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Wrap(
+            spacing: 12,
+            runSpacing: 12,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              SegmentedButton<_SectorCompletionViewMode>(
+                segments: const [
+                  ButtonSegment(
+                    value: _SectorCompletionViewMode.list,
+                    icon: Icon(Icons.view_agenda_outlined),
+                    label: Text('Lista'),
+                  ),
+                  ButtonSegment(
+                    value: _SectorCompletionViewMode.chart,
+                    icon: Icon(Icons.bar_chart_rounded),
+                    label: Text('Gráfico'),
+                  ),
+                ],
+                selected: {_viewMode},
+                showSelectedIcon: false,
+                onSelectionChanged: (selection) {
+                  setState(() {
+                    _viewMode = selection.first;
+                  });
+                },
+              ),
+              OutlinedButton.icon(
+                key: _dateFilterButtonKey,
+                onPressed: _showDateFilterPopup,
+                icon: const Icon(Icons.date_range_rounded, size: 18),
+                label: Text(
+                  customRange == null
+                      ? 'Filtrar por período'
+                      : '${_formatDate(customRange.start)} - ${_formatDate(customRange.end)}',
+                ),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: const Color(0xFF0F766E),
+                  side: const BorderSide(color: Color(0xFF0F766E)),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 12,
+                  ),
+                ),
+              ),
+              if (customRange != null)
+                IconButton(
+                  tooltip: 'Remover filtro de período',
+                  onPressed: () => setState(() => _customRange = null),
+                  icon: const Icon(Icons.close_rounded),
+                  style: IconButton.styleFrom(
+                    backgroundColor: const Color(0xFFFEE2E2),
+                    foregroundColor: const Color(0xFFB91C1C),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                ),
             ],
           ),
           const SizedBox(height: 18),
@@ -7721,6 +7790,7 @@ class _AdminSectorCompletionPanel extends StatelessWidget {
                             orders: orders,
                             period: period,
                           ),
+                          viewMode: _viewMode,
                         ),
                       ),
                     )
@@ -7729,6 +7799,266 @@ class _AdminSectorCompletionPanel extends StatelessWidget {
             },
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _PopupMenuContent<T> extends PopupMenuEntry<T> {
+  const _PopupMenuContent({required this.child});
+
+  final Widget child;
+
+  @override
+  double get height => 0;
+
+  @override
+  bool represents(T? value) => false;
+
+  @override
+  State<_PopupMenuContent<T>> createState() => _PopupMenuContentState<T>();
+}
+
+class _PopupMenuContentState<T> extends State<_PopupMenuContent<T>> {
+  @override
+  Widget build(BuildContext context) => widget.child;
+}
+
+class _DateFilterPopupContent extends StatefulWidget {
+  const _DateFilterPopupContent({this.initialRange});
+
+  final DateTimeRange? initialRange;
+
+  @override
+  State<_DateFilterPopupContent> createState() =>
+      _DateFilterPopupContentState();
+}
+
+class _DateFilterPopupContentState extends State<_DateFilterPopupContent> {
+  late DateTime _start;
+  late DateTime _end;
+  bool _editingStart = true;
+
+  @override
+  void initState() {
+    super.initState();
+    final today = DateUtils.dateOnly(DateTime.now());
+    final range = widget.initialRange;
+    _start = range != null
+        ? DateUtils.dateOnly(range.start)
+        : today.subtract(const Duration(days: 6));
+    _end = range != null ? DateUtils.dateOnly(range.end) : today;
+  }
+
+  void _applyRange(DateTimeRange range) {
+    Navigator.pop(context, range);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    final today = DateUtils.dateOnly(DateTime.now());
+    final labelColor = isDarkMode
+        ? const Color(0xFFA3A39E)
+        : const Color(0xFF6B6B68);
+
+    return SizedBox(
+      width: 320,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              'Período rápido',
+              style: TextStyle(
+                color: labelColor,
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                ActionChip(
+                  label: const Text('Hoje'),
+                  onPressed: () =>
+                      _applyRange(DateTimeRange(start: today, end: today)),
+                ),
+                ActionChip(
+                  label: const Text('Últimos 7 dias'),
+                  onPressed: () => _applyRange(
+                    DateTimeRange(
+                      start: today.subtract(const Duration(days: 6)),
+                      end: today,
+                    ),
+                  ),
+                ),
+                ActionChip(
+                  label: const Text('Este mês'),
+                  onPressed: () => _applyRange(
+                    DateTimeRange(
+                      start: DateTime(today.year, today.month),
+                      end: today,
+                    ),
+                  ),
+                ),
+                ActionChip(
+                  label: const Text('Este ano'),
+                  onPressed: () => _applyRange(
+                    DateTimeRange(start: DateTime(today.year), end: today),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            Divider(
+              height: 1,
+              color: isDarkMode
+                  ? const Color(0xFF3E4044)
+                  : const Color(0xFFE8E8E5),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'Período personalizado',
+              style: TextStyle(
+                color: labelColor,
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: _DateFilterFieldButton(
+                    label: 'De',
+                    date: _start,
+                    selected: _editingStart,
+                    onTap: () => setState(() => _editingStart = true),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: _DateFilterFieldButton(
+                    label: 'Até',
+                    date: _end,
+                    selected: !_editingStart,
+                    onTap: () => setState(() => _editingStart = false),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            SizedBox(
+              height: 320,
+              child: CalendarDatePicker(
+                key: ValueKey(_editingStart),
+                initialDate: _editingStart ? _start : _end,
+                firstDate: DateTime(today.year - 5),
+                lastDate: today,
+                onDateChanged: (date) {
+                  setState(() {
+                    if (_editingStart) {
+                      _start = date;
+                      if (_end.isBefore(_start)) {
+                        _end = _start;
+                      }
+                    } else {
+                      _end = date;
+                      if (_start.isAfter(_end)) {
+                        _start = _end;
+                      }
+                    }
+                  });
+                },
+              ),
+            ),
+            const SizedBox(height: 12),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Cancelar'),
+                ),
+                const SizedBox(width: 8),
+                FilledButton(
+                  onPressed: () =>
+                      _applyRange(DateTimeRange(start: _start, end: _end)),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: const Color(0xFF0F766E),
+                  ),
+                  child: const Text('Aplicar'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _DateFilterFieldButton extends StatelessWidget {
+  const _DateFilterFieldButton({
+    required this.label,
+    required this.date,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final DateTime date;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    final borderColor = selected
+        ? const Color(0xFF0F766E)
+        : isDarkMode
+        ? const Color(0xFF3E4044)
+        : const Color(0xFFE8E8E5);
+    final labelColor = isDarkMode
+        ? const Color(0xFFA3A39E)
+        : const Color(0xFF6B6B68);
+    final valueColor = isDarkMode
+        ? const Color(0xFFF2F2F0)
+        : const Color(0xFF1A1A1A);
+
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: borderColor, width: selected ? 2 : 1),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              label,
+              style: TextStyle(
+                color: labelColor,
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              _formatDate(date),
+              style: TextStyle(color: valueColor, fontWeight: FontWeight.w700),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -7749,22 +8079,36 @@ class _CompletionPeriod {
 }
 
 class _SectorCompletionEntry {
-  const _SectorCompletionEntry({required this.stage, required this.count});
+  const _SectorCompletionEntry({
+    required this.stage,
+    required this.count,
+    required this.inProgressCount,
+  });
 
   final WorkflowStage stage;
   final int count;
+  final int inProgressCount;
 }
 
 class _SectorCompletionChart extends StatelessWidget {
-  const _SectorCompletionChart({required this.period, required this.entries});
+  const _SectorCompletionChart({
+    required this.period,
+    required this.entries,
+    required this.viewMode,
+  });
 
   final _CompletionPeriod period;
   final List<_SectorCompletionEntry> entries;
+  final _SectorCompletionViewMode viewMode;
 
   @override
   Widget build(BuildContext context) {
     final isDarkMode = Theme.of(context).brightness == Brightness.dark;
     final total = entries.fold<int>(0, (sum, entry) => sum + entry.count);
+    final totalInProgress = entries.fold<int>(
+      0,
+      (sum, entry) => sum + entry.inProgressCount,
+    );
     final maxCount = entries.fold<int>(
       0,
       (max, entry) => entry.count > max ? entry.count : max,
@@ -7773,10 +8117,10 @@ class _SectorCompletionChart extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
-        color: isDarkMode ? const Color(0xFF2A3732) : const Color(0xFFF8FAFC),
+        color: isDarkMode ? const Color(0xFF26282B) : const Color(0xFFF5F5F3),
         borderRadius: BorderRadius.circular(20),
         border: Border.all(
-          color: isDarkMode ? const Color(0xFF526860) : const Color(0xFFE2E8F0),
+          color: isDarkMode ? const Color(0xFF2F3134) : const Color(0xFFE8E8E5),
         ),
       ),
       child: Column(
@@ -7800,23 +8144,39 @@ class _SectorCompletionChart extends StatelessWidget {
                       period.subtitle,
                       style: TextStyle(
                         color: isDarkMode
-                            ? const Color(0xFFC0D0C9)
-                            : const Color(0xFF52605C),
+                            ? const Color(0xFFA3A39E)
+                            : const Color(0xFF6B6B68),
                       ),
                     ),
                   ],
                 ),
               ),
-              _StatusBadge(label: '$total', color: const Color(0xFF0F766E)),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  _StatusBadge(
+                    label: 'Em andamento: $totalInProgress',
+                    color: const Color(0xFF7C3AED),
+                  ),
+                  const SizedBox(height: 6),
+                  _StatusBadge(
+                    label: 'Concluído: $total',
+                    color: const Color(0xFF0F766E),
+                  ),
+                ],
+              ),
             ],
           ),
           const SizedBox(height: 16),
-          ...entries.map(
-            (entry) => Padding(
-              padding: const EdgeInsets.only(bottom: 12),
-              child: _SectorCompletionBar(entry: entry, maxCount: maxCount),
+          if (viewMode == _SectorCompletionViewMode.chart)
+            _SectorCompletionBarChart(entries: entries)
+          else
+            ...entries.map(
+              (entry) => Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: _SectorCompletionBar(entry: entry, maxCount: maxCount),
+              ),
             ),
-          ),
         ],
       ),
     );
@@ -7849,13 +8209,20 @@ class _SectorCompletionBar extends StatelessWidget {
                 style: const TextStyle(fontWeight: FontWeight.w700),
               ),
             ),
-            const SizedBox(width: 8),
-            Text(
-              entry.count.toString(),
-              style: TextStyle(
-                color: entry.stage.color,
-                fontWeight: FontWeight.w800,
-              ),
+          ],
+        ),
+        const SizedBox(height: 6),
+        Wrap(
+          spacing: 6,
+          runSpacing: 6,
+          children: [
+            _StatusBadge(
+              label: 'Em andamento: ${entry.inProgressCount}',
+              color: const Color(0xFF7C3AED),
+            ),
+            _StatusBadge(
+              label: 'Concluído: ${entry.count}',
+              color: entry.stage.color,
             ),
           ],
         ),
@@ -7866,10 +8233,181 @@ class _SectorCompletionBar extends StatelessWidget {
             value: value,
             minHeight: 8,
             backgroundColor: isDarkMode
-                ? const Color(0xFF526860)
-                : const Color(0xFFE2E8F0),
+                ? const Color(0xFF2F3134)
+                : const Color(0xFFE8E8E5),
             valueColor: AlwaysStoppedAnimation(entry.stage.color),
           ),
+        ),
+      ],
+    );
+  }
+}
+
+class _SectorCompletionBarChart extends StatelessWidget {
+  const _SectorCompletionBarChart({required this.entries});
+
+  final List<_SectorCompletionEntry> entries;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    final axisTextColor = isDarkMode
+        ? const Color(0xFFA3A39E)
+        : const Color(0xFF6B6B68);
+    final gridColor = isDarkMode
+        ? const Color(0xFF2F3134)
+        : const Color(0xFFE8E8E5);
+
+    final rawMax = entries.fold<int>(
+      1,
+      (max, entry) => [
+        max,
+        entry.count,
+        entry.inProgressCount,
+      ].reduce((a, b) => a > b ? a : b),
+    );
+    final maxY = (((rawMax / 4).ceil()) * 4).toDouble();
+    final interval = maxY / 4;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          height: 220,
+          child: BarChart(
+            BarChartData(
+              maxY: maxY,
+              alignment: BarChartAlignment.spaceAround,
+              barTouchData: BarTouchData(
+                touchTooltipData: BarTouchTooltipData(
+                  getTooltipColor: (_) => isDarkMode
+                      ? const Color(0xFF12372A)
+                      : const Color(0xFF0F172A),
+                  getTooltipItem: (group, groupIndex, rod, rodIndex) {
+                    final entry = entries[group.x];
+                    final label = rodIndex == 0 ? 'Em andamento' : 'Concluído';
+                    return BarTooltipItem(
+                      '${entry.stage.title}\n$label: ${rod.toY.round()}',
+                      const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 12,
+                      ),
+                    );
+                  },
+                ),
+              ),
+              titlesData: FlTitlesData(
+                topTitles: const AxisTitles(
+                  sideTitles: SideTitles(showTitles: false),
+                ),
+                rightTitles: const AxisTitles(
+                  sideTitles: SideTitles(showTitles: false),
+                ),
+                bottomTitles: AxisTitles(
+                  sideTitles: SideTitles(
+                    showTitles: true,
+                    reservedSize: 32,
+                    getTitlesWidget: (value, meta) {
+                      final index = value.toInt();
+                      if (index < 0 || index >= entries.length) {
+                        return const SizedBox.shrink();
+                      }
+                      final stage = entries[index].stage;
+                      return Padding(
+                        padding: const EdgeInsets.only(top: 8),
+                        child: Icon(stage.icon, size: 18, color: stage.color),
+                      );
+                    },
+                  ),
+                ),
+                leftTitles: AxisTitles(
+                  sideTitles: SideTitles(
+                    showTitles: true,
+                    reservedSize: 30,
+                    interval: interval,
+                    getTitlesWidget: (value, meta) => Text(
+                      value.toInt().toString(),
+                      style: TextStyle(color: axisTextColor, fontSize: 11),
+                    ),
+                  ),
+                ),
+              ),
+              gridData: FlGridData(
+                drawVerticalLine: false,
+                horizontalInterval: interval,
+                getDrawingHorizontalLine: (value) =>
+                    FlLine(color: gridColor, strokeWidth: 1),
+              ),
+              borderData: FlBorderData(show: false),
+              barGroups: List.generate(entries.length, (index) {
+                final entry = entries[index];
+                return BarChartGroupData(
+                  x: index,
+                  barsSpace: 4,
+                  barRods: [
+                    BarChartRodData(
+                      toY: entry.inProgressCount.toDouble(),
+                      color: const Color(0xFF7C3AED),
+                      width: 10,
+                      borderRadius: const BorderRadius.vertical(
+                        top: Radius.circular(4),
+                      ),
+                    ),
+                    BarChartRodData(
+                      toY: entry.count.toDouble(),
+                      color: const Color(0xFF0F766E),
+                      width: 10,
+                      borderRadius: const BorderRadius.vertical(
+                        top: Radius.circular(4),
+                      ),
+                    ),
+                  ],
+                );
+              }),
+            ),
+          ),
+        ),
+        const SizedBox(height: 14),
+        const Wrap(
+          spacing: 16,
+          runSpacing: 8,
+          children: [
+            _ChartLegendItem(color: Color(0xFF7C3AED), label: 'Em andamento'),
+            _ChartLegendItem(
+              color: Color(0xFF0F766E),
+              label: 'Concluído no período',
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _ChartLegendItem extends StatelessWidget {
+  const _ChartLegendItem({required this.color, required this.label});
+
+  final Color color;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 12,
+          height: 12,
+          decoration: BoxDecoration(
+            color: color,
+            borderRadius: BorderRadius.circular(3),
+          ),
+        ),
+        const SizedBox(width: 6),
+        Text(
+          label,
+          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
         ),
       ],
     );
@@ -7892,6 +8430,9 @@ List<_SectorCompletionEntry> _completionEntriesForPeriod({
                   period: period,
                 ),
               )
+              .length,
+          inProgressCount: orders
+              .where((order) => order.currentStage == stage)
               .length,
         ),
       )
@@ -8221,7 +8762,7 @@ class _WorkspaceUserDialogState extends State<_WorkspaceUserDialog> {
                                       ? 'Opcional. Você pode carregar uma foto para exibir no sistema.'
                                       : _photoFileName,
                                   style: const TextStyle(
-                                    color: Color(0xFF52605C),
+                                    color: Color(0xFF6B6B68),
                                     height: 1.4,
                                   ),
                                 ),
@@ -8286,7 +8827,7 @@ class _WorkspaceUserDialogState extends State<_WorkspaceUserDialog> {
                   _isAdministrator
                       ? 'Como esta conta é administradora, todos os quadros serão liberados automaticamente.'
                       : 'Selecione os quadros que este usuário poderá acessar.',
-                  style: const TextStyle(color: Color(0xFF52605C), height: 1.4),
+                  style: const TextStyle(color: Color(0xFF6B6B68), height: 1.4),
                 ),
                 const SizedBox(height: 14),
                 if (_isAdministrator)
@@ -8322,7 +8863,7 @@ class _WorkspaceUserDialogState extends State<_WorkspaceUserDialog> {
                             side: BorderSide(
                               color: _selectedStages.contains(stage)
                                   ? stage.color
-                                  : const Color(0xFFD7E1DD),
+                                  : const Color(0xFFE0E0DD),
                             ),
                           ),
                         )
@@ -8666,7 +9207,7 @@ class _AdminHeroContent extends StatelessWidget {
         const Text(
           'Organize o acesso de cada colaborador por setor e publique a liberação em tempo real no Firebase.',
           style: TextStyle(
-            color: Color(0xFFE2E8F0),
+            color: Color(0xFFE8E8E5),
             fontSize: 16,
             height: 1.45,
           ),
@@ -8739,7 +9280,7 @@ class _AdminHeroHighlightCard extends StatelessWidget {
             profile == null
                 ? 'As permissões de visualização são publicadas assim que você altera os setores.'
                 : '${profile.name} está com ${profile.allowedStages.length} de ${workspaceStages.length} setores liberados.',
-            style: const TextStyle(color: Color(0xFFE2E8F0), height: 1.45),
+            style: const TextStyle(color: Color(0xFFE8E8E5), height: 1.45),
           ),
           const SizedBox(height: 16),
           Row(
@@ -8791,7 +9332,7 @@ class _AdminHighlightMetric extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 4),
-          Text(label, style: const TextStyle(color: Color(0xFFE2E8F0))),
+          Text(label, style: const TextStyle(color: Color(0xFFE8E8E5))),
         ],
       ),
     );
@@ -8864,7 +9405,7 @@ class _AdminUserListPanel extends StatelessWidget {
                     ),
                     Text(
                       'Selecione um perfil para revisar o escopo liberado por setor.',
-                      style: TextStyle(color: Color(0xFF52605C)),
+                      style: TextStyle(color: Color(0xFF6B6B68)),
                     ),
                   ],
                 ),
@@ -8934,13 +9475,13 @@ class _AdminUserListPanel extends StatelessWidget {
                         if (selectedProfile.cellPhone.trim().isNotEmpty)
                           Text(
                             selectedProfile.cellPhone,
-                            style: const TextStyle(color: Color(0xFF52605C)),
+                            style: const TextStyle(color: Color(0xFF6B6B68)),
                           ),
                         if (selectedProfile.cellPhone.trim().isNotEmpty)
                           const SizedBox(height: 4),
                         Text(
                           '${selectedProfile.allowedStages.length} setores liberados no momento',
-                          style: const TextStyle(color: Color(0xFF52605C)),
+                          style: const TextStyle(color: Color(0xFF6B6B68)),
                         ),
                         const SizedBox(height: 10),
                         ClipRRect(
@@ -8987,13 +9528,13 @@ class _AdminUserListPanel extends StatelessWidget {
                     color: selectedEmail == profile.email
                         ? null
                         : Theme.of(context).brightness == Brightness.dark
-                        ? const Color(0xFF121E1B)
+                        ? const Color(0xFF1C1D20)
                         : Colors.white,
                     borderRadius: BorderRadius.circular(18),
                     border: Border.all(
                       color: selectedEmail == profile.email
                           ? profile.accent
-                          : const Color(0xFFE2E8F0),
+                          : const Color(0xFFE8E8E5),
                     ),
                   ),
                   child: Column(
@@ -9018,7 +9559,7 @@ class _AdminUserListPanel extends StatelessWidget {
                                 Text(
                                   '@${profile.login}',
                                   style: const TextStyle(
-                                    color: Color(0xFF52605C),
+                                    color: Color(0xFF6B6B68),
                                   ),
                                 ),
                               ],
@@ -9046,8 +9587,8 @@ class _AdminUserListPanel extends StatelessWidget {
                               workspaceStages.length,
                           backgroundColor:
                               Theme.of(context).brightness == Brightness.dark
-                              ? const Color(0xFF20312C)
-                              : const Color(0xFFE2E8F0),
+                              ? const Color(0xFF26282B)
+                              : const Color(0xFFE8E8E5),
                           valueColor: AlwaysStoppedAnimation<Color>(
                             profile.accent,
                           ),
@@ -9120,7 +9661,7 @@ class _AdminPermissionsPanel extends StatelessWidget {
             SizedBox(height: 10),
             Text(
               'Selecione um usuário para editar as permissões e publicar a liberação imediatamente no Firebase.',
-              style: TextStyle(color: Color(0xFF52605C), height: 1.45),
+              style: TextStyle(color: Color(0xFF6B6B68), height: 1.45),
             ),
           ],
         ),
@@ -9160,7 +9701,7 @@ class _AdminPermissionsPanel extends StatelessWidget {
                       managedProfile.cellPhone.trim().isEmpty
                           ? '${managedProfile.role}  •  @${managedProfile.login}'
                           : '${managedProfile.role}  •  ${managedProfile.cellPhone}  •  @${managedProfile.login}',
-                      style: const TextStyle(color: Color(0xFF52605C)),
+                      style: const TextStyle(color: Color(0xFF6B6B68)),
                     ),
                     const SizedBox(height: 10),
                     Wrap(
@@ -9211,13 +9752,13 @@ class _AdminPermissionsPanel extends StatelessWidget {
             padding: const EdgeInsets.all(18),
             decoration: BoxDecoration(
               color: Theme.of(context).brightness == Brightness.dark
-                  ? const Color(0xFF121E1B)
-                  : const Color(0xFFF8FAFC),
+                  ? const Color(0xFF1C1D20)
+                  : const Color(0xFFF5F5F3),
               borderRadius: BorderRadius.circular(18),
               border: Border.all(
                 color: Theme.of(context).brightness == Brightness.dark
-                    ? const Color(0xFF29403A)
-                    : const Color(0xFFE2E8F0),
+                    ? const Color(0xFF3E4044)
+                    : const Color(0xFFE8E8E5),
               ),
             ),
             child: const Row(
@@ -9228,7 +9769,7 @@ class _AdminPermissionsPanel extends StatelessWidget {
                 Expanded(
                   child: Text(
                     'A conta administradora centraliza a gestão do sistema. Nesta tela você define apenas o que cada usuário pode visualizar e a alteração entra em vigor imediatamente.',
-                    style: TextStyle(color: Color(0xFF52605C), height: 1.45),
+                    style: TextStyle(color: Color(0xFF6B6B68), height: 1.45),
                   ),
                 ),
               ],
@@ -9285,7 +9826,7 @@ class _AdminPermissionsPanel extends StatelessWidget {
           const SizedBox(height: 8),
           const Text(
             'Ative ou desative cada setor para publicar a liberação imediatamente no Firebase.',
-            style: TextStyle(color: Color(0xFF52605C)),
+            style: TextStyle(color: Color(0xFF6B6B68)),
           ),
           const SizedBox(height: 16),
           LayoutBuilder(
@@ -9460,7 +10001,7 @@ class _AdminStatCard extends StatelessWidget {
           const SizedBox(height: 4),
           Text(
             label,
-            style: const TextStyle(color: Color(0xFF52605C), height: 1.35),
+            style: const TextStyle(color: Color(0xFF6B6B68), height: 1.35),
           ),
         ],
       ),
@@ -9485,8 +10026,8 @@ class _AdminStagePermissionCard extends StatelessWidget {
     final borderColor = selected
         ? stage.color.withValues(alpha: 0.35)
         : isDarkMode
-        ? const Color(0xFF29403A)
-        : const Color(0xFFD7E1DD);
+        ? const Color(0xFF3E4044)
+        : const Color(0xFFE0E0DD);
 
     return AnimatedContainer(
       duration: const Duration(milliseconds: 180),
@@ -9495,8 +10036,8 @@ class _AdminStagePermissionCard extends StatelessWidget {
         color: selected
             ? stage.color.withValues(alpha: 0.10)
             : isDarkMode
-            ? const Color(0xFF121E1B)
-            : const Color(0xFFF8FAFC),
+            ? const Color(0xFF1C1D20)
+            : const Color(0xFFF5F5F3),
         borderRadius: BorderRadius.circular(20),
         border: Border.all(color: borderColor),
       ),
@@ -9542,7 +10083,7 @@ class _AdminStagePermissionCard extends StatelessWidget {
                     Text(
                       stage.subtitle,
                       style: const TextStyle(
-                        color: Color(0xFF52605C),
+                        color: Color(0xFF6B6B68),
                         height: 1.45,
                       ),
                     ),
@@ -9563,8 +10104,8 @@ class _AdminStagePermissionCard extends StatelessWidget {
                 color: selected
                     ? stage.color.withValues(alpha: 0.24)
                     : isDarkMode
-                    ? const Color(0xFF29403A)
-                    : const Color(0xFFE2E8F0),
+                    ? const Color(0xFF3E4044)
+                    : const Color(0xFFE8E8E5),
               ),
             ),
             child: Row(
@@ -9585,7 +10126,7 @@ class _AdminStagePermissionCard extends StatelessWidget {
                             ? 'Este setor já está disponível para o usuário.'
                             : 'Ative para publicar a liberação imediatamente.',
                         style: const TextStyle(
-                          color: Color(0xFF52605C),
+                          color: Color(0xFF6B6B68),
                           height: 1.35,
                         ),
                       ),
@@ -9642,7 +10183,7 @@ class _AdminCompactInfoCard extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 4),
-          Text(label, style: const TextStyle(color: Color(0xFF52605C))),
+          Text(label, style: const TextStyle(color: Color(0xFF6B6B68))),
         ],
       ),
     );
@@ -10106,7 +10647,7 @@ class _StockItemsList extends StatelessWidget {
                       onDelete: () => onDelete(items[index]),
                     ),
                     if (index < items.length - 1)
-                      const Divider(height: 1, color: Color(0xFFE2E8F0)),
+                      const Divider(height: 1, color: Color(0xFFE8E8E5)),
                   ],
                 ],
               ),
@@ -11772,13 +12313,13 @@ class _StageWorkspaceSection extends StatelessWidget {
                 labelText: 'Pesquisar cliente',
                 hintText: 'Ex.: 1001 ou nome do cliente',
                 filled: true,
-                fillColor: const Color(0xFFF8FBFA),
+                fillColor: const Color(0xFFF5F5F3),
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(16),
                 ),
                 enabledBorder: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(16),
-                  borderSide: const BorderSide(color: Color(0xFFD7E1DD)),
+                  borderSide: const BorderSide(color: Color(0xFFE0E0DD)),
                 ),
                 prefixIcon: const Icon(Icons.search),
                 suffixIcon: customerSearchQuery.trim().isEmpty
@@ -12140,8 +12681,8 @@ class _FlowNavbar extends StatelessWidget {
             height: 48,
             decoration: BoxDecoration(
               color: isDarkMode
-                  ? const Color(0xFFE7F1EC)
-                  : const Color(0xFF17211E),
+                  ? const Color(0xFFF2F2F0)
+                  : const Color(0xFF1A1A1A),
               borderRadius: BorderRadius.circular(18),
               boxShadow: isDarkMode
                   ? null
@@ -12155,7 +12696,7 @@ class _FlowNavbar extends StatelessWidget {
             ),
             child: Icon(
               Icons.dashboard_customize_outlined,
-              color: isDarkMode ? const Color(0xFF17211E) : Colors.white,
+              color: isDarkMode ? const Color(0xFF1A1A1A) : Colors.white,
             ),
           ),
           const SizedBox(height: 18),
@@ -12254,7 +12795,7 @@ class _FlowTopNavbar extends StatelessWidget {
                       'Painel integrado',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: TextStyle(fontSize: 12, color: Color(0xFF52605C)),
+                      style: TextStyle(fontSize: 12, color: Color(0xFF6B6B68)),
                     ),
                     SizedBox(height: 6),
                     _SoftwareVersionLabel(compact: true),
@@ -12354,7 +12895,7 @@ class _PlatformLogSection extends StatelessWidget {
                     SizedBox(height: 6),
                     Text(
                       'Histórico das ações operacionais registradas neste app.',
-                      style: TextStyle(color: Color(0xFF52605C), height: 1.35),
+                      style: TextStyle(color: Color(0xFF6B6B68), height: 1.35),
                     ),
                   ],
                 ),
@@ -12406,7 +12947,7 @@ class _PlatformLogSection extends StatelessWidget {
                               Text(
                                 '${entry.area} • ${entry.actor}',
                                 style: const TextStyle(
-                                  color: Color(0xFF52605C),
+                                  color: Color(0xFF6B6B68),
                                   fontWeight: FontWeight.w600,
                                 ),
                               ),
@@ -12524,20 +13065,20 @@ class _ThemeModeSettingsButton extends StatelessWidget {
         padding: EdgeInsets.all(compact ? 10 : 11),
         decoration: BoxDecoration(
           color: Theme.of(context).brightness == Brightness.dark
-              ? const Color(0xFF121C19)
+              ? const Color(0xFF202225)
               : Colors.white.withValues(alpha: 0.94),
           borderRadius: BorderRadius.circular(18),
           border: Border.all(
             color: Theme.of(context).brightness == Brightness.dark
-                ? const Color(0xFF23322E)
-                : const Color(0xFFE4EAE5),
+                ? const Color(0xFF26282B)
+                : const Color(0xFFE8E8E5),
           ),
         ),
         child: Icon(
           Icons.tune_rounded,
           color: Theme.of(context).brightness == Brightness.dark
-              ? const Color(0xFFE7F1EC)
-              : const Color(0xFF17211E),
+              ? const Color(0xFFF2F2F0)
+              : const Color(0xFF1A1A1A),
         ),
       ),
     );
@@ -12604,8 +13145,8 @@ class _FlowNavbarTab extends StatelessWidget {
     final borderColor = selected
         ? Colors.transparent
         : isDarkMode
-        ? const Color(0xFF23322E)
-        : const Color(0xFFE4EAE5);
+        ? const Color(0xFF26282B)
+        : const Color(0xFFE8E8E5);
 
     return Tooltip(
       message: item.label,
@@ -12620,10 +13161,10 @@ class _FlowNavbarTab extends StatelessWidget {
           decoration: BoxDecoration(
             color: selected
                 ? (isDarkMode
-                      ? const Color(0xFFE7F1EC)
-                      : const Color(0xFF17211E))
+                      ? const Color(0xFFF2F2F0)
+                      : const Color(0xFF1A1A1A))
                 : (isDarkMode
-                      ? const Color(0xFF121C19)
+                      ? const Color(0xFF202225)
                       : Colors.white.withValues(alpha: 0.92)),
             borderRadius: BorderRadius.circular(20),
             border: Border.all(color: borderColor),
@@ -12642,7 +13183,7 @@ class _FlowNavbarTab extends StatelessWidget {
               item.icon,
               size: 22,
               color: selected
-                  ? (isDarkMode ? const Color(0xFF17211E) : Colors.white)
+                  ? (isDarkMode ? const Color(0xFF1A1A1A) : Colors.white)
                   : foregroundColor,
             ),
           ),
@@ -12674,8 +13215,8 @@ class _FlowTopNavbarTab extends StatelessWidget {
     final borderColor = selected
         ? Colors.transparent
         : isDarkMode
-        ? const Color(0xFF23322E)
-        : const Color(0xFFE4EAE5);
+        ? const Color(0xFF26282B)
+        : const Color(0xFFE8E8E5);
 
     return InkWell(
       onTap: onTap,
@@ -12685,9 +13226,9 @@ class _FlowTopNavbarTab extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 11),
         decoration: BoxDecoration(
           color: selected
-              ? (isDarkMode ? const Color(0xFFE7F1EC) : const Color(0xFF17211E))
+              ? (isDarkMode ? const Color(0xFFF2F2F0) : const Color(0xFF1A1A1A))
               : (isDarkMode
-                    ? const Color(0xFF121C19)
+                    ? const Color(0xFF202225)
                     : Colors.white.withValues(alpha: 0.92)),
           borderRadius: BorderRadius.circular(999),
           border: Border.all(color: borderColor),
@@ -12708,7 +13249,7 @@ class _FlowTopNavbarTab extends StatelessWidget {
               item.icon,
               size: 18,
               color: selected
-                  ? (isDarkMode ? const Color(0xFF17211E) : Colors.white)
+                  ? (isDarkMode ? const Color(0xFF1A1A1A) : Colors.white)
                   : foregroundColor,
             ),
             const SizedBox(width: 8),
@@ -12716,10 +13257,10 @@ class _FlowTopNavbarTab extends StatelessWidget {
               item.label,
               style: TextStyle(
                 color: selected
-                    ? (isDarkMode ? const Color(0xFF17211E) : Colors.white)
+                    ? (isDarkMode ? const Color(0xFF1A1A1A) : Colors.white)
                     : isDarkMode
-                    ? const Color(0xFFE7F1EC)
-                    : const Color(0xFF14211D),
+                    ? const Color(0xFFF2F2F0)
+                    : const Color(0xFF1A1A1A),
                 fontWeight: FontWeight.w600,
                 fontSize: 13,
               ),
@@ -12746,7 +13287,7 @@ Color _resolveNavItemForegroundColor({
   }
 
   return itemColor.computeLuminance() < 0.2
-      ? const Color(0xFFE7F1EC)
+      ? const Color(0xFFF2F2F0)
       : itemColor;
 }
 
@@ -12943,8 +13484,8 @@ class _OrderDetailsScreenState extends State<_OrderDetailsScreen> {
     final allOrders = widget.getAllOrders();
     final isDarkMode = Theme.of(context).brightness == Brightness.dark;
     final backgroundColor = isDarkMode
-        ? const Color(0xFF0B1311)
-        : const Color(0xFFF4F7F6);
+        ? const Color(0xFF26282B)
+        : const Color(0xFFF5F5F3);
 
     return Scaffold(
       backgroundColor: backgroundColor,
@@ -13221,17 +13762,17 @@ class _OrderDetailsPanel extends StatelessWidget {
   Widget build(BuildContext context) {
     final isDarkMode = Theme.of(context).brightness == Brightness.dark;
     final secondaryTextColor = isDarkMode
-        ? const Color(0xFF9FB2AC)
-        : const Color(0xFF52605C);
+        ? const Color(0xFFA3A39E)
+        : const Color(0xFF6B6B68);
     final subtleSurfaceColor = isDarkMode
-        ? const Color(0xFF121E1B)
-        : const Color(0xFFF7FAF9);
+        ? const Color(0xFF1C1D20)
+        : const Color(0xFFF5F5F3);
     final subtleBorderColor = isDarkMode
-        ? const Color(0xFF29403A)
-        : const Color(0xFFDCE5E1);
+        ? const Color(0xFF3E4044)
+        : const Color(0xFFE0E0DD);
     final progressTrackColor = isDarkMode
-        ? const Color(0xFF29403A)
-        : const Color(0xFFE5E7EB);
+        ? const Color(0xFF3E4044)
+        : const Color(0xFFE8E8E5);
     final showFullCustomerRegistrationData =
         order?.currentStage == WorkflowStage.customerRegistration;
 
@@ -13752,7 +14293,7 @@ class _OrderDetailsPanel extends StatelessWidget {
               decoration: BoxDecoration(
                 color: Colors.white,
                 borderRadius: BorderRadius.circular(18),
-                border: Border.all(color: const Color(0xFFDCE5E1)),
+                border: Border.all(color: const Color(0xFFE0E0DD)),
               ),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.center,
@@ -14226,14 +14767,14 @@ class _ServiceOrderSummaryCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final isDarkMode = Theme.of(context).brightness == Brightness.dark;
     final borderColor = isDarkMode
-        ? const Color(0xFF526860)
-        : const Color(0xFFE2E8F0);
+        ? const Color(0xFF2F3134)
+        : const Color(0xFFE8E8E5);
     final surfaceColor = isDarkMode
-        ? const Color(0xFF2A3732)
-        : const Color(0xFFF8FAFC);
+        ? const Color(0xFF26282B)
+        : const Color(0xFFF5F5F3);
     final secondaryTextColor = isDarkMode
-        ? const Color(0xFF9FB2AC)
-        : const Color(0xFF52605C);
+        ? const Color(0xFFA3A39E)
+        : const Color(0xFF6B6B68);
     final hasPdf = order.serviceOrderFileName.trim().isNotEmpty;
     final approvalColor = order.financeClientApproved
         ? const Color(0xFF15803D)
@@ -14519,14 +15060,14 @@ class _ProposalExtensionsCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final isDarkMode = Theme.of(context).brightness == Brightness.dark;
     final borderColor = isDarkMode
-        ? const Color(0xFF29403A)
-        : const Color(0xFFE2E8F0);
+        ? const Color(0xFF3E4044)
+        : const Color(0xFFE8E8E5);
     final surfaceColor = isDarkMode
-        ? const Color(0xFF121E1B)
-        : const Color(0xFFF8FAFC);
+        ? const Color(0xFF1C1D20)
+        : const Color(0xFFF5F5F3);
     final secondaryTextColor = isDarkMode
-        ? const Color(0xFF9FB2AC)
-        : const Color(0xFF52605C);
+        ? const Color(0xFFA3A39E)
+        : const Color(0xFF6B6B68);
 
     return Container(
       padding: const EdgeInsets.all(12),
@@ -14548,7 +15089,7 @@ class _ProposalExtensionsCard extends StatelessWidget {
                   color: proposal.code == currentOrder.code
                       ? proposal.currentStage.color.withValues(alpha: 0.05)
                       : isDarkMode
-                      ? const Color(0xFF0E1715)
+                      ? const Color(0xFF1C1D20)
                       : Colors.white,
                   borderRadius: BorderRadius.circular(12),
                   border: Border.all(
@@ -14652,30 +15193,30 @@ class _OrderCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final isDarkMode = Theme.of(context).brightness == Brightness.dark;
     final cardBackgroundColor = selected
-        ? (isDarkMode ? const Color(0xFF304139) : const Color(0xFFF5FAF7))
+        ? (isDarkMode ? const Color(0xFF26282B) : const Color(0xFFF5F5F3))
         : isDarkMode
-        ? const Color(0xFF2A3732)
+        ? const Color(0xFF26282B)
         : Colors.white;
     final cardBorderColor = selected
         ? order.currentStage.color
         : isDarkMode
-        ? const Color(0xFF566C64)
-        : const Color(0xFFE5E7EB);
+        ? const Color(0xFF6B6B68)
+        : const Color(0xFFE8E8E5);
     final primaryTextColor = selected
-        ? (isDarkMode ? const Color(0xFFF4FBF8) : const Color(0xFF14211D))
+        ? (isDarkMode ? const Color(0xFFF2F2F0) : const Color(0xFF1A1A1A))
         : isDarkMode
-        ? const Color(0xFFE7F1EC)
-        : const Color(0xFF14211D);
+        ? const Color(0xFFF2F2F0)
+        : const Color(0xFF1A1A1A);
     final secondaryTextColor = selected
-        ? (isDarkMode ? const Color(0xFFC8D8D1) : const Color(0xFF52605C))
+        ? (isDarkMode ? const Color(0xFFA3A39E) : const Color(0xFF6B6B68))
         : isDarkMode
-        ? const Color(0xFFC0D0C9)
-        : const Color(0xFF52605C);
+        ? const Color(0xFFA3A39E)
+        : const Color(0xFF6B6B68);
     final progressTrackColor = selected
-        ? const Color(0xFFE5E7EB)
+        ? const Color(0xFFE8E8E5)
         : isDarkMode
-        ? const Color(0xFF526860)
-        : const Color(0xFFE5E7EB);
+        ? const Color(0xFF2F3134)
+        : const Color(0xFFE8E8E5);
     final linkedProposals = _proposalExtensionsForPrimary(allOrders, order);
     final proposalBadgeColor = order.proposalVersion > 1
         ? const Color(0xFF1D4ED8)
@@ -15220,12 +15761,12 @@ class _OrderConversationDialogState extends State<_OrderConversationDialog> {
   Widget build(BuildContext context) {
     final isDarkMode = Theme.of(context).brightness == Brightness.dark;
     final borderColor = isDarkMode
-        ? const Color(0xFF29403A)
-        : const Color(0xFFDCE5E1);
-    final panelColor = isDarkMode ? const Color(0xFF101917) : Colors.white;
+        ? const Color(0xFF3E4044)
+        : const Color(0xFFE0E0DD);
+    final panelColor = isDarkMode ? const Color(0xFF202225) : Colors.white;
     final mutedTextColor = isDarkMode
-        ? const Color(0xFF9FB2AC)
-        : const Color(0xFF52605C);
+        ? const Color(0xFFA3A39E)
+        : const Color(0xFF6B6B68);
 
     return Dialog(
       insetPadding: const EdgeInsets.all(24),
@@ -15321,8 +15862,8 @@ class _OrderConversationDialogState extends State<_OrderConversationDialog> {
                   alignLabelWithHint: true,
                   filled: true,
                   fillColor: isDarkMode
-                      ? const Color(0xFF0F1715)
-                      : const Color(0xFFF8FBFA),
+                      ? const Color(0xFF1C1D20)
+                      : const Color(0xFFF5F5F3),
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(16),
                   ),
@@ -15432,7 +15973,7 @@ class _ConversationMessageBubble extends StatelessWidget {
     final baseColor = isOwnMessage
         ? const Color(0xFF10231D)
         : Theme.of(context).textTheme.bodyMedium?.color ??
-              const Color(0xFF14211D);
+              const Color(0xFF1A1A1A);
     final mentionColor = isOwnMessage
         ? const Color(0xFF1D4ED8)
         : const Color(0xFF2563EB);
@@ -15485,19 +16026,19 @@ class _ConversationMessageBubble extends StatelessWidget {
     final bubbleColor = isOwnMessage
         ? const Color(0xFFEAF4EF)
         : isDarkMode
-        ? const Color(0xFF15211D)
-        : const Color(0xFFF8FBFA);
+        ? const Color(0xFF26282B)
+        : const Color(0xFFF5F5F3);
     final borderColor = isOwnMessage
         ? const Color(0xFFCFE3D6)
         : isDarkMode
-        ? const Color(0xFF29403A)
-        : const Color(0xFFDCE5E1);
+        ? const Color(0xFF3E4044)
+        : const Color(0xFFE0E0DD);
     final headerColor = isDarkMode
-        ? const Color(0xFFE7F1EC)
-        : const Color(0xFF14211D);
+        ? const Color(0xFFF2F2F0)
+        : const Color(0xFF1A1A1A);
     final metaColor = isDarkMode
-        ? const Color(0xFF9FB2AC)
-        : const Color(0xFF52605C);
+        ? const Color(0xFFA3A39E)
+        : const Color(0xFF6B6B68);
     final mentionedProfiles = profiles
         .where(
           (profile) => message.mentionedUserEmails.contains(
@@ -15604,11 +16145,11 @@ class _StageFilterChip extends StatelessWidget {
   Widget build(BuildContext context) {
     final isDarkMode = Theme.of(context).brightness == Brightness.dark;
     final titleColor = isDarkMode
-        ? const Color(0xFFE7F1EC)
-        : const Color(0xFF14211D);
+        ? const Color(0xFFF2F2F0)
+        : const Color(0xFF1A1A1A);
     final subtitleColor = isDarkMode
-        ? const Color(0xFF9FB2AC)
-        : const Color(0xFF52605C);
+        ? const Color(0xFFA3A39E)
+        : const Color(0xFF6B6B68);
 
     return InkWell(
       onTap: onTap,
@@ -15618,13 +16159,13 @@ class _StageFilterChip extends StatelessWidget {
         padding: const EdgeInsets.all(18),
         decoration: BoxDecoration(
           color: isDarkMode
-              ? const Color(0xFF101A18)
+              ? const Color(0xFF202225)
               : Colors.white.withValues(alpha: 0.94),
           borderRadius: BorderRadius.circular(26),
           border: Border.all(
             color: isDarkMode
-                ? const Color(0xFF29403A)
-                : const Color(0xFFE7ECE8),
+                ? const Color(0xFF3E4044)
+                : const Color(0xFFE8E8E5),
           ),
         ),
         child: Column(
@@ -15659,13 +16200,13 @@ class _StageFilterChip extends StatelessWidget {
                     ),
                     decoration: BoxDecoration(
                       color: isDarkMode
-                          ? const Color(0xFF162320)
-                          : const Color(0xFFF7FAF8),
+                          ? const Color(0xFF26282B)
+                          : const Color(0xFFF5F5F3),
                       borderRadius: BorderRadius.circular(999),
                       border: Border.all(
                         color: isDarkMode
-                            ? const Color(0xFF29403A)
-                            : const Color(0xFFE7ECE8),
+                            ? const Color(0xFF3E4044)
+                            : const Color(0xFFE8E8E5),
                       ),
                     ),
                     child: Text(
@@ -15738,16 +16279,16 @@ class _MetricCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final isDarkMode = Theme.of(context).brightness == Brightness.dark;
     final titleColor = isDarkMode
-        ? const Color(0xFFE7F1EC)
-        : const Color(0xFF14211D);
+        ? const Color(0xFFF2F2F0)
+        : const Color(0xFF1A1A1A);
     return Container(
       constraints: const BoxConstraints(minHeight: 92),
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: isDarkMode ? const Color(0xFF2A3732) : Colors.white,
+        color: isDarkMode ? const Color(0xFF26282B) : Colors.white,
         borderRadius: BorderRadius.circular(16),
         border: Border.all(
-          color: isDarkMode ? const Color(0xFF566C64) : const Color(0xFFE2E8F0),
+          color: isDarkMode ? const Color(0xFF6B6B68) : const Color(0xFFE8E8E5),
           width: isDarkMode ? 1.1 : 1,
         ),
       ),
@@ -15794,349 +16335,6 @@ class _MetricCard extends StatelessWidget {
                 child: Icon(icon, color: accent, size: 16),
               ),
             ],
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _EmployeeWorkspaceHero extends StatelessWidget {
-  const _EmployeeWorkspaceHero({
-    required this.profile,
-    required this.taskCount,
-    required this.tasksToday,
-    required this.allowedStageCount,
-  });
-
-  final EmployeeWorkspaceProfile profile;
-  final int taskCount;
-  final int tasksToday;
-  final int allowedStageCount;
-
-  @override
-  Widget build(BuildContext context) {
-    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
-    final titleColor = isDarkMode
-        ? const Color(0xFFE7F1EC)
-        : const Color(0xFF14211D);
-    final secondaryTextColor = isDarkMode
-        ? const Color(0xFF9FB2AC)
-        : const Color(0xFF52605C);
-
-    return Container(
-      padding: const EdgeInsets.all(24),
-      decoration: _panelDecoration(context),
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          final useTwoColumns = constraints.maxWidth >= 980;
-
-          final summaryCard = Container(
-            width: useTwoColumns ? 300 : double.infinity,
-            padding: const EdgeInsets.all(18),
-            decoration: BoxDecoration(
-              color: isDarkMode
-                  ? const Color(0xFF121E1B)
-                  : const Color(0xFFF6FAF6),
-              borderRadius: BorderRadius.circular(24),
-              border: Border.all(
-                color: isDarkMode
-                    ? const Color(0xFF29403A)
-                    : const Color(0xFFE6ECE8),
-              ),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Resumo rápido',
-                  style: TextStyle(
-                    color: secondaryTextColor,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-                const SizedBox(height: 14),
-                Row(
-                  children: [
-                    Expanded(
-                      child: _EmployeeWorkspaceStat(
-                        label: 'Ativas',
-                        value: '$taskCount',
-                        accent: profile.accent,
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: _EmployeeWorkspaceStat(
-                        label: 'Hoje',
-                        value: '$tasksToday',
-                        accent: const Color(0xFF64748B),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                _EmployeeWorkspaceStat(
-                  label: 'Quadros liberados',
-                  value: '$allowedStageCount',
-                  fullWidth: true,
-                  accent: const Color(0xFF17211E),
-                ),
-              ],
-            ),
-          );
-
-          final content = Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _AdminProfileAvatar(profile: profile, large: true),
-                  const SizedBox(width: 16),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 12,
-                            vertical: 7,
-                          ),
-                          decoration: BoxDecoration(
-                            color: isDarkMode
-                                ? const Color(0xFF121C19)
-                                : Colors.white.withValues(alpha: 0.92),
-                            borderRadius: BorderRadius.circular(999),
-                            border: Border.all(
-                              color: isDarkMode
-                                  ? const Color(0xFF23322E)
-                                  : const Color(0xFFE4EAE5),
-                            ),
-                          ),
-                          child: Text(
-                            'Dashboard overview',
-                            style: TextStyle(
-                              color: profile.accent,
-                              fontSize: 12,
-                              letterSpacing: 0.9,
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 14),
-                        Text(
-                          profile.name,
-                          style: TextStyle(
-                            color: titleColor,
-                            fontSize: 30,
-                            fontWeight: FontWeight.w800,
-                            height: 1,
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          profile.role,
-                          style: TextStyle(
-                            color: secondaryTextColor,
-                            fontSize: 16,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                        Text(
-                          'Acompanhe suas tarefas, indicadores e acessos liberados em um único painel.',
-                          style: TextStyle(
-                            color: secondaryTextColor,
-                            height: 1.4,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 16),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  _WorkspaceMetaChip(
-                    icon: Icons.task_alt_outlined,
-                    label: '$taskCount tarefas',
-                  ),
-                  _WorkspaceMetaChip(
-                    icon: Icons.schedule_rounded,
-                    label: '$tasksToday hoje',
-                  ),
-                  _WorkspaceMetaChip(
-                    icon: Icons.grid_view_rounded,
-                    label: '$allowedStageCount áreas',
-                  ),
-                ],
-              ),
-            ],
-          );
-
-          if (!useTwoColumns) {
-            return Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [content, const SizedBox(height: 18), summaryCard],
-            );
-          }
-
-          return Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(child: content),
-              const SizedBox(width: 20),
-              summaryCard,
-            ],
-          );
-        },
-      ),
-    );
-  }
-}
-
-class _EmployeeWorkspaceMetric extends StatelessWidget {
-  const _EmployeeWorkspaceMetric({
-    required this.title,
-    required this.value,
-    required this.subtitle,
-    required this.icon,
-    required this.accent,
-  });
-
-  final String title;
-  final String value;
-  final String subtitle;
-  final IconData icon;
-  final Color accent;
-
-  @override
-  Widget build(BuildContext context) {
-    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
-    final titleColor = isDarkMode
-        ? const Color(0xFFE7F1EC)
-        : const Color(0xFF14211D);
-    final subtitleColor = isDarkMode
-        ? const Color(0xFF9FB2AC)
-        : const Color(0xFF52605C);
-
-    return Container(
-      padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
-        color: isDarkMode
-            ? const Color(0xFF101A18)
-            : Colors.white.withValues(alpha: 0.94),
-        borderRadius: BorderRadius.circular(24),
-        border: Border.all(
-          color: isDarkMode ? const Color(0xFF29403A) : const Color(0xFFE7ECE8),
-        ),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title.toUpperCase(),
-                  style: TextStyle(
-                    color: accent,
-                    fontSize: 10,
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: 0.7,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  value,
-                  style: TextStyle(
-                    color: titleColor,
-                    fontSize: 30,
-                    fontWeight: FontWeight.w800,
-                    height: 1,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  subtitle,
-                  style: TextStyle(color: subtitleColor, height: 1.35),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 12),
-          Container(
-            width: 42,
-            height: 42,
-            decoration: BoxDecoration(
-              color: accent.withValues(alpha: 0.10),
-              borderRadius: BorderRadius.circular(14),
-            ),
-            child: Icon(icon, size: 18, color: accent),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _EmployeeWorkspaceStat extends StatelessWidget {
-  const _EmployeeWorkspaceStat({
-    required this.label,
-    required this.value,
-    required this.accent,
-    this.fullWidth = false,
-  });
-
-  final String label;
-  final String value;
-  final Color accent;
-  final bool fullWidth;
-
-  @override
-  Widget build(BuildContext context) {
-    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
-
-    return Container(
-      width: fullWidth ? double.infinity : null,
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: isDarkMode
-            ? const Color(0xFF0E1715)
-            : Colors.white.withValues(alpha: 0.96),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(
-          color: isDarkMode ? const Color(0xFF29403A) : const Color(0xFFE7ECE8),
-        ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            label,
-            style: TextStyle(
-              color: isDarkMode
-                  ? const Color(0xFF9FB2AC)
-                  : const Color(0xFF52605C),
-              fontSize: 12,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            value,
-            style: TextStyle(
-              color: accent,
-              fontSize: 24,
-              fontWeight: FontWeight.w900,
-              height: 1,
-            ),
           ),
         ],
       ),
@@ -16576,8 +16774,8 @@ class _StageOrdersKanbanColumnState extends State<_StageOrdersKanbanColumn> {
               color: isActiveTarget
                   ? column.accent.withValues(alpha: 0.85)
                   : (isDarkMode
-                        ? const Color(0xFF29403A)
-                        : const Color(0xFFDCE5E1)),
+                        ? const Color(0xFF3E4044)
+                        : const Color(0xFFE0E0DD)),
               width: isActiveTarget ? 2 : 1,
             ),
             color: isActiveTarget
@@ -16615,8 +16813,8 @@ class _StageOrdersKanbanColumnState extends State<_StageOrdersKanbanColumn> {
                           column.subtitle,
                           style: TextStyle(
                             color: isDarkMode
-                                ? const Color(0xFFC0D0C9)
-                                : const Color(0xFF52605C),
+                                ? const Color(0xFFA3A39E)
+                                : const Color(0xFF6B6B68),
                             fontSize: 13,
                           ),
                         ),
@@ -16631,7 +16829,7 @@ class _StageOrdersKanbanColumnState extends State<_StageOrdersKanbanColumn> {
                     decoration: BoxDecoration(
                       color: isDarkMode
                           ? column.accent.withValues(alpha: 0.12)
-                          : const Color(0xFFF4F7F6),
+                          : const Color(0xFFF5F5F3),
                       borderRadius: BorderRadius.circular(999),
                       border: Border.all(
                         color: column.accent.withValues(
@@ -16668,8 +16866,8 @@ class _StageOrdersKanbanColumnState extends State<_StageOrdersKanbanColumn> {
                     column.emptyMessage,
                     style: TextStyle(
                       color: isDarkMode
-                          ? const Color(0xFFC0D0C9)
-                          : const Color(0xFF52605C),
+                          ? const Color(0xFFA3A39E)
+                          : const Color(0xFF6B6B68),
                       fontSize: 13,
                       height: 1.35,
                     ),
@@ -16809,7 +17007,7 @@ class _KanbanColumn extends StatelessWidget {
               Text(
                 '${tasks.length}',
                 style: const TextStyle(
-                  color: Color(0xFF52605C),
+                  color: Color(0xFF6B6B68),
                   fontWeight: FontWeight.w700,
                 ),
               ),
@@ -16821,7 +17019,7 @@ class _KanbanColumn extends StatelessWidget {
               padding: EdgeInsets.only(bottom: 6),
               child: Text(
                 'Nenhuma tarefa neste quadro.',
-                style: TextStyle(color: Color(0xFF52605C)),
+                style: TextStyle(color: Color(0xFF6B6B68)),
               ),
             )
           else
@@ -16856,7 +17054,7 @@ class _WorkspaceTaskCard extends StatelessWidget {
         decoration: BoxDecoration(
           color: Colors.white,
           borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: const Color(0xFFE2E8F0)),
+          border: Border.all(color: const Color(0xFFE8E8E5)),
           boxShadow: const [
             BoxShadow(
               color: Color(0x0F0F172A),
@@ -16885,7 +17083,7 @@ class _WorkspaceTaskCard extends StatelessWidget {
             const SizedBox(height: 10),
             Text(
               task.summary,
-              style: const TextStyle(color: Color(0xFF52605C), height: 1.4),
+              style: const TextStyle(color: Color(0xFF6B6B68), height: 1.4),
             ),
             const SizedBox(height: 14),
             Wrap(
@@ -16927,11 +17125,11 @@ class _WorkspaceMetaChip extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 8),
       decoration: BoxDecoration(
         color: isDarkMode
-            ? const Color(0xFF121C19)
+            ? const Color(0xFF202225)
             : Colors.white.withValues(alpha: 0.94),
         borderRadius: BorderRadius.circular(999),
         border: Border.all(
-          color: isDarkMode ? const Color(0xFF23322E) : const Color(0xFFE7ECE8),
+          color: isDarkMode ? const Color(0xFF26282B) : const Color(0xFFE8E8E5),
         ),
       ),
       child: Row(
@@ -16941,15 +17139,15 @@ class _WorkspaceMetaChip extends StatelessWidget {
             icon,
             size: 15,
             color: isDarkMode
-                ? const Color(0xFF9FB2AC)
-                : const Color(0xFF52605C),
+                ? const Color(0xFFA3A39E)
+                : const Color(0xFF6B6B68),
           ),
           const SizedBox(width: 6),
           Text(
             label,
             style: TextStyle(
               color: isDarkMode
-                  ? const Color(0xFFE7F1EC)
+                  ? const Color(0xFFF2F2F0)
                   : const Color(0xFF334155),
               fontWeight: FontWeight.w600,
               fontSize: 12,
@@ -17004,11 +17202,11 @@ class _StageOwnersSection extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
         color: isDarkMode
-            ? const Color(0xFF101714).withValues(alpha: 0.56)
+            ? const Color(0xFF26282B).withValues(alpha: 0.56)
             : Colors.white.withValues(alpha: 0.46),
         borderRadius: BorderRadius.circular(14),
         border: Border.all(
-          color: isDarkMode ? const Color(0xFF24332E) : const Color(0xFFE9EEEA),
+          color: isDarkMode ? const Color(0xFF2F3134) : const Color(0xFFE8E8E5),
         ),
       ),
       child: Column(
@@ -17019,8 +17217,8 @@ class _StageOwnersSection extends StatelessWidget {
               'Responsáveis por etapa',
               style: TextStyle(
                 color: isDarkMode
-                    ? const Color(0xFF9FB2AC)
-                    : const Color(0xFF52605C),
+                    ? const Color(0xFFA3A39E)
+                    : const Color(0xFF6B6B68),
                 fontSize: 9,
                 fontWeight: FontWeight.w600,
                 letterSpacing: 0.3,
@@ -17065,8 +17263,8 @@ class _StageOwnerLine extends StatelessWidget {
         border: Border(
           bottom: BorderSide(
             color: isDarkMode
-                ? const Color(0xFF21302B)
-                : const Color(0xFFE8ECE9),
+                ? const Color(0xFF2F3134)
+                : const Color(0xFFE8E8E5),
           ),
         ),
       ),
@@ -17077,7 +17275,7 @@ class _StageOwnerLine extends StatelessWidget {
               label,
               style: TextStyle(
                 color: isDarkMode
-                    ? const Color(0xFF9FB2AC)
+                    ? const Color(0xFFA3A39E)
                     : const Color(0xFF66736E),
                 fontSize: 10,
                 fontWeight: FontWeight.w600,
@@ -17094,8 +17292,8 @@ class _StageOwnerLine extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
                 color: isDarkMode
-                    ? const Color(0xFFE7F1EC)
-                    : const Color(0xFF1C2622),
+                    ? const Color(0xFFF2F2F0)
+                    : const Color(0xFF1A1A1A),
                 fontSize: 12,
                 fontWeight: FontWeight.w500,
               ),
@@ -17124,10 +17322,10 @@ class _InfoRow extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       decoration: BoxDecoration(
-        color: isDarkMode ? const Color(0xFF121E1B) : const Color(0xFFF8FAFC),
+        color: isDarkMode ? const Color(0xFF1C1D20) : const Color(0xFFF5F5F3),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
-          color: isDarkMode ? const Color(0xFF29403A) : const Color(0xFFE2E8F0),
+          color: isDarkMode ? const Color(0xFF3E4044) : const Color(0xFFE8E8E5),
         ),
       ),
       child: Column(
@@ -17137,8 +17335,8 @@ class _InfoRow extends StatelessWidget {
             label.toUpperCase(),
             style: TextStyle(
               color: isDarkMode
-                  ? const Color(0xFF9FB2AC)
-                  : const Color(0xFF52605C),
+                  ? const Color(0xFFA3A39E)
+                  : const Color(0xFF6B6B68),
               fontSize: 10,
               fontWeight: FontWeight.w700,
               letterSpacing: 0.6,
@@ -17149,8 +17347,8 @@ class _InfoRow extends StatelessWidget {
             value,
             style: TextStyle(
               color: isDarkMode
-                  ? const Color(0xFFE7F1EC)
-                  : const Color(0xFF14211D),
+                  ? const Color(0xFFF2F2F0)
+                  : const Color(0xFF1A1A1A),
               height: 1.25,
               fontWeight: emphasizeValue ? FontWeight.w800 : FontWeight.w600,
               fontSize: emphasizeValue ? 16 : 14,
@@ -17204,20 +17402,20 @@ class _FileInfoRow extends StatelessWidget {
         isDarkMode ? const Color(0xFFFCA5A5) : const Color(0xFFB91C1C),
     };
     final titleColor = isDarkMode
-        ? const Color(0xFFE7F1EC)
-        : const Color(0xFF14211D);
+        ? const Color(0xFFF2F2F0)
+        : const Color(0xFF1A1A1A);
     final helperColor = isDarkMode
-        ? const Color(0xFF9FB2AC)
-        : const Color(0xFF52605C);
+        ? const Color(0xFFA3A39E)
+        : const Color(0xFF6B6B68);
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
       margin: const EdgeInsets.only(bottom: 10),
       decoration: BoxDecoration(
-        color: isDarkMode ? const Color(0xFF121E1B) : const Color(0xFFF8FAFC),
+        color: isDarkMode ? const Color(0xFF1C1D20) : const Color(0xFFF5F5F3),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
-          color: isDarkMode ? const Color(0xFF29403A) : const Color(0xFFE2E8F0),
+          color: isDarkMode ? const Color(0xFF3E4044) : const Color(0xFFE8E8E5),
         ),
       ),
       child: Column(
@@ -17354,8 +17552,8 @@ class _DetailSectionLabel extends StatelessWidget {
           title,
           style: TextStyle(
             color: isDarkMode
-                ? const Color(0xFFE7F1EC)
-                : const Color(0xFF14211D),
+                ? const Color(0xFFF2F2F0)
+                : const Color(0xFF1A1A1A),
             fontSize: 16,
             fontWeight: FontWeight.w800,
           ),
@@ -17365,8 +17563,8 @@ class _DetailSectionLabel extends StatelessWidget {
           subtitle,
           style: TextStyle(
             color: isDarkMode
-                ? const Color(0xFF9FB2AC)
-                : const Color(0xFF52605C),
+                ? const Color(0xFFA3A39E)
+                : const Color(0xFF6B6B68),
             fontSize: 12,
             height: 1.35,
           ),
@@ -17407,11 +17605,11 @@ class _CollapsibleDetailSectionState extends State<_CollapsibleDetailSection> {
   Widget build(BuildContext context) {
     final isDarkMode = Theme.of(context).brightness == Brightness.dark;
     final borderColor = isDarkMode
-        ? const Color(0xFF29403A)
-        : const Color(0xFFE2E8F0);
+        ? const Color(0xFF3E4044)
+        : const Color(0xFFE8E8E5);
     final surfaceColor = isDarkMode
-        ? const Color(0xFF121E1B)
-        : const Color(0xFFF8FAFC);
+        ? const Color(0xFF1C1D20)
+        : const Color(0xFFF5F5F3);
 
     return Container(
       decoration: BoxDecoration(
@@ -17455,8 +17653,8 @@ class _CollapsibleDetailSectionState extends State<_CollapsibleDetailSection> {
                           ? Icons.keyboard_arrow_up_rounded
                           : Icons.keyboard_arrow_down_rounded,
                       color: isDarkMode
-                          ? const Color(0xFF9FB2AC)
-                          : const Color(0xFF52605C),
+                          ? const Color(0xFFA3A39E)
+                          : const Color(0xFF6B6B68),
                     ),
                   ),
                 ],
@@ -17513,10 +17711,10 @@ class _OrderDetailsHero extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: isDarkMode ? const Color(0xFF101A18) : Colors.white,
+        color: isDarkMode ? const Color(0xFF202225) : Colors.white,
         borderRadius: BorderRadius.circular(16),
         border: Border.all(
-          color: isDarkMode ? const Color(0xFF29403A) : const Color(0xFFE2E8F0),
+          color: isDarkMode ? const Color(0xFF3E4044) : const Color(0xFFE8E8E5),
         ),
       ),
       child: LayoutBuilder(
@@ -17570,8 +17768,8 @@ class _OrderDetailsHero extends StatelessWidget {
                 displayCode,
                 style: TextStyle(
                   color: isDarkMode
-                      ? const Color(0xFF9FB2AC)
-                      : const Color(0xFF52605C),
+                      ? const Color(0xFFA3A39E)
+                      : const Color(0xFF6B6B68),
                   fontSize: 12,
                   fontWeight: FontWeight.w800,
                   letterSpacing: 0.8,
@@ -17582,8 +17780,8 @@ class _OrderDetailsHero extends StatelessWidget {
                 order.workName,
                 style: TextStyle(
                   color: isDarkMode
-                      ? const Color(0xFFF4FBF8)
-                      : const Color(0xFF10211C),
+                      ? const Color(0xFFF2F2F0)
+                      : const Color(0xFF1A1A1A),
                   fontSize: constraints.maxWidth >= 700 ? 24 : 20,
                   height: 1.05,
                   fontWeight: FontWeight.w800,
@@ -17622,8 +17820,8 @@ class _OrderDetailsHero extends StatelessWidget {
                     '${(effectiveProgress * 100).round()}%',
                     style: TextStyle(
                       color: isDarkMode
-                          ? const Color(0xFFF4FBF8)
-                          : const Color(0xFF10211C),
+                          ? const Color(0xFFF2F2F0)
+                          : const Color(0xFF1A1A1A),
                       fontSize: 18,
                       fontWeight: FontWeight.w800,
                     ),
@@ -17765,21 +17963,19 @@ BoxDecoration _panelDecoration(BuildContext context) {
   final isDarkMode = Theme.of(context).brightness == Brightness.dark;
 
   return BoxDecoration(
-    color: isDarkMode
-        ? const Color(0xFF24302C).withValues(alpha: 0.98)
-        : Colors.white.withValues(alpha: 0.90),
-    borderRadius: BorderRadius.circular(24),
+    color: isDarkMode ? const Color(0xFF202225) : Colors.white,
+    borderRadius: BorderRadius.circular(16),
     border: Border.all(
-      color: isDarkMode ? const Color(0xFF4A5F58) : const Color(0xFFE7ECE8),
-      width: isDarkMode ? 1.15 : 1,
+      color: isDarkMode ? const Color(0xFF2F3134) : const Color(0xFFE8E8E5),
+      width: 1,
     ),
     boxShadow: isDarkMode
         ? null
         : const [
             BoxShadow(
-              color: Color(0x120F172A),
-              blurRadius: 26,
-              offset: Offset(0, 16),
+              color: Color(0x080F172A),
+              blurRadius: 12,
+              offset: Offset(0, 4),
             ),
           ],
   );

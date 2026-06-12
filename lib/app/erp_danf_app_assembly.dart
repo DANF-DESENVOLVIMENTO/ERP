@@ -15,14 +15,14 @@ class _AssemblyPreparationChecklistCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final isDarkMode = Theme.of(context).brightness == Brightness.dark;
     final secondaryTextColor = isDarkMode
-        ? const Color(0xFF9FB2AC)
-        : const Color(0xFF52605C);
+        ? const Color(0xFFA3A39E)
+        : const Color(0xFF6B6B68);
     final surfaceColor = isDarkMode
-        ? const Color(0xFF121E1B)
-        : const Color(0xFFF8FAFC);
+        ? const Color(0xFF1C1D20)
+        : const Color(0xFFF5F5F3);
     final borderColor = isDarkMode
-        ? const Color(0xFF29403A)
-        : const Color(0xFFE2E8F0);
+        ? const Color(0xFF3E4044)
+        : const Color(0xFFE8E8E5);
     final isExecutionStage =
         order.assemblyWorkflowStatus == AssemblyWorkflowStatus.doing ||
         order.assemblyWorkflowStatus == AssemblyWorkflowStatus.panelTesting ||
@@ -250,7 +250,7 @@ class _AssemblyChecklistDialogState extends State<_AssemblyChecklistDialog> {
       child: Container(
         constraints: const BoxConstraints(maxWidth: 760),
         decoration: BoxDecoration(
-          color: const Color(0xFFF5F7F2),
+          color: const Color(0xFFF5F5F3),
           borderRadius: BorderRadius.circular(28),
         ),
         child: Column(
@@ -260,7 +260,7 @@ class _AssemblyChecklistDialogState extends State<_AssemblyChecklistDialog> {
               padding: const EdgeInsets.all(24),
               decoration: const BoxDecoration(
                 borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-                color: Color(0xFF14211D),
+                color: Color(0xFF1A1A1A),
               ),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -316,7 +316,7 @@ class _AssemblyChecklistDialogState extends State<_AssemblyChecklistDialog> {
                           ? 'Baixe todos os itens desta etapa antes de concluir.'
                           : 'Marque os itens já executados para este pedido.',
                       style: const TextStyle(
-                        color: Color(0xFF52605C),
+                        color: Color(0xFF6B6B68),
                         height: 1.4,
                       ),
                     ),
@@ -440,7 +440,7 @@ class _AssemblyTeamSelectionDialogState
       child: Container(
         constraints: const BoxConstraints(maxWidth: 760),
         decoration: BoxDecoration(
-          color: const Color(0xFFF5F7F2),
+          color: const Color(0xFFF5F5F3),
           borderRadius: BorderRadius.circular(28),
         ),
         child: Column(
@@ -450,7 +450,7 @@ class _AssemblyTeamSelectionDialogState
               padding: const EdgeInsets.all(24),
               decoration: const BoxDecoration(
                 borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
-                color: Color(0xFF14211D),
+                color: Color(0xFF1A1A1A),
               ),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -507,7 +507,7 @@ class _AssemblyTeamSelectionDialogState
                       decoration: BoxDecoration(
                         color: Colors.white,
                         borderRadius: BorderRadius.circular(20),
-                        border: Border.all(color: const Color(0xFFDCE5E1)),
+                        border: Border.all(color: const Color(0xFFE0E0DD)),
                       ),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,

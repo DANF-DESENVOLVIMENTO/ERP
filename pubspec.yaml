@@ -41,6 +41,8 @@ dependencies:
   http: ^1.6.0
   shared_preferences: ^2.5.3
   crypto: ^3.0.6
+  fl_chart: ^1.2.0
+  google_fonts: ^8.1.0
 
 dev_dependencies:
   flutter_test:
