@@ -3,7 +3,9 @@
     "allow": [
       "PowerShell(Get-Process | Where-Object {$_.ProcessName -match \"cmake|MSBuild|cl|erp_danf|link|ninja|flutter|dart\"} | Select-Object ProcessName, Id, CPU, StartTime | Format-Table -AutoSize)",
       "PowerShell(Get-Process | Where-Object {$_.ProcessName -match \"erp_danf\"} | Select-Object ProcessName, Id, StartTime, MainWindowTitle | Format-Table -AutoSize)",
-      "Bash(rm -f \"/c/Users/danfd/Downloads/screenshot1.png\" \"/c/Users/danfd/Downloads/screenshot2.png\" \"/c/Users/danfd/Downloads/screenshot3.png\" \"/c/Users/danfd/Downloads/screenshot4.png\")"
+      "Bash(rm -f \"/c/Users/danfd/Downloads/screenshot1.png\" \"/c/Users/danfd/Downloads/screenshot2.png\" \"/c/Users/danfd/Downloads/screenshot3.png\" \"/c/Users/danfd/Downloads/screenshot4.png\")",
+      "PowerShell(\\(Get-Command flutter\\).Source)",
+      "PowerShell(cmd /c \"C:\\\\flutter\\\\bin\\\\flutter.bat --version\" 2>&1)"
     ],
     "additionalDirectories": [
       "C:\\Users\\danfd\\Downloads"

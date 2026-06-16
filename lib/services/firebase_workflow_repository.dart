@@ -35,6 +35,24 @@ class FirebaseWorkflowRepository {
   CollectionReference<Map<String, dynamic>> get _profilesCollection =>
       _firestore.collection('workspace_profiles');
 
+  CollectionReference<Map<String, dynamic>> get _stockItemsCollection =>
+      _firestore.collection('stock_items');
+
+  Stream<List<Map<String, dynamic>>> watchStockItems() {
+    return _stockItemsCollection.snapshots().map((snapshot) {
+      return snapshot.docs.map((doc) => doc.data()).toList(growable: false);
+    });
+  }
+
+  Future<void> saveStockItem(Map<String, Object?> data) async {
+    final id = (data['id'] ?? '').toString();
+    await _stockItemsCollection.doc(id).set(data, SetOptions(merge: true));
+  }
+
+  Future<void> deleteStockItem(String id) async {
+    await _stockItemsCollection.doc(id).delete();
+  }
+
   Stream<List<WorkflowOrder>> watchOrders() {
     return _ordersCollection.snapshots().map((snapshot) {
       final orders = snapshot.docs

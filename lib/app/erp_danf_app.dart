@@ -2266,7 +2266,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
 
     final stage = tab.stage!;
     if (stage == WorkflowStage.stock) {
-      return const _StockWorkspaceSection();
+      return _StockWorkspaceSection(repository: _repository);
     }
 
     final selectedOrderMatchesStage =
@@ -2316,6 +2316,8 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       canAcceptFinanceKanbanDrop: _canMoveFinanceOrderToTarget,
       onMoveRelationshipKanbanOrder: _moveRelationshipOrderToKanbanColumn,
       canAcceptRelationshipKanbanDrop: _canMoveRelationshipOrderToTarget,
+      onMoveInstallationKanbanOrder: _moveInstallationOrderToKanbanColumn,
+      canAcceptInstallationKanbanDrop: _canMoveInstallationOrderToTarget,
       onCreateServiceOrder: stage == WorkflowStage.relationship
           ? _openServiceOrderForm
           : null,
@@ -3163,14 +3165,17 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     return result;
   }
 
-  Future<void> _completeInstallation() async {
-    final selected = _selectedOrder;
+  Future<void> _completeInstallation({
+    WorkflowOrder? order,
+    bool force = false,
+  }) async {
+    final selected = order ?? _selectedOrder;
     if (selected == null) {
       return;
     }
 
     final activeVisitIndex = _activeInstallationVisitIndex(selected);
-    if (activeVisitIndex == -1) {
+    if (activeVisitIndex == -1 && !force) {
       _showAppMessage(
         'Registre os trabalhos executados antes de concluir a instalação.',
         isError: true,
@@ -3178,11 +3183,15 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       return;
     }
 
-    final activeVisit = selected.installationVisitHistory[activeVisitIndex];
-    final pendingItems = activeVisit.plannedItems
-        .where((item) => !activeVisit.completedItems.contains(item))
-        .toList(growable: false);
-    if (pendingItems.isNotEmpty) {
+    final activeVisit = activeVisitIndex == -1
+        ? null
+        : selected.installationVisitHistory[activeVisitIndex];
+    final pendingItems = activeVisit == null
+        ? const <String>[]
+        : activeVisit.plannedItems
+              .where((item) => !activeVisit.completedItems.contains(item))
+              .toList(growable: false);
+    if (pendingItems.isNotEmpty && !force) {
       _showAppMessage(
         'Marque todos os trabalhos executados ou agende retorno para concluir depois.',
         isError: true,
@@ -3190,7 +3199,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       return;
     }
 
-    var serviceTime = activeVisit.serviceTime.trim();
+    var serviceTime = activeVisit?.serviceTime.trim() ?? '';
     var completionObservation = selected.isServiceOrder
         ? ''
         : selected.installationNotes.trim();
@@ -3224,9 +3233,14 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     final updatedVisits = List<InstallationVisitLog>.from(
       selected.installationVisitHistory,
     );
-    updatedVisits[activeVisitIndex] = activeVisit.copyWith(
-      serviceTime: serviceTime,
-    );
+    if (activeVisit != null) {
+      updatedVisits[activeVisitIndex] = activeVisit.copyWith(
+        serviceTime: serviceTime,
+        completedItems: pendingItems.isEmpty
+            ? activeVisit.completedItems
+            : activeVisit.plannedItems,
+      );
+    }
     final previewOrder = selected.copyWith(
       installationWorkflowStatus: InstallationWorkflowStatus.done,
       installationVisitHistory: updatedVisits,
@@ -5463,6 +5477,31 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     }
   }
 
+  bool _canMoveInstallationOrderToTarget(
+    WorkflowOrder order,
+    InstallationWorkflowStatus targetStatus,
+  ) {
+    if (order.currentStage != WorkflowStage.installation) {
+      return false;
+    }
+
+    return targetStatus == InstallationWorkflowStatus.done &&
+        order.installationWorkflowStatus != InstallationWorkflowStatus.done;
+  }
+
+  Future<void> _moveInstallationOrderToKanbanColumn(
+    WorkflowOrder order,
+    InstallationWorkflowStatus targetStatus,
+  ) async {
+    if (!_canMoveInstallationOrderToTarget(order, targetStatus)) {
+      return;
+    }
+
+    if (targetStatus == InstallationWorkflowStatus.done) {
+      await _completeInstallation(order: order, force: true);
+    }
+  }
+
   Future<void> _attachContractToSelectedOrder() async {
     await _attachFileToSelectedOrder(
       logAction: 'Anexou contrato',
@@ -7627,40 +7666,35 @@ class _AdminSectorCompletionPanelState
     final orders = widget.orders;
     final now = DateTime.now();
     final customRange = _customRange;
+    final allTimeStart = DateTime(2000);
     final periods = [
       _CompletionPeriod(
-        title: 'Semana',
-        subtitle: 'Últimos 7 dias',
-        start: DateUtils.dateOnly(now).subtract(const Duration(days: 6)),
+        title: 'Em Andamento',
+        subtitle: 'Pedidos ativos por setor',
+        start: allTimeStart,
         end: now,
+        focus: _CompletionPeriodFocus.inProgress,
       ),
       _CompletionPeriod(
-        title: 'Mês',
-        subtitle: 'Mês atual',
-        start: DateTime(now.year, now.month),
-        end: now,
+        title: 'Concluído',
+        subtitle: customRange != null
+            ? '${_formatDate(customRange.start)} a ${_formatDate(customRange.end)}'
+            : 'Todos os períodos',
+        start: customRange != null
+            ? DateUtils.dateOnly(customRange.start)
+            : allTimeStart,
+        end: customRange != null
+            ? DateUtils.dateOnly(customRange.end).add(
+                const Duration(
+                  hours: 23,
+                  minutes: 59,
+                  seconds: 59,
+                  milliseconds: 999,
+                ),
+              )
+            : now,
+        focus: _CompletionPeriodFocus.completed,
       ),
-      _CompletionPeriod(
-        title: 'Ano',
-        subtitle: 'Ano atual',
-        start: DateTime(now.year),
-        end: now,
-      ),
-      if (customRange != null)
-        _CompletionPeriod(
-          title: 'Personalizado',
-          subtitle:
-              '${_formatDate(customRange.start)} a ${_formatDate(customRange.end)}',
-          start: DateUtils.dateOnly(customRange.start),
-          end: DateUtils.dateOnly(customRange.end).add(
-            const Duration(
-              hours: 23,
-              minutes: 59,
-              seconds: 59,
-              milliseconds: 999,
-            ),
-          ),
-        ),
     ];
 
     return Container(
@@ -7697,7 +7731,7 @@ class _AdminSectorCompletionPanelState
                     ),
                     SizedBox(height: 6),
                     Text(
-                      'Acompanhe quantos pedidos estão em andamento e quantos foram concluídos em cada setor na semana, no mês, no ano ou em um período personalizado.',
+                      'Acompanhe quantos pedidos estão em andamento e quantos foram concluídos em cada setor. Use o filtro de período para consultar conclusões em uma data específica.',
                       style: TextStyle(color: Color(0xFF6B6B68), height: 1.35),
                     ),
                   ],
@@ -7771,9 +7805,7 @@ class _AdminSectorCompletionPanelState
           const SizedBox(height: 18),
           LayoutBuilder(
             builder: (context, constraints) {
-              final cardWidth = constraints.maxWidth >= 1180
-                  ? (constraints.maxWidth - 32) / 3
-                  : constraints.maxWidth >= 760
+              final cardWidth = constraints.maxWidth >= 760
                   ? (constraints.maxWidth - 16) / 2
                   : constraints.maxWidth;
 
@@ -8064,18 +8096,22 @@ class _DateFilterFieldButton extends StatelessWidget {
   }
 }
 
+enum _CompletionPeriodFocus { inProgress, completed }
+
 class _CompletionPeriod {
   const _CompletionPeriod({
     required this.title,
     required this.subtitle,
     required this.start,
     required this.end,
+    this.focus = _CompletionPeriodFocus.completed,
   });
 
   final String title;
   final String subtitle;
   final DateTime start;
   final DateTime end;
+  final _CompletionPeriodFocus focus;
 }
 
 class _SectorCompletionEntry {
@@ -8109,10 +8145,12 @@ class _SectorCompletionChart extends StatelessWidget {
       0,
       (sum, entry) => sum + entry.inProgressCount,
     );
-    final maxCount = entries.fold<int>(
-      0,
-      (max, entry) => entry.count > max ? entry.count : max,
-    );
+    final maxCount = entries.fold<int>(0, (max, entry) {
+      final val = period.focus == _CompletionPeriodFocus.inProgress
+          ? entry.inProgressCount
+          : entry.count;
+      return val > max ? val : max;
+    });
 
     return Container(
       padding: const EdgeInsets.all(18),
@@ -8151,30 +8189,28 @@ class _SectorCompletionChart extends StatelessWidget {
                   ],
                 ),
               ),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  _StatusBadge(
-                    label: 'Em andamento: $totalInProgress',
-                    color: const Color(0xFF7C3AED),
-                  ),
-                  const SizedBox(height: 6),
-                  _StatusBadge(
-                    label: 'Concluído: $total',
-                    color: const Color(0xFF0F766E),
-                  ),
-                ],
+                      _StatusBadge(
+                label: period.focus == _CompletionPeriodFocus.inProgress
+                    ? 'Em andamento: $totalInProgress'
+                    : 'Concluído: $total',
+                color: period.focus == _CompletionPeriodFocus.inProgress
+                    ? const Color(0xFFF97316)
+                    : const Color(0xFF16A34A),
               ),
             ],
           ),
           const SizedBox(height: 16),
           if (viewMode == _SectorCompletionViewMode.chart)
-            _SectorCompletionBarChart(entries: entries)
+            _SectorCompletionBarChart(entries: entries, focus: period.focus)
           else
             ...entries.map(
               (entry) => Padding(
                 padding: const EdgeInsets.only(bottom: 12),
-                child: _SectorCompletionBar(entry: entry, maxCount: maxCount),
+                child: _SectorCompletionBar(
+                  entry: entry,
+                  maxCount: maxCount,
+                  focus: period.focus,
+                ),
               ),
             ),
         ],
@@ -8184,22 +8220,32 @@ class _SectorCompletionChart extends StatelessWidget {
 }
 
 class _SectorCompletionBar extends StatelessWidget {
-  const _SectorCompletionBar({required this.entry, required this.maxCount});
+  const _SectorCompletionBar({
+    required this.entry,
+    required this.maxCount,
+    required this.focus,
+  });
 
   final _SectorCompletionEntry entry;
   final int maxCount;
+  final _CompletionPeriodFocus focus;
 
   @override
   Widget build(BuildContext context) {
     final isDarkMode = Theme.of(context).brightness == Brightness.dark;
-    final value = maxCount == 0 ? 0.0 : entry.count / maxCount;
+    final isInProgress = focus == _CompletionPeriodFocus.inProgress;
+    final displayCount = isInProgress ? entry.inProgressCount : entry.count;
+    final value = maxCount == 0 ? 0.0 : displayCount / maxCount;
+    final focusColor = isInProgress
+        ? const Color(0xFFF97316)
+        : const Color(0xFF16A34A);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Row(
           children: [
-            Icon(entry.stage.icon, size: 16, color: entry.stage.color),
+            Icon(entry.stage.icon, size: 16, color: isDarkMode ? const Color(0xFFD1D5DB) : const Color(0xFF111827)),
             const SizedBox(width: 8),
             Expanded(
               child: Text(
@@ -8212,19 +8258,11 @@ class _SectorCompletionBar extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 6),
-        Wrap(
-          spacing: 6,
-          runSpacing: 6,
-          children: [
-            _StatusBadge(
-              label: 'Em andamento: ${entry.inProgressCount}',
-              color: const Color(0xFF7C3AED),
-            ),
-            _StatusBadge(
-              label: 'Concluído: ${entry.count}',
-              color: entry.stage.color,
-            ),
-          ],
+        _StatusBadge(
+          label: isInProgress
+              ? 'Em andamento: ${entry.inProgressCount}'
+              : 'Concluído: ${entry.count}',
+          color: focusColor,
         ),
         const SizedBox(height: 7),
         ClipRRect(
@@ -8235,7 +8273,7 @@ class _SectorCompletionBar extends StatelessWidget {
             backgroundColor: isDarkMode
                 ? const Color(0xFF2F3134)
                 : const Color(0xFFE8E8E5),
-            valueColor: AlwaysStoppedAnimation(entry.stage.color),
+            valueColor: AlwaysStoppedAnimation(focusColor),
           ),
         ),
       ],
@@ -8244,9 +8282,13 @@ class _SectorCompletionBar extends StatelessWidget {
 }
 
 class _SectorCompletionBarChart extends StatelessWidget {
-  const _SectorCompletionBarChart({required this.entries});
+  const _SectorCompletionBarChart({
+    required this.entries,
+    required this.focus,
+  });
 
   final List<_SectorCompletionEntry> entries;
+  final _CompletionPeriodFocus focus;
 
   @override
   Widget build(BuildContext context) {
@@ -8257,14 +8299,17 @@ class _SectorCompletionBarChart extends StatelessWidget {
     final gridColor = isDarkMode
         ? const Color(0xFF2F3134)
         : const Color(0xFFE8E8E5);
+    final isInProgress = focus == _CompletionPeriodFocus.inProgress;
+    final focusColor = isInProgress
+        ? const Color(0xFFF97316)
+        : const Color(0xFF16A34A);
 
     final rawMax = entries.fold<int>(
       1,
-      (max, entry) => [
-        max,
-        entry.count,
-        entry.inProgressCount,
-      ].reduce((a, b) => a > b ? a : b),
+      (max, entry) {
+        final val = isInProgress ? entry.inProgressCount : entry.count;
+        return val > max ? val : max;
+      },
     );
     final maxY = (((rawMax / 4).ceil()) * 4).toDouble();
     final interval = maxY / 4;
@@ -8285,7 +8330,7 @@ class _SectorCompletionBarChart extends StatelessWidget {
                       : const Color(0xFF0F172A),
                   getTooltipItem: (group, groupIndex, rod, rodIndex) {
                     final entry = entries[group.x];
-                    final label = rodIndex == 0 ? 'Em andamento' : 'Concluído';
+                    final label = isInProgress ? 'Em andamento' : 'Concluído';
                     return BarTooltipItem(
                       '${entry.stage.title}\n$label: ${rod.toY.round()}',
                       const TextStyle(
@@ -8316,7 +8361,7 @@ class _SectorCompletionBarChart extends StatelessWidget {
                       final stage = entries[index].stage;
                       return Padding(
                         padding: const EdgeInsets.only(top: 8),
-                        child: Icon(stage.icon, size: 18, color: stage.color),
+                        child: Icon(stage.icon, size: 18, color: isDarkMode ? const Color(0xFFD1D5DB) : const Color(0xFF111827)),
                       );
                     },
                   ),
@@ -8342,22 +8387,16 @@ class _SectorCompletionBarChart extends StatelessWidget {
               borderData: FlBorderData(show: false),
               barGroups: List.generate(entries.length, (index) {
                 final entry = entries[index];
+                final barValue = isInProgress
+                    ? entry.inProgressCount.toDouble()
+                    : entry.count.toDouble();
                 return BarChartGroupData(
                   x: index,
-                  barsSpace: 4,
                   barRods: [
                     BarChartRodData(
-                      toY: entry.inProgressCount.toDouble(),
-                      color: const Color(0xFF7C3AED),
-                      width: 10,
-                      borderRadius: const BorderRadius.vertical(
-                        top: Radius.circular(4),
-                      ),
-                    ),
-                    BarChartRodData(
-                      toY: entry.count.toDouble(),
-                      color: const Color(0xFF0F766E),
-                      width: 10,
+                      toY: barValue,
+                      color: focusColor,
+                      width: 14,
                       borderRadius: const BorderRadius.vertical(
                         top: Radius.circular(4),
                       ),
@@ -8369,14 +8408,13 @@ class _SectorCompletionBarChart extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 14),
-        const Wrap(
+        Wrap(
           spacing: 16,
           runSpacing: 8,
           children: [
-            _ChartLegendItem(color: Color(0xFF7C3AED), label: 'Em andamento'),
             _ChartLegendItem(
-              color: Color(0xFF0F766E),
-              label: 'Concluído no período',
+              color: focusColor,
+              label: isInProgress ? 'Em andamento' : 'Concluído no período',
             ),
           ],
         ),
@@ -10297,69 +10335,49 @@ String _formatStockNumber(double value) {
 }
 
 class _StockWorkspaceSection extends StatefulWidget {
-  const _StockWorkspaceSection();
+  const _StockWorkspaceSection({required this.repository});
+
+  final FirebaseWorkflowRepository repository;
 
   @override
   State<_StockWorkspaceSection> createState() => _StockWorkspaceSectionState();
 }
 
 class _StockWorkspaceSectionState extends State<_StockWorkspaceSection> {
-  static const _storageKey = 'erp_danf_stock_items';
-
   final TextEditingController _searchController = TextEditingController();
   List<_StockItem> _items = const [];
   bool _showOnlyLowStock = false;
   bool _loaded = false;
+  StreamSubscription<List<Map<String, dynamic>>>? _itemsSubscription;
 
   @override
   void initState() {
     super.initState();
     _searchController.addListener(() => setState(() {}));
-    unawaited(_loadItems());
+    _itemsSubscription = widget.repository.watchStockItems().listen((raw) {
+      if (!mounted) {
+        return;
+      }
+      final items = raw
+          .map(_StockItem.fromMap)
+          .where((item) => item.id.trim().isNotEmpty)
+          .toList(growable: false);
+      setState(() {
+        _items = items;
+        _loaded = true;
+      });
+    });
   }
 
   @override
   void dispose() {
+    _itemsSubscription?.cancel();
     _searchController.dispose();
     super.dispose();
   }
 
-  Future<void> _loadItems() async {
-    final preferences = await SharedPreferences.getInstance();
-    final rawItems = preferences.getStringList(_storageKey) ?? const [];
-    final items = rawItems
-        .map((raw) => jsonDecode(raw))
-        .whereType<Map<String, dynamic>>()
-        .map(_StockItem.fromMap)
-        .where((item) => item.id.trim().isNotEmpty)
-        .toList(growable: false);
-    if (!mounted) {
-      return;
-    }
-    setState(() {
-      _items = items;
-      _loaded = true;
-    });
-  }
-
-  Future<void> _saveItems(List<_StockItem> items) async {
-    final preferences = await SharedPreferences.getInstance();
-    await preferences.setStringList(
-      _storageKey,
-      items.map((item) => jsonEncode(item.toMap())).toList(growable: false),
-    );
-  }
-
   Future<void> _upsertItem(_StockItem item) async {
-    final items = List<_StockItem>.from(_items);
-    final index = items.indexWhere((entry) => entry.id == item.id);
-    if (index == -1) {
-      items.insert(0, item);
-    } else {
-      items[index] = item;
-    }
-    setState(() => _items = items);
-    await _saveItems(items);
+    await widget.repository.saveStockItem(item.toMap());
   }
 
   Future<void> _deleteItem(_StockItem item) async {
@@ -10383,9 +10401,7 @@ class _StockWorkspaceSectionState extends State<_StockWorkspaceSection> {
     if (confirm != true) {
       return;
     }
-    final items = _items.where((entry) => entry.id != item.id).toList();
-    setState(() => _items = items);
-    await _saveItems(items);
+    await widget.repository.deleteStockItem(item.id);
   }
 
   Future<void> _openItemDialog({_StockItem? item}) async {
@@ -11291,6 +11307,8 @@ class _StageWorkspaceSection extends StatelessWidget {
     this.canAcceptFinanceKanbanDrop,
     this.onMoveRelationshipKanbanOrder,
     this.canAcceptRelationshipKanbanDrop,
+    this.onMoveInstallationKanbanOrder,
+    this.canAcceptInstallationKanbanDrop,
     this.onCreateServiceOrder,
     this.onCreateAdditionalProposal,
     this.onCreateOrder,
@@ -11373,6 +11391,13 @@ class _StageWorkspaceSection extends StatelessWidget {
   onMoveRelationshipKanbanOrder;
   final bool Function(WorkflowOrder order, String targetTaskKey)?
   canAcceptRelationshipKanbanDrop;
+  final Future<void> Function(
+    WorkflowOrder order,
+    InstallationWorkflowStatus target,
+  )?
+  onMoveInstallationKanbanOrder;
+  final bool Function(WorkflowOrder order, InstallationWorkflowStatus target)?
+  canAcceptInstallationKanbanDrop;
   final Future<void> Function()? onCreateServiceOrder;
   final Future<void> Function()? onCreateAdditionalProposal;
   final Future<void> Function()? onCreateOrder;
@@ -11441,6 +11466,22 @@ class _StageWorkspaceSection extends StatelessWidget {
     final registeredCatalogAccentStage = showingRegisteredCatalog
         ? registrationStage
         : stage;
+    final kanbanSearchQuery = customerSearchQuery.trim().toLowerCase();
+    bool matchesKanbanSearch(WorkflowOrder item) {
+      if (kanbanSearchQuery.isEmpty) {
+        return true;
+      }
+
+      return item.client.id.toLowerCase().contains(kanbanSearchQuery) ||
+          item.client.name.toLowerCase().contains(kanbanSearchQuery) ||
+          item.workName.toLowerCase().contains(kanbanSearchQuery) ||
+          item.client.phone.toLowerCase().contains(kanbanSearchQuery) ||
+          item.client.postalCode.toLowerCase().contains(kanbanSearchQuery) ||
+          item.client.street.toLowerCase().contains(kanbanSearchQuery) ||
+          item.client.neighborhood.toLowerCase().contains(kanbanSearchQuery) ||
+          item.address.toLowerCase().contains(kanbanSearchQuery);
+    }
+
     final visibleOrders = showingRegisteredCatalog
         ? orders
               .where((item) {
@@ -11470,13 +11511,17 @@ class _StageWorkspaceSection extends StatelessWidget {
               .toList(growable: false)
         : showingWorkQueue
         ? orders
-              .where((item) => item.currentStage == stage)
+              .where(
+                (item) =>
+                    item.currentStage == stage && matchesKanbanSearch(item),
+              )
               .toList(growable: false)
         : isCustomerRegistration
         ? orders
               .where(
                 (item) =>
-                    item.currentStage == WorkflowStage.customerRegistration,
+                    item.currentStage == WorkflowStage.customerRegistration &&
+                    matchesKanbanSearch(item),
               )
               .toList(growable: false)
         : orders;
@@ -11490,7 +11535,7 @@ class _StageWorkspaceSection extends StatelessWidget {
         : const <WorkflowOrder>[];
     final completedOrdersSource = showingRegisteredCatalog
         ? visibleOrders
-        : orders;
+        : orders.where(matchesKanbanSearch).toList(growable: false);
     final completedOrdersForStage = completedOrdersSource
         .where((order) {
           final orderStageIndex = workflowStages.indexOf(order.currentStage);
@@ -11522,12 +11567,13 @@ class _StageWorkspaceSection extends StatelessWidget {
     final relationshipCompletedHistoryOrders = <WorkflowOrder>[];
     final financeApprovedServiceOrdersHistory = <WorkflowOrder>[];
     final relationshipServiceOrderSource = orders
-        .where((order) => order.isServiceOrder)
+        .where((order) => order.isServiceOrder && matchesKanbanSearch(order))
         .toList(growable: false);
     final installationServiceOrderSource = orders
         .where(
           (order) =>
               order.isServiceOrder &&
+              matchesKanbanSearch(order) &&
               workflowStages.indexOf(order.currentStage) >=
                   workflowStages.indexOf(WorkflowStage.installation),
         )
@@ -11842,6 +11888,8 @@ class _StageWorkspaceSection extends StatelessWidget {
                 },
                 emptyMessage:
                     'Nenhuma ordem de serviço com instalação ${status.title.toLowerCase()}.',
+                installationTargetStatus:
+                    status == InstallationWorkflowStatus.done ? status : null,
                 orders: installationServiceOrderSource
                     .where(
                       (order) => order.installationWorkflowStatus == status,
@@ -11964,6 +12012,8 @@ class _StageWorkspaceSection extends StatelessWidget {
                 },
                 emptyMessage:
                     'Nenhum pedido com instalação ${status.title.toLowerCase()}.',
+                installationTargetStatus:
+                    status == InstallationWorkflowStatus.done ? status : null,
                 orders: currentKanbanOrders
                     .where(
                       (order) =>
@@ -12299,13 +12349,16 @@ class _StageWorkspaceSection extends StatelessWidget {
           ),
           const SizedBox(height: 20),
         ],
-        if (showingRegisteredCatalog) ...[
+        if (showingRegisteredCatalog ||
+            showingRegistrationInProgress ||
+            (showingWorkQueue && stage != WorkflowStage.warehouse)) ...[
           _CustomerRegistrationUtilityCard(
             icon: Icons.manage_search_outlined,
-            accent: registrationStage.color,
+            accent: registeredCatalogAccentStage.color,
             title: 'Pesquisa de clientes',
-            description:
-                'Busque por ID do cliente, nome, obra, telefone ou endereço.',
+            description: showingWorkQueue || showingRegistrationInProgress
+                ? 'Encontre um cliente nos cards do kanban por ID, nome, obra, telefone ou endereço.'
+                : 'Busque por ID do cliente, nome, obra, telefone ou endereço.',
             child: TextField(
               controller: customerSearchController,
               onChanged: onCustomerSearchChanged,
@@ -12527,6 +12580,8 @@ class _StageWorkspaceSection extends StatelessWidget {
               onOrderSelected: handleOrderTap,
               onOpenOrderConversation: handleOpenConversation,
               workspaceProfiles: workspaceProfiles,
+              onMoveInstallationKanbanOrder: onMoveInstallationKanbanOrder,
+              canAcceptInstallationKanbanDrop: canAcceptInstallationKanbanDrop,
             ),
             const SizedBox(height: 20),
             const Text(
@@ -12541,6 +12596,8 @@ class _StageWorkspaceSection extends StatelessWidget {
               onOrderSelected: handleOrderTap,
               onOpenOrderConversation: handleOpenConversation,
               workspaceProfiles: workspaceProfiles,
+              onMoveInstallationKanbanOrder: onMoveInstallationKanbanOrder,
+              canAcceptInstallationKanbanDrop: canAcceptInstallationKanbanDrop,
             ),
           ] else if (stage == WorkflowStage.estimating && showingWorkQueue) ...[
             const Text(
@@ -15180,6 +15237,7 @@ class _OrderCard extends StatelessWidget {
     required this.onTap,
     required this.onOpenConversation,
     required this.workspaceProfiles,
+    this.onMoveToCompleted,
   });
 
   final WorkflowOrder order;
@@ -15188,6 +15246,7 @@ class _OrderCard extends StatelessWidget {
   final VoidCallback onTap;
   final VoidCallback onOpenConversation;
   final List<EmployeeWorkspaceProfile> workspaceProfiles;
+  final Future<void> Function()? onMoveToCompleted;
 
   @override
   Widget build(BuildContext context) {
@@ -15432,32 +15491,57 @@ class _OrderCard extends StatelessWidget {
               ),
             ],
             const SizedBox(height: 10),
-            Align(
-              alignment: Alignment.centerLeft,
-              child: TextButton.icon(
-                onPressed: onOpenConversation,
-                style: TextButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 6,
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                TextButton.icon(
+                  onPressed: onOpenConversation,
+                  style: TextButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 6,
+                    ),
+                    minimumSize: const Size(0, 32),
+                    foregroundColor: order.currentStage.color,
+                    backgroundColor: order.currentStage.color.withValues(
+                      alpha: 0.08,
+                    ),
                   ),
-                  minimumSize: const Size(0, 32),
-                  foregroundColor: order.currentStage.color,
-                  backgroundColor: order.currentStage.color.withValues(
-                    alpha: 0.08,
+                  icon: const Icon(Icons.chat_bubble_outline_rounded, size: 16),
+                  label: Text(
+                    order.conversationMessages.isEmpty
+                        ? 'Conversa'
+                        : 'Conversa (${order.conversationMessages.length})',
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
                 ),
-                icon: const Icon(Icons.chat_bubble_outline_rounded, size: 16),
-                label: Text(
-                  order.conversationMessages.isEmpty
-                      ? 'Conversa'
-                      : 'Conversa (${order.conversationMessages.length})',
-                  style: const TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w700,
+                if (onMoveToCompleted != null)
+                  TextButton.icon(
+                    onPressed: () => onMoveToCompleted!(),
+                    style: TextButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 6,
+                      ),
+                      minimumSize: const Size(0, 32),
+                      foregroundColor: InstallationWorkflowStatus.done.color,
+                      backgroundColor: InstallationWorkflowStatus.done.color
+                          .withValues(alpha: 0.08),
+                    ),
+                    icon: const Icon(Icons.check_circle_outline, size: 16),
+                    label: const Text(
+                      'Mover para Concluído',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
                   ),
-                ),
-              ),
+              ],
             ),
           ],
         ),
@@ -16356,6 +16440,7 @@ class _OrdersKanbanColumnData {
     this.financeTargetTaskKey,
     this.isFinanceCompletionTarget = false,
     this.relationshipTargetTaskKey,
+    this.installationTargetStatus,
   });
 
   final String title;
@@ -16370,6 +16455,7 @@ class _OrdersKanbanColumnData {
   final String? financeTargetTaskKey;
   final bool isFinanceCompletionTarget;
   final String? relationshipTargetTaskKey;
+  final InstallationWorkflowStatus? installationTargetStatus;
 }
 
 class _PersonalKanbanBoard extends StatelessWidget {
@@ -16431,6 +16517,8 @@ class _StageOrdersKanbanBoard extends StatefulWidget {
     this.canAcceptFinanceKanbanDrop,
     this.onMoveRelationshipKanbanOrder,
     this.canAcceptRelationshipKanbanDrop,
+    this.onMoveInstallationKanbanOrder,
+    this.canAcceptInstallationKanbanDrop,
   });
 
   final List<_OrdersKanbanColumnData> columns;
@@ -16458,6 +16546,13 @@ class _StageOrdersKanbanBoard extends StatefulWidget {
   onMoveRelationshipKanbanOrder;
   final bool Function(WorkflowOrder order, String targetTaskKey)?
   canAcceptRelationshipKanbanDrop;
+  final Future<void> Function(
+    WorkflowOrder order,
+    InstallationWorkflowStatus target,
+  )?
+  onMoveInstallationKanbanOrder;
+  final bool Function(WorkflowOrder order, InstallationWorkflowStatus target)?
+  canAcceptInstallationKanbanDrop;
 
   @override
   State<_StageOrdersKanbanBoard> createState() =>
@@ -16568,6 +16663,10 @@ class _StageOrdersKanbanBoardState extends State<_StageOrdersKanbanBoard> {
                         widget.onMoveRelationshipKanbanOrder,
                     canAcceptRelationshipKanbanDrop:
                         widget.canAcceptRelationshipKanbanDrop,
+                    onMoveInstallationKanbanOrder:
+                        widget.onMoveInstallationKanbanOrder,
+                    canAcceptInstallationKanbanDrop:
+                        widget.canAcceptInstallationKanbanDrop,
                     onEngineeringCardDragUpdate:
                         _handleEngineeringCardDragUpdate,
                   ),
@@ -16611,6 +16710,8 @@ class _StageOrdersKanbanColumn extends StatefulWidget {
     this.canAcceptFinanceKanbanDrop,
     this.onMoveRelationshipKanbanOrder,
     this.canAcceptRelationshipKanbanDrop,
+    this.onMoveInstallationKanbanOrder,
+    this.canAcceptInstallationKanbanDrop,
     this.onEngineeringCardDragUpdate,
   });
 
@@ -16639,6 +16740,13 @@ class _StageOrdersKanbanColumn extends StatefulWidget {
   onMoveRelationshipKanbanOrder;
   final bool Function(WorkflowOrder order, String targetTaskKey)?
   canAcceptRelationshipKanbanDrop;
+  final Future<void> Function(
+    WorkflowOrder order,
+    InstallationWorkflowStatus target,
+  )?
+  onMoveInstallationKanbanOrder;
+  final bool Function(WorkflowOrder order, InstallationWorkflowStatus target)?
+  canAcceptInstallationKanbanDrop;
   final ValueChanged<Offset>? onEngineeringCardDragUpdate;
 
   @override
@@ -16673,11 +16781,15 @@ class _StageOrdersKanbanColumnState extends State<_StageOrdersKanbanColumn> {
     final acceptsRelationshipDrop =
         widget.onMoveRelationshipKanbanOrder != null &&
         column.relationshipTargetTaskKey != null;
+    final acceptsInstallationDrop =
+        widget.onMoveInstallationKanbanOrder != null &&
+        column.installationTargetStatus != null;
     final acceptsDrop =
         acceptsAssemblyDrop ||
         acceptsEngineeringDrop ||
         acceptsFinanceDrop ||
-        acceptsRelationshipDrop;
+        acceptsRelationshipDrop ||
+        acceptsInstallationDrop;
     final hasExpandableCards = column.orders.length > 2;
     final visibleOrders = hasExpandableCards && !_isExpanded
         ? column.orders.take(2).toList(growable: false)
@@ -16722,6 +16834,14 @@ class _StageOrdersKanbanColumnState extends State<_StageOrdersKanbanColumn> {
                     ) ??
                     false;
               }
+              if (acceptsInstallationDrop &&
+                  details.data.currentStage == WorkflowStage.installation) {
+                return widget.canAcceptInstallationKanbanDrop?.call(
+                      details.data,
+                      column.installationTargetStatus!,
+                    ) ??
+                    false;
+              }
               return false;
             }
           : null,
@@ -16760,6 +16880,14 @@ class _StageOrdersKanbanColumnState extends State<_StageOrdersKanbanColumn> {
                 await widget.onMoveRelationshipKanbanOrder!(
                   details.data,
                   column.relationshipTargetTaskKey!,
+                );
+                return;
+              }
+              if (acceptsInstallationDrop &&
+                  details.data.currentStage == WorkflowStage.installation) {
+                await widget.onMoveInstallationKanbanOrder!(
+                  details.data,
+                  column.installationTargetStatus!,
                 );
               }
             }
@@ -16874,8 +17002,22 @@ class _StageOrdersKanbanColumnState extends State<_StageOrdersKanbanColumn> {
                   ),
                 )
               else
-                ...visibleOrders.map(
-                  (order) => Padding(
+                ...visibleOrders.map((order) {
+                  final canMoveOrderToInstallationDone =
+                      widget.onMoveInstallationKanbanOrder != null &&
+                      (widget.canAcceptInstallationKanbanDrop?.call(
+                            order,
+                            InstallationWorkflowStatus.done,
+                          ) ??
+                          false);
+                  final onMoveOrderToInstallationDone =
+                      canMoveOrderToInstallationDone
+                      ? () => widget.onMoveInstallationKanbanOrder!(
+                          order,
+                          InstallationWorkflowStatus.done,
+                        )
+                      : null;
+                  return Padding(
                     padding: const EdgeInsets.only(bottom: 10),
                     child: acceptsDrop
                         ? LongPressDraggable<WorkflowOrder>(
@@ -16923,6 +17065,7 @@ class _StageOrdersKanbanColumnState extends State<_StageOrdersKanbanColumn> {
                               onOpenConversation: () =>
                                   onOpenOrderConversation(order),
                               workspaceProfiles: workspaceProfiles,
+                              onMoveToCompleted: onMoveOrderToInstallationDone,
                             ),
                           )
                         : _OrderCard(
@@ -16933,9 +17076,10 @@ class _StageOrdersKanbanColumnState extends State<_StageOrdersKanbanColumn> {
                             onOpenConversation: () =>
                                 onOpenOrderConversation(order),
                             workspaceProfiles: workspaceProfiles,
+                            onMoveToCompleted: onMoveOrderToInstallationDone,
                           ),
-                  ),
-                ),
+                  );
+                }),
               if (hasExpandableCards)
                 Align(
                   alignment: Alignment.centerLeft,
