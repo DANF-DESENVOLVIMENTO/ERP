@@ -840,7 +840,23 @@ class _AdditionalProposalDraft {
     this.proposalFilePath,
     required this.commercialProposalNumber,
     required this.consolidatedValue,
-    required this.observation,
+    required this.paymentType,
+    required this.paymentMethod,
+    required this.paymentObservation,
+    required this.installmentValue,
+    required this.installmentCount,
+    required this.paymentDate,
+    required this.rtValue,
+    required this.integratorValue,
+    required this.integratorName,
+    required this.architectName,
+    required this.proposalServices,
+    required this.isDanfClient,
+    required this.danfInstallerName,
+    required this.canHaveDanfPlate,
+    required this.hasWhatsappGroup,
+    required this.whatsappGroupMembers,
+    required this.whatsappGroupObservation,
   });
 
   final String workName;
@@ -849,7 +865,23 @@ class _AdditionalProposalDraft {
   final String? proposalFilePath;
   final String commercialProposalNumber;
   final String consolidatedValue;
-  final String observation;
+  final String paymentType;
+  final String paymentMethod;
+  final String paymentObservation;
+  final String installmentValue;
+  final String installmentCount;
+  final String paymentDate;
+  final String rtValue;
+  final String integratorValue;
+  final String integratorName;
+  final String architectName;
+  final List<ProposalServiceEntry> proposalServices;
+  final String isDanfClient;
+  final String danfInstallerName;
+  final String canHaveDanfPlate;
+  final String hasWhatsappGroup;
+  final List<WhatsappGroupMember> whatsappGroupMembers;
+  final String whatsappGroupObservation;
 }
 
 class _AdditionalProposalClientPickerDialog extends StatefulWidget {
@@ -1129,14 +1161,32 @@ class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
   final _proposalController = TextEditingController();
   final _commercialProposalNumberController = TextEditingController();
   final _consolidatedValueController = TextEditingController();
-  final _observationController = TextEditingController();
+  final _paymentTypeController = TextEditingController();
+  final _paymentMethodController = TextEditingController();
+  final _paymentObservationController = TextEditingController();
+  final _installmentValueController = TextEditingController();
+  final _installmentCountController = TextEditingController();
+  final _paymentDateController = TextEditingController();
+  final _rtValueController = TextEditingController();
+  final _integratorValueController = TextEditingController();
+  final _integratorNameController = TextEditingController();
+  final _architectNameController = TextEditingController();
+  final _isDanfClientController = TextEditingController();
+  final _danfInstallerNameController = TextEditingController();
+  final _canHaveDanfPlateController = TextEditingController();
+  final _hasWhatsappGroupController = TextEditingController();
+  final _whatsappGroupObservationController = TextEditingController();
+  late final List<_ProposalServiceFormRow> _proposalServiceRows;
+  final List<_WhatsappMemberFormRow> _whatsappMemberRows = [];
   String? _proposalFilePath;
 
   @override
   void initState() {
     super.initState();
-    _workNameController.text = widget.baseOrder.workName;
-    _addressController.text = widget.baseOrder.address;
+    _proposalServiceRows = _proposalServiceNames
+        .map((serviceName) => _ProposalServiceFormRow(serviceName: serviceName))
+        .toList(growable: false);
+    _whatsappMemberRows.add(_WhatsappMemberFormRow());
   }
 
   @override
@@ -1146,7 +1196,27 @@ class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
     _proposalController.dispose();
     _commercialProposalNumberController.dispose();
     _consolidatedValueController.dispose();
-    _observationController.dispose();
+    _paymentTypeController.dispose();
+    _paymentMethodController.dispose();
+    _paymentObservationController.dispose();
+    _installmentValueController.dispose();
+    _installmentCountController.dispose();
+    _paymentDateController.dispose();
+    _rtValueController.dispose();
+    _integratorValueController.dispose();
+    _integratorNameController.dispose();
+    _architectNameController.dispose();
+    _isDanfClientController.dispose();
+    _danfInstallerNameController.dispose();
+    _canHaveDanfPlateController.dispose();
+    _hasWhatsappGroupController.dispose();
+    _whatsappGroupObservationController.dispose();
+    for (final row in _proposalServiceRows) {
+      row.dispose();
+    }
+    for (final row in _whatsappMemberRows) {
+      row.dispose();
+    }
     super.dispose();
   }
 
@@ -1240,6 +1310,71 @@ class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
     return null;
   }
 
+  String? _validateDigitsOnly(String? value, {required String label}) {
+    final normalized = (value ?? '').trim();
+    if (normalized.isEmpty) {
+      return 'Informe $label.';
+    }
+    if (!RegExp(r'^[0-9]+$').hasMatch(normalized)) {
+      return '$label deve conter apenas números.';
+    }
+    return null;
+  }
+
+  String? _validateCurrency(String? value, {required String label}) {
+    final normalized = (value ?? '').trim();
+    if (normalized.isEmpty) {
+      return 'Informe $label.';
+    }
+    if (!RegExp(r'^[0-9.,]+$').hasMatch(normalized)) {
+      return '$label deve conter apenas números, pontos ou vírgulas.';
+    }
+    return null;
+  }
+
+  String? _validateDate(String? value, {required String label}) {
+    final normalized = (value ?? '').trim();
+    if (normalized.isEmpty) {
+      return 'Informe $label.';
+    }
+    if (!RegExp(r'^\d{2}/\d{2}/\d{4}$').hasMatch(normalized)) {
+      return '$label deve estar no formato DD/MM/AAAA.';
+    }
+    return null;
+  }
+
+  String? _validatePaymentObservation(String? value) {
+    if (_paymentMethodController.text.trim() == 'Outro') {
+      return _requiredField(value);
+    }
+    return null;
+  }
+
+  String? _validatePhoneNumber(String? value) {
+    final normalized = (value ?? '').trim();
+    if (normalized.isEmpty) {
+      return 'Informe o telefone.';
+    }
+    if (!RegExp(r'^[0-9]+$').hasMatch(normalized)) {
+      return 'Digite apenas números.';
+    }
+    return null;
+  }
+
+  void _addWhatsappMemberRow() {
+    setState(() {
+      _whatsappMemberRows.add(_WhatsappMemberFormRow());
+    });
+  }
+
+  void _removeWhatsappMemberRow(int index) {
+    if (_whatsappMemberRows.length == 1) return;
+    setState(() {
+      final row = _whatsappMemberRows.removeAt(index);
+      row.dispose();
+    });
+  }
+
   void _submit() {
     if (!_formKey.currentState!.validate()) {
       return;
@@ -1251,10 +1386,48 @@ class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
         address: _addressController.text.trim(),
         proposalFileName: _proposalController.text.trim(),
         proposalFilePath: _proposalFilePath,
-        commercialProposalNumber: _commercialProposalNumberController.text
-            .trim(),
+        commercialProposalNumber: _commercialProposalNumberController.text.trim(),
         consolidatedValue: _consolidatedValueController.text.trim(),
-        observation: _observationController.text.trim(),
+        paymentType: _paymentTypeController.text.trim(),
+        paymentMethod: _paymentMethodController.text.trim(),
+        paymentObservation: _paymentObservationController.text.trim(),
+        installmentValue: _installmentValueController.text.trim(),
+        installmentCount: _installmentCountController.text.trim(),
+        paymentDate: _paymentDateController.text.trim(),
+        rtValue: _rtValueController.text.trim(),
+        integratorValue: _integratorValueController.text.trim(),
+        integratorName: _integratorNameController.text.trim(),
+        architectName: _architectNameController.text.trim(),
+        proposalServices: _proposalServiceRows
+            .map(
+              (row) => ProposalServiceEntry(
+                serviceName: row.serviceName,
+                consolidated: row.consolidatedController.text.trim(),
+                prepareInProject: row.prepareController.text.trim(),
+                observations: row.observationsController.text.trim(),
+              ),
+            )
+            .toList(growable: false),
+        isDanfClient: _isDanfClientController.text.trim(),
+        danfInstallerName: _danfInstallerNameController.text.trim(),
+        canHaveDanfPlate: _canHaveDanfPlateController.text.trim(),
+        hasWhatsappGroup: _hasWhatsappGroupController.text.trim(),
+        whatsappGroupMembers: _whatsappMemberRows
+            .map(
+              (row) => WhatsappGroupMember(
+                name: row.nameController.text.trim(),
+                phone: row.phoneController.text.trim(),
+                role: row.roleController.text.trim(),
+              ),
+            )
+            .where(
+              (member) =>
+                  member.name.isNotEmpty ||
+                  member.phone.isNotEmpty ||
+                  member.role.isNotEmpty,
+            )
+            .toList(growable: false),
+        whatsappGroupObservation: _whatsappGroupObservationController.text.trim(),
       ),
     );
   }
@@ -1336,6 +1509,7 @@ class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
+                      // ── Cliente ──────────────────────────────────────────
                       Container(
                         width: double.infinity,
                         padding: const EdgeInsets.all(16),
@@ -1374,6 +1548,7 @@ class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
                         ),
                       ),
                       const SizedBox(height: 16),
+                      // ── Dados da proposta ─────────────────────────────────
                       _DialogField(
                         controller: _workNameController,
                         label: 'Nome da obra / proposta',
@@ -1387,53 +1562,9 @@ class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
                         maxLines: 2,
                       ),
                       const SizedBox(height: 16),
-                      Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Expanded(
-                            child: _DialogField(
-                              controller: _commercialProposalNumberController,
-                              label: 'Número da proposta (opcional)',
-                              validator: (value) => _validateOptionalDigits(
-                                value,
-                                label: 'o número da proposta',
-                              ),
-                              keyboardType: TextInputType.number,
-                              inputFormatters: [
-                                FilteringTextInputFormatter.digitsOnly,
-                              ],
-                            ),
-                          ),
-                          const SizedBox(width: 16),
-                          Expanded(
-                            child: _DialogField(
-                              controller: _consolidatedValueController,
-                              label: 'Valor consolidado (opcional)',
-                              validator: (value) => _validateOptionalCurrency(
-                                value,
-                                label: 'o valor consolidado',
-                              ),
-                              keyboardType:
-                                  const TextInputType.numberWithOptions(
-                                    decimal: true,
-                                  ),
-                              inputFormatters: _currencyInputFormatters(),
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 16),
-                      _DialogField(
-                        controller: _observationController,
-                        label: 'Observação (opcional)',
-                        validator: (_) => null,
-                        maxLines: 2,
-                      ),
-                      const SizedBox(height: 16),
                       _AttachmentPickerField(
                         label: 'Arquivo da nova proposta (opcional)',
-                        helper:
-                            'Anexe o arquivo da proposta, se já estiver disponível.',
+                        helper: 'Anexe o arquivo da proposta, se já estiver disponível.',
                         controller: _proposalController,
                         onPick: _pickProposalFile,
                         validator: _validateAttachment,
@@ -1445,6 +1576,422 @@ class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
                                   _proposalFilePath = null;
                                 });
                               },
+                      ),
+                      const SizedBox(height: 20),
+                      // ── Informações comerciais ────────────────────────────
+                      _AdditionalProposalSectionCard(
+                        title: 'Informações comerciais',
+                        children: [
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Expanded(
+                                child: _DialogField(
+                                  controller: _commercialProposalNumberController,
+                                  label: 'Número da proposta (opcional)',
+                                  validator: (value) => _validateOptionalDigits(
+                                    value,
+                                    label: 'o número da proposta',
+                                  ),
+                                  keyboardType: TextInputType.number,
+                                  inputFormatters: [
+                                    FilteringTextInputFormatter.digitsOnly,
+                                  ],
+                                ),
+                              ),
+                              const SizedBox(width: 16),
+                              Expanded(
+                                child: _DialogField(
+                                  controller: _consolidatedValueController,
+                                  label: 'Valor consolidado',
+                                  validator: (value) => _validateCurrency(
+                                    value,
+                                    label: 'o valor consolidado',
+                                  ),
+                                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                  inputFormatters: _currencyInputFormatters(),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 16),
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Expanded(
+                                child: _DialogChoiceField(
+                                  value: _paymentTypeController.text.trim().isEmpty
+                                      ? null
+                                      : _paymentTypeController.text.trim(),
+                                  label: 'Pagamento',
+                                  options: _paymentTypeOptions,
+                                  validator: _requiredField,
+                                  onChanged: (value) {
+                                    setState(() {
+                                      _paymentTypeController.text = value ?? '';
+                                    });
+                                  },
+                                ),
+                              ),
+                              const SizedBox(width: 16),
+                              Expanded(
+                                child: _DialogChoiceField(
+                                  value: _paymentMethodController.text.trim().isEmpty
+                                      ? null
+                                      : _paymentMethodController.text.trim(),
+                                  label: 'Forma de pagamento',
+                                  options: _paymentMethodOptions,
+                                  validator: _requiredField,
+                                  onChanged: (value) {
+                                    setState(() {
+                                      _paymentMethodController.text = value ?? '';
+                                    });
+                                  },
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 16),
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Expanded(
+                                child: _DialogField(
+                                  controller: _installmentValueController,
+                                  label: 'Valor da parcela',
+                                  validator: (value) => _validateCurrency(
+                                    value,
+                                    label: 'o valor da parcela',
+                                  ),
+                                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                  inputFormatters: _currencyInputFormatters(),
+                                ),
+                              ),
+                              const SizedBox(width: 16),
+                              Expanded(
+                                child: _DialogField(
+                                  controller: _installmentCountController,
+                                  label: 'Qtde de parcelas',
+                                  validator: (value) => _validateDigitsOnly(
+                                    value,
+                                    label: 'a quantidade de parcelas',
+                                  ),
+                                  keyboardType: TextInputType.number,
+                                  inputFormatters: [
+                                    FilteringTextInputFormatter.digitsOnly,
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 16),
+                          _DialogField(
+                            controller: _paymentObservationController,
+                            label: 'Observação',
+                            validator: _validatePaymentObservation,
+                            maxLines: 2,
+                          ),
+                          const SizedBox(height: 16),
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Expanded(
+                                child: _DialogField(
+                                  controller: _integratorValueController,
+                                  label: 'Valor integrador',
+                                  validator: (value) => _validateOptionalCurrency(
+                                    value,
+                                    label: 'o valor integrador',
+                                  ),
+                                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                  inputFormatters: _currencyInputFormatters(),
+                                ),
+                              ),
+                              const SizedBox(width: 16),
+                              Expanded(
+                                child: _DialogField(
+                                  controller: _integratorNameController,
+                                  label: 'Nome do integrador',
+                                  validator: (_) => null,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 16),
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Expanded(
+                                child: _DialogField(
+                                  controller: _paymentDateController,
+                                  label: 'Data do pagamento',
+                                  validator: (value) => _validateDate(
+                                    value,
+                                    label: 'a data do pagamento',
+                                  ),
+                                  keyboardType: TextInputType.number,
+                                  inputFormatters: [
+                                    FilteringTextInputFormatter.digitsOnly,
+                                    _DateTextInputFormatter(),
+                                  ],
+                                ),
+                              ),
+                              const SizedBox(width: 16),
+                              Expanded(
+                                child: _DialogField(
+                                  controller: _rtValueController,
+                                  label: 'Valor RT',
+                                  validator: (value) => _validateOptionalCurrency(
+                                    value,
+                                    label: 'o valor RT',
+                                  ),
+                                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                  inputFormatters: _currencyInputFormatters(),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 16),
+                          _DialogField(
+                            controller: _architectNameController,
+                            label: 'Nome do arquiteto',
+                            validator: _requiredField,
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 20),
+                      // ── Etapa 2 ───────────────────────────────────────────
+                      _AdditionalProposalSectionCard(
+                        title: 'Etapa 2',
+                        children: [
+                          const Text(
+                            'Serviços',
+                            style: TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          for (final row in _proposalServiceRows) ...[
+                            Container(
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(16),
+                                border: Border.all(color: const Color(0xFFE0E0DD)),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    row.serviceName,
+                                    style: const TextStyle(fontWeight: FontWeight.w800),
+                                  ),
+                                  const SizedBox(height: 12),
+                                  Row(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Expanded(
+                                        child: _DialogChoiceField(
+                                          value: row.consolidatedController.text.trim().isEmpty
+                                              ? null
+                                              : row.consolidatedController.text.trim(),
+                                          label: 'Consolidado',
+                                          options: _yesNoOptions,
+                                          validator: _requiredField,
+                                          onChanged: (value) {
+                                            setState(() {
+                                              row.consolidatedController.text = value ?? '';
+                                            });
+                                          },
+                                        ),
+                                      ),
+                                      const SizedBox(width: 12),
+                                      Expanded(
+                                        child: _DialogChoiceField(
+                                          value: row.prepareController.text.trim().isEmpty
+                                              ? null
+                                              : row.prepareController.text.trim(),
+                                          label: 'Preparar no projeto',
+                                          options: _yesNoOptions,
+                                          validator: _requiredField,
+                                          onChanged: (value) {
+                                            setState(() {
+                                              row.prepareController.text = value ?? '';
+                                            });
+                                          },
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 12),
+                                  _DialogField(
+                                    controller: row.observationsController,
+                                    label: 'Observações',
+                                    validator: (_) => null,
+                                    maxLines: 2,
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                          ],
+                          Row(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Expanded(
+                                child: _DialogChoiceField(
+                                  value: _isDanfClientController.text.trim().isEmpty
+                                      ? null
+                                      : _isDanfClientController.text.trim(),
+                                  label: 'Já é cliente DANF?',
+                                  options: _yesNoOptions,
+                                  validator: _requiredField,
+                                  onChanged: (value) {
+                                    setState(() {
+                                      _isDanfClientController.text = value ?? '';
+                                    });
+                                  },
+                                ),
+                              ),
+                              const SizedBox(width: 16),
+                              Expanded(
+                                child: _DialogChoiceField(
+                                  value: _danfInstallerNameController.text.trim().isEmpty
+                                      ? null
+                                      : _danfInstallerNameController.text.trim(),
+                                  label: 'DANF que vai fazer a instalação?',
+                                  options: _yesNoOptions,
+                                  validator: _requiredField,
+                                  onChanged: (value) {
+                                    setState(() {
+                                      _danfInstallerNameController.text = value ?? '';
+                                    });
+                                  },
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 16),
+                          _DialogChoiceField(
+                            value: _canHaveDanfPlateController.text.trim().isEmpty
+                                ? null
+                                : _canHaveDanfPlateController.text.trim(),
+                            label: 'Pode ter placa da DANF na obra?',
+                            options: _yesNoOptions,
+                            validator: _requiredField,
+                            onChanged: (value) {
+                              setState(() {
+                                _canHaveDanfPlateController.text = value ?? '';
+                              });
+                            },
+                          ),
+                          const SizedBox(height: 16),
+                          _DialogChoiceField(
+                            value: _hasWhatsappGroupController.text.trim().isEmpty
+                                ? null
+                                : _hasWhatsappGroupController.text.trim(),
+                            label: 'Tem grupo criado no WhatsApp?',
+                            options: _yesNoOptions,
+                            validator: _requiredField,
+                            onChanged: (value) {
+                              setState(() {
+                                _hasWhatsappGroupController.text = value ?? '';
+                              });
+                            },
+                          ),
+                          const SizedBox(height: 20),
+                          Row(
+                            children: [
+                              const Expanded(
+                                child: Text(
+                                  'Membros do Grupo de WhatsApp',
+                                  style: TextStyle(
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                              ),
+                              OutlinedButton.icon(
+                                onPressed: _addWhatsappMemberRow,
+                                icon: const Icon(Icons.add),
+                                label: const Text('Adicionar'),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+                          for (
+                            var index = 0;
+                            index < _whatsappMemberRows.length;
+                            index++
+                          ) ...[
+                            Container(
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(16),
+                                border: Border.all(color: const Color(0xFFE0E0DD)),
+                              ),
+                              child: Column(
+                                children: [
+                                  Row(
+                                    children: [
+                                      Text(
+                                        'Membro ${index + 1}',
+                                        style: const TextStyle(fontWeight: FontWeight.w700),
+                                      ),
+                                      const Spacer(),
+                                      if (_whatsappMemberRows.length > 1)
+                                        IconButton(
+                                          onPressed: () => _removeWhatsappMemberRow(index),
+                                          icon: const Icon(Icons.delete_outline),
+                                        ),
+                                    ],
+                                  ),
+                                  Row(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    children: [
+                                      Expanded(
+                                        child: _DialogField(
+                                          controller: _whatsappMemberRows[index].nameController,
+                                          label: 'Nome',
+                                          validator: _requiredField,
+                                        ),
+                                      ),
+                                      const SizedBox(width: 12),
+                                      Expanded(
+                                        child: _DialogField(
+                                          controller: _whatsappMemberRows[index].phoneController,
+                                          label: 'Telefone',
+                                          validator: _validatePhoneNumber,
+                                          keyboardType: TextInputType.number,
+                                          inputFormatters: [
+                                            FilteringTextInputFormatter.digitsOnly,
+                                          ],
+                                        ),
+                                      ),
+                                      const SizedBox(width: 12),
+                                      Expanded(
+                                        child: _DialogField(
+                                          controller: _whatsappMemberRows[index].roleController,
+                                          label: 'Cargo / função',
+                                          validator: _requiredField,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                          ],
+                          _DialogField(
+                            controller: _whatsappGroupObservationController,
+                            label: 'Observação sobre o grupo de WhatsApp',
+                            validator: (_) => null,
+                            maxLines: 3,
+                          ),
+                        ],
                       ),
                       const SizedBox(height: 24),
                       Align(
@@ -1472,6 +2019,40 @@ class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _AdditionalProposalSectionCard extends StatelessWidget {
+  const _AdditionalProposalSectionCard({
+    required this.title,
+    required this.children,
+  });
+
+  final String title;
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0xFFE0E0DD)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title,
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 16),
+          ...children,
+        ],
       ),
     );
   }
