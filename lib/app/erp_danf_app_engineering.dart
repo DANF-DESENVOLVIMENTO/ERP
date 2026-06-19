@@ -2557,6 +2557,11 @@ List<WorkflowOrder> _proposalGroupOrders(
   return groupedOrders;
 }
 
+const _subProposalMergeTag = '__sub_elem__';
+
+bool _isSubProposal(WorkflowOrder order) =>
+    order.tags.contains(_subProposalMergeTag);
+
 List<WorkflowOrder> _proposalExtensionsForPrimary(
   List<WorkflowOrder> allOrders,
   WorkflowOrder order,

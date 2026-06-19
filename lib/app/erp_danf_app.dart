@@ -1290,6 +1290,9 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
               icon: stage.icon,
               color: stage.color,
               stage: stage,
+              badgeCount: stage == WorkflowStage.relationship
+                  ? _mergeableCandidates.length
+                  : 0,
             ),
           ),
       if (profile.isAdministrator)
@@ -2372,6 +2375,13 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
         _selectedOrderCode = null;
       }),
       workspaceProfiles: _workspaceProfiles,
+      mergeCandidates: stage == WorkflowStage.relationship
+          ? _mergeableCandidates
+          : const [],
+      onMergeProposal: stage == WorkflowStage.relationship
+          ? _mergeProposalWithPrimary
+          : null,
+      onUnmergeProposal: _unmergeProposalFromPrimary,
     );
   }
 
@@ -4652,6 +4662,53 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
         details: '${savedOrder.code} • ${savedOrder.workName}',
       ),
     );
+
+  }
+
+  List<WorkflowOrder> get _mergeableCandidates {
+    final relationshipIndex = workflowStages.indexOf(
+      WorkflowStage.relationship,
+    );
+    return _orders.where((order) {
+      if (order.proposalVersion <= 1) return false;
+      if (_isSubProposal(order)) return false;
+      final stageIndex = workflowStages.indexOf(order.currentStage);
+      if (stageIndex < relationshipIndex) return false;
+      final primary = _resolvePrimaryProposal(order);
+      if (primary.code == order.code) return false;
+      return workflowStages.indexOf(primary.currentStage) >= relationshipIndex;
+    }).toList(growable: false);
+  }
+
+  Future<void> _mergeProposalWithPrimary(WorkflowOrder secondary) async {
+    final primary = _resolvePrimaryProposal(secondary);
+    final mergedOrder = secondary.copyWith(
+      tags: [...secondary.tags, _subProposalMergeTag],
+    );
+    final saved = await _runBusyTask(
+      () => _repository.saveOrder(mergedOrder),
+      busyMessage: 'Juntando propostas...',
+      errorPrefix: 'Não foi possível juntar as propostas',
+    );
+    if (saved == null) return;
+    _mergeOrderLocally(saved);
+    setState(() {
+      _selectedViewKey = 'stage:${primary.currentStage.name}';
+      _selectedOrderCode = primary.code;
+    });
+  }
+
+  Future<void> _unmergeProposalFromPrimary(WorkflowOrder secondary) async {
+    final updatedOrder = secondary.copyWith(
+      tags: secondary.tags.where((t) => t != _subProposalMergeTag).toList(),
+    );
+    final saved = await _runBusyTask(
+      () => _repository.saveOrder(updatedOrder),
+      busyMessage: 'Desfazendo junção...',
+      errorPrefix: 'Não foi possível desfazer a junção',
+    );
+    if (saved == null) return;
+    _mergeOrderLocally(saved);
   }
 
   Future<void> _routeSelectedOrderToStage(WorkflowStage targetStage) async {
@@ -11325,6 +11382,9 @@ class _StageWorkspaceSection extends StatelessWidget {
     this.onCustomerSearchChanged,
     this.onClearCustomerSearch,
     required this.workspaceProfiles,
+    this.mergeCandidates = const [],
+    this.onMergeProposal,
+    this.onUnmergeProposal,
   });
 
   final WorkflowStage stage;
@@ -11414,6 +11474,9 @@ class _StageWorkspaceSection extends StatelessWidget {
   final ValueChanged<String>? onCustomerSearchChanged;
   final VoidCallback? onClearCustomerSearch;
   final List<EmployeeWorkspaceProfile> workspaceProfiles;
+  final List<WorkflowOrder> mergeCandidates;
+  final Future<void> Function(WorkflowOrder secondary)? onMergeProposal;
+  final Future<void> Function(WorkflowOrder secondary)? onUnmergeProposal;
 
   @override
   Widget build(BuildContext context) {
@@ -11511,7 +11574,9 @@ class _StageWorkspaceSection extends StatelessWidget {
         ? orders
               .where(
                 (item) =>
-                    item.currentStage == stage && matchesKanbanSearch(item),
+                    item.currentStage == stage &&
+                    matchesKanbanSearch(item) &&
+                    !_isSubProposal(item),
               )
               .toList(growable: false)
         : isCustomerRegistration
@@ -11533,7 +11598,9 @@ class _StageWorkspaceSection extends StatelessWidget {
         : const <WorkflowOrder>[];
     final completedOrdersSource = showingRegisteredCatalog
         ? visibleOrders
-        : orders.where(matchesKanbanSearch).toList(growable: false);
+        : orders
+              .where((o) => matchesKanbanSearch(o) && !_isSubProposal(o))
+              .toList(growable: false);
     final completedOrdersForStage = completedOrdersSource
         .where((order) {
           final orderStageIndex = workflowStages.indexOf(order.currentStage);
@@ -12549,6 +12616,7 @@ class _StageWorkspaceSection extends StatelessWidget {
               workspaceProfiles: workspaceProfiles,
               onMoveFinanceKanbanOrder: onMoveFinanceKanbanOrder,
               canAcceptFinanceKanbanDrop: canAcceptFinanceKanbanDrop,
+              onUnmergeProposal: onUnmergeProposal,
             ),
             const SizedBox(height: 20),
             const Text(
@@ -12563,6 +12631,7 @@ class _StageWorkspaceSection extends StatelessWidget {
               onOrderSelected: handleOrderTap,
               onOpenOrderConversation: handleOpenConversation,
               workspaceProfiles: workspaceProfiles,
+              onUnmergeProposal: onUnmergeProposal,
             ),
           ] else if (stage == WorkflowStage.installation &&
               showingWorkQueue) ...[
@@ -12580,6 +12649,7 @@ class _StageWorkspaceSection extends StatelessWidget {
               workspaceProfiles: workspaceProfiles,
               onMoveInstallationKanbanOrder: onMoveInstallationKanbanOrder,
               canAcceptInstallationKanbanDrop: canAcceptInstallationKanbanDrop,
+              onUnmergeProposal: onUnmergeProposal,
             ),
             const SizedBox(height: 20),
             const Text(
@@ -12596,6 +12666,7 @@ class _StageWorkspaceSection extends StatelessWidget {
               workspaceProfiles: workspaceProfiles,
               onMoveInstallationKanbanOrder: onMoveInstallationKanbanOrder,
               canAcceptInstallationKanbanDrop: canAcceptInstallationKanbanDrop,
+              onUnmergeProposal: onUnmergeProposal,
             ),
           ] else if (stage == WorkflowStage.estimating && showingWorkQueue) ...[
             const Text(
@@ -12610,6 +12681,7 @@ class _StageWorkspaceSection extends StatelessWidget {
               onOrderSelected: handleOrderTap,
               onOpenOrderConversation: handleOpenConversation,
               workspaceProfiles: workspaceProfiles,
+              onUnmergeProposal: onUnmergeProposal,
             ),
             const SizedBox(height: 20),
             const Text(
@@ -12624,9 +12696,18 @@ class _StageWorkspaceSection extends StatelessWidget {
               onOrderSelected: handleOrderTap,
               onOpenOrderConversation: handleOpenConversation,
               workspaceProfiles: workspaceProfiles,
+              onUnmergeProposal: onUnmergeProposal,
             ),
           ] else if (stage == WorkflowStage.relationship &&
               showingWorkQueue) ...[
+            if (mergeCandidates.isNotEmpty) ...[
+              _MergeCandidatesBanner(
+                candidates: mergeCandidates,
+                allOrders: orders,
+                onMerge: onMergeProposal,
+              ),
+              const SizedBox(height: 16),
+            ],
             const Text(
               'Pedidos',
               style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
@@ -12641,6 +12722,7 @@ class _StageWorkspaceSection extends StatelessWidget {
               workspaceProfiles: workspaceProfiles,
               onMoveRelationshipKanbanOrder: onMoveRelationshipKanbanOrder,
               canAcceptRelationshipKanbanDrop: canAcceptRelationshipKanbanDrop,
+              onUnmergeProposal: onUnmergeProposal,
             ),
             const SizedBox(height: 20),
             const Text(
@@ -12655,6 +12737,7 @@ class _StageWorkspaceSection extends StatelessWidget {
               onOrderSelected: handleOrderTap,
               onOpenOrderConversation: handleOpenConversation,
               workspaceProfiles: workspaceProfiles,
+              onUnmergeProposal: onUnmergeProposal,
             ),
           ] else
             _StageOrdersKanbanBoard(
@@ -12689,6 +12772,7 @@ class _StageWorkspaceSection extends StatelessWidget {
                   stage == WorkflowStage.relationship
                   ? canAcceptRelationshipKanbanDrop
                   : null,
+              onUnmergeProposal: onUnmergeProposal,
             ),
         ],
       ],
@@ -13048,6 +13132,7 @@ class _FlowNavItem {
     required this.icon,
     required this.color,
     this.stage,
+    this.badgeCount = 0,
   });
 
   final String routeKey;
@@ -13055,6 +13140,7 @@ class _FlowNavItem {
   final IconData icon;
   final Color color;
   final WorkflowStage? stage;
+  final int badgeCount;
 }
 
 class _ThemeModeSettingsButton extends StatelessWidget {
@@ -13233,14 +13319,30 @@ class _FlowNavbarTab extends StatelessWidget {
                   ]
                 : null,
           ),
-          child: Center(
-            child: Icon(
-              item.icon,
-              size: 22,
-              color: selected
-                  ? (isDarkMode ? const Color(0xFF1A1A1A) : Colors.white)
-                  : foregroundColor,
-            ),
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              Icon(
+                item.icon,
+                size: 22,
+                color: selected
+                    ? (isDarkMode ? const Color(0xFF1A1A1A) : Colors.white)
+                    : foregroundColor,
+              ),
+              if (item.badgeCount > 0)
+                Positioned(
+                  top: 6,
+                  right: 6,
+                  child: Container(
+                    width: 10,
+                    height: 10,
+                    decoration: const BoxDecoration(
+                      color: Color(0xFFB45309),
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                ),
+            ],
           ),
         ),
       ),
@@ -13300,12 +13402,30 @@ class _FlowTopNavbarTab extends StatelessWidget {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(
-              item.icon,
-              size: 18,
-              color: selected
-                  ? (isDarkMode ? const Color(0xFF1A1A1A) : Colors.white)
-                  : foregroundColor,
+            Stack(
+              clipBehavior: Clip.none,
+              children: [
+                Icon(
+                  item.icon,
+                  size: 18,
+                  color: selected
+                      ? (isDarkMode ? const Color(0xFF1A1A1A) : Colors.white)
+                      : foregroundColor,
+                ),
+                if (item.badgeCount > 0)
+                  Positioned(
+                    top: -3,
+                    right: -4,
+                    child: Container(
+                      width: 9,
+                      height: 9,
+                      decoration: const BoxDecoration(
+                        color: Color(0xFFB45309),
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                  ),
+              ],
             ),
             const SizedBox(width: 8),
             Text(
@@ -13320,6 +13440,24 @@ class _FlowTopNavbarTab extends StatelessWidget {
                 fontSize: 13,
               ),
             ),
+            if (item.badgeCount > 0) ...[
+              const SizedBox(width: 6),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFB45309),
+                  borderRadius: BorderRadius.circular(99),
+                ),
+                child: Text(
+                  '${item.badgeCount}',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 9,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+            ],
           ],
         ),
       ),
@@ -13859,6 +13997,9 @@ class _OrderDetailsPanel extends StatelessWidget {
     final hasContractFile = order!.contractFileName.trim().isNotEmpty;
     // Use assemblyAssignedProfiles directly for avatars
     final relatedProposals = _proposalGroupOrders(allOrders, order!);
+    final mergedSubProposals = relatedProposals
+        .where((p) => p.code != order!.code && _isSubProposal(p))
+        .toList(growable: false);
     final stageOwners = order!.resolvedStageOwners().entries.toList(
       growable: false,
     );
@@ -14382,6 +14523,68 @@ class _OrderDetailsPanel extends StatelessWidget {
               ),
             ),
           );
+    final showCommercialInfoSection = !showFullCustomerRegistrationData &&
+        (isFinanceStage || hasPassedFinance);
+    final commercialInfoSection = !showCommercialInfoSection
+        ? null
+        : _CollapsibleDetailSection(
+            title: 'Informações Comerciais',
+            subtitle: 'Dados de pagamento, proposta e condições comerciais.',
+            initiallyExpanded: isFinanceStage,
+            child: Builder(
+              builder: (context) {
+                final secondaryTextColor = isDarkMode
+                    ? const Color(0xFFA3A39E)
+                    : const Color(0xFF6B6B68);
+
+                Widget infoRow(
+                  String label,
+                  String value, {
+                  bool emphasize = false,
+                }) =>
+                    _InfoRow(
+                      label: label,
+                      value: value.trim().isEmpty ? 'Não informado' : value,
+                      emphasizeValue: emphasize,
+                    );
+
+                final rows = <Widget>[
+                  if (order!.commercialProposalNumber.trim().isNotEmpty)
+                    infoRow('Nº da proposta', order!.commercialProposalNumber, emphasize: true),
+                  infoRow('Tipo de pagamento', order!.paymentType),
+                  infoRow('Forma de pagamento', order!.paymentMethod),
+                  if (order!.installmentValue.trim().isNotEmpty)
+                    infoRow('Valor da parcela', order!.installmentValue),
+                  if (order!.installmentCount.trim().isNotEmpty)
+                    infoRow('Qtde de parcelas', order!.installmentCount),
+                  if (order!.paymentDate.trim().isNotEmpty)
+                    infoRow('Data do pagamento', order!.paymentDate),
+                  if (order!.paymentObservation.trim().isNotEmpty)
+                    infoRow('Observação', order!.paymentObservation),
+                  if (order!.rtValue.trim().isNotEmpty)
+                    infoRow('Valor RT', order!.rtValue),
+                  if (order!.integratorValue.trim().isNotEmpty)
+                    infoRow('Valor integrador', order!.integratorValue),
+                  if (order!.integratorName.trim().isNotEmpty)
+                    infoRow('Integrador', order!.integratorName),
+                  if (order!.architectName.trim().isNotEmpty)
+                    infoRow('Arquiteto', order!.architectName),
+                ];
+
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: rows
+                      .map(
+                        (w) => Padding(
+                          padding: const EdgeInsets.only(bottom: 10),
+                          child: w,
+                        ),
+                      )
+                      .toList(growable: false),
+                );
+              },
+            ),
+          );
     final estimatingSection = isServiceOrder
         ? null
         : _CollapsibleDetailSection(
@@ -14389,10 +14592,45 @@ class _OrderDetailsPanel extends StatelessWidget {
             subtitle:
                 'Quantidade de visitas inclusas e lista de materiais do orçamento.',
             initiallyExpanded: isEstimatingStage,
-            child: _EstimatingWorksheetSummaryCard(
-              order: order!,
-              canEdit: showFlowActions && isEstimatingStage,
-              onEditWorksheet: onAttachMaterials,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (mergedSubProposals.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: _StatusBadge(
+                      label: _proposalBadgeLabel(order!),
+                      color: const Color(0xFF475569),
+                    ),
+                  ),
+                _EstimatingWorksheetSummaryCard(
+                  order: order!,
+                  canEdit: showFlowActions && isEstimatingStage,
+                  onEditWorksheet: onAttachMaterials,
+                ),
+                ...mergedSubProposals.map(
+                  (p) => Padding(
+                    padding: const EdgeInsets.only(top: 14),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 8),
+                          child: _StatusBadge(
+                            label: _proposalBadgeLabel(p),
+                            color: const Color(0xFF1D4ED8),
+                          ),
+                        ),
+                        _EstimatingWorksheetSummaryCard(
+                          order: p,
+                          canEdit: false,
+                          onEditWorksheet: null,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
             ),
           );
     final proposalExtensionsSection = relatedProposals.length <= 1
@@ -14736,71 +14974,414 @@ class _OrderDetailsPanel extends StatelessWidget {
           )
         : null;
 
+    final primaryBody = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _OrderDetailsHero(
+          order: order!,
+          allOrders: allOrders,
+          secondaryTextColor: secondaryTextColor,
+          headerActionPanel: headerActionPanel,
+          headerActions: headerActions,
+          showStandaloneEditAction: showStandaloneEditAction,
+          inlineHeaderMinWidth: inlineHeaderMinWidth,
+          progressTrackColor: progressTrackColor,
+        ),
+        const SizedBox(height: 18),
+        customerDataSection,
+        if (relationshipSection != null) ...[
+          const SizedBox(height: 12),
+          relationshipSection,
+        ],
+        if (estimatingMetaSection != null) ...[
+          const SizedBox(height: 12),
+          estimatingMetaSection,
+        ],
+        if (financeContractSection != null) ...[
+          const SizedBox(height: 12),
+          financeContractSection,
+        ],
+        if (commercialInfoSection != null) ...[
+          const SizedBox(height: 12),
+          commercialInfoSection,
+        ],
+        if (estimatingSection != null) ...[
+          const SizedBox(height: 12),
+          estimatingSection,
+        ],
+        if (serviceOrderSection != null) ...[
+          const SizedBox(height: 12),
+          serviceOrderSection,
+        ],
+        if (proposalExtensionsSection != null) ...[
+          const SizedBox(height: 12),
+          proposalExtensionsSection,
+        ],
+        if (engineeringSection != null) ...[
+          const SizedBox(height: 12),
+          engineeringSection,
+        ],
+        if (assemblyChecklistSection != null) ...[
+          const SizedBox(height: 12),
+          assemblyChecklistSection,
+        ],
+        if (assemblyTeamSection != null) ...[
+          const SizedBox(height: 12),
+          assemblyTeamSection,
+        ],
+        if (installationSection != null) ...[
+          const SizedBox(height: 12),
+          installationSection,
+        ],
+        if (stageOwnersSection != null) ...[
+          const SizedBox(height: 12),
+          stageOwnersSection,
+        ],
+        if (flowSection != null) ...[const SizedBox(height: 12), flowSection],
+      ],
+    );
+
+    if (mergedSubProposals.isEmpty) {
+      return Container(
+        padding: const EdgeInsets.all(16),
+        decoration: _panelDecoration(context),
+        child: primaryBody,
+      );
+    }
+
+    final tabCount = 1 + mergedSubProposals.length;
+    return DefaultTabController(
+      length: tabCount,
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: _panelDecoration(context),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _ProposalTabBar(
+              primaryOrder: order!,
+              secondaryOrders: mergedSubProposals,
+            ),
+            const SizedBox(height: 20),
+            Builder(
+              builder: (context) {
+                final tc = DefaultTabController.of(context);
+                return AnimatedBuilder(
+                  animation: tc,
+                  builder: (context, _) {
+                    if (tc.index == 0) return primaryBody;
+                    return _SecondaryProposalPanelContent(
+                      order: mergedSubProposals[tc.index - 1],
+                      isDarkMode: isDarkMode,
+                    );
+                  },
+                );
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ProposalTabBar extends StatelessWidget {
+  const _ProposalTabBar({
+    required this.primaryOrder,
+    required this.secondaryOrders,
+  });
+
+  final WorkflowOrder primaryOrder;
+  final List<WorkflowOrder> secondaryOrders;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    final amber = const Color(0xFFB45309);
+    final borderColor =
+        isDarkMode ? const Color(0xFF3E4044) : const Color(0xFFE8E8E5);
+    final surfaceColor =
+        isDarkMode ? const Color(0xFF26282B) : Colors.white;
+    final selectedBg = amber.withValues(alpha: isDarkMode ? 0.14 : 0.08);
+
     return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: _panelDecoration(context),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _OrderDetailsHero(
-            order: order!,
-            allOrders: allOrders,
-            secondaryTextColor: secondaryTextColor,
-            headerActionPanel: headerActionPanel,
-            headerActions: headerActions,
-            showStandaloneEditAction: showStandaloneEditAction,
-            inlineHeaderMinWidth: inlineHeaderMinWidth,
-            progressTrackColor: progressTrackColor,
+      decoration: BoxDecoration(
+        color: isDarkMode ? const Color(0xFF202225) : const Color(0xFFF5F5F3),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: borderColor),
+      ),
+      padding: const EdgeInsets.all(4),
+      child: TabBar(
+        dividerColor: Colors.transparent,
+        indicator: BoxDecoration(
+          color: selectedBg,
+          borderRadius: BorderRadius.circular(9),
+          border: Border.all(color: amber.withValues(alpha: 0.35)),
+        ),
+        indicatorSize: TabBarIndicatorSize.tab,
+        labelColor: amber,
+        unselectedLabelColor:
+            isDarkMode ? const Color(0xFFA3A39E) : const Color(0xFF6B6B68),
+        labelStyle: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+        unselectedLabelStyle:
+            const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+        tabs: [
+          Tab(
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.looks_one_outlined, size: 14),
+                const SizedBox(width: 5),
+                Text(_proposalBadgeLabel(primaryOrder)),
+              ],
+            ),
           ),
-          const SizedBox(height: 18),
-          customerDataSection,
-          if (relationshipSection != null) ...[
-            const SizedBox(height: 12),
-            relationshipSection,
-          ],
-          if (estimatingMetaSection != null) ...[
-            const SizedBox(height: 12),
-            estimatingMetaSection,
-          ],
-          if (financeContractSection != null) ...[
-            const SizedBox(height: 12),
-            financeContractSection,
-          ],
-          if (estimatingSection != null) ...[
-            const SizedBox(height: 12),
-            estimatingSection,
-          ],
-          if (serviceOrderSection != null) ...[
-            const SizedBox(height: 12),
-            serviceOrderSection,
-          ],
-          if (proposalExtensionsSection != null) ...[
-            const SizedBox(height: 12),
-            proposalExtensionsSection,
-          ],
-          if (engineeringSection != null) ...[
-            const SizedBox(height: 12),
-            engineeringSection,
-          ],
-          if (assemblyChecklistSection != null) ...[
-            const SizedBox(height: 12),
-            assemblyChecklistSection,
-          ],
-          if (assemblyTeamSection != null) ...[
-            const SizedBox(height: 12),
-            assemblyTeamSection,
-          ],
-          if (installationSection != null) ...[
-            const SizedBox(height: 12),
-            installationSection,
-          ],
-          if (stageOwnersSection != null) ...[
-            const SizedBox(height: 12),
-            stageOwnersSection,
-          ],
-          if (flowSection != null) ...[const SizedBox(height: 12), flowSection],
+          ...secondaryOrders.map(
+            (p) => Tab(
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.link_rounded, size: 13),
+                  const SizedBox(width: 5),
+                  Text(_proposalBadgeLabel(p)),
+                ],
+              ),
+            ),
+          ),
         ],
       ),
+    );
+  }
+}
+
+class _SecondaryProposalPanelContent extends StatelessWidget {
+  const _SecondaryProposalPanelContent({
+    required this.order,
+    required this.isDarkMode,
+  });
+
+  final WorkflowOrder order;
+  final bool isDarkMode;
+
+  @override
+  Widget build(BuildContext context) {
+    final primaryTextColor =
+        isDarkMode ? const Color(0xFFF2F2F0) : const Color(0xFF1A1A1A);
+    final secondaryTextColor =
+        isDarkMode ? const Color(0xFFA3A39E) : const Color(0xFF6B6B68);
+    final borderColor =
+        isDarkMode ? const Color(0xFF3E4044) : const Color(0xFFE8E8E5);
+    final surfaceColor =
+        isDarkMode ? const Color(0xFF202225) : const Color(0xFFF5F5F3);
+    final stageColor = order.currentStage.color;
+
+    Widget infoRow(String label, String value, {bool emphasize = false}) {
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 10),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(
+              width: 130,
+              child: Text(
+                label,
+                style: TextStyle(fontSize: 12, color: secondaryTextColor),
+              ),
+            ),
+            Expanded(
+              child: Text(
+                value.trim().isEmpty ? '—' : value,
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight:
+                      emphasize ? FontWeight.w700 : FontWeight.w400,
+                  color: primaryTextColor,
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final hasAddress = order.address.trim().isNotEmpty;
+    final hasNextAction = order.nextAction.trim().isNotEmpty;
+    final hasBlocker = order.blocker.trim().isNotEmpty;
+    final visitPlanned = _plannedVisitCountForOrder(order);
+    final hasWorksheet = order.estimatingIncludedVisits.isNotEmpty &&
+        order.estimatingMaterials.isNotEmpty;
+    const financeAndBeyond = {
+      WorkflowStage.finance,
+      WorkflowStage.relationship,
+      WorkflowStage.engineering,
+      WorkflowStage.assembly,
+      WorkflowStage.installation,
+    };
+    final isAtFinanceOrBeyond = financeAndBeyond.contains(order.currentStage);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Header badges
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            _StatusBadge(
+              label: _proposalBadgeLabel(order),
+              color: const Color(0xFF1D4ED8),
+            ),
+            _StatusBadge(
+              label: order.currentStage.title,
+              color: stageColor,
+            ),
+            const _StatusBadge(
+              label: 'Sub-elemento',
+              color: Color(0xFFB45309),
+            ),
+          ],
+        ),
+        const SizedBox(height: 14),
+
+        // Main info container
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: surfaceColor,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: borderColor),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                order.workName.trim().isEmpty ? '(sem nome de obra)' : order.workName,
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
+                  color: primaryTextColor,
+                ),
+              ),
+              if (hasAddress) ...[
+                const SizedBox(height: 4),
+                Row(
+                  children: [
+                    Icon(Icons.location_on_outlined, size: 13, color: secondaryTextColor),
+                    const SizedBox(width: 4),
+                    Expanded(
+                      child: Text(
+                        order.address,
+                        style: TextStyle(fontSize: 12, color: secondaryTextColor),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ],
+          ),
+        ),
+
+        // Next action + blocker
+        if (hasNextAction || hasBlocker) ...[
+          const SizedBox(height: 12),
+          _CollapsibleDetailSection(
+            title: 'Ação e bloqueios',
+            subtitle: 'Próxima ação e impedimentos registrados nesta proposta.',
+            initiallyExpanded: true,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (hasNextAction)
+                  infoRow('Próxima ação', order.nextAction),
+                if (hasBlocker)
+                  infoRow('Bloqueio', order.blocker),
+              ],
+            ),
+          ),
+        ],
+
+        // Estimating worksheet
+        if (hasWorksheet || visitPlanned > 0) ...[
+          const SizedBox(height: 12),
+          _CollapsibleDetailSection(
+            title: 'Levantamento do Orçamentista',
+            subtitle: 'Visitas inclusas e materiais desta proposta.',
+            initiallyExpanded: true,
+            child: _EstimatingWorksheetSummaryCard(
+              order: order,
+              canEdit: false,
+              onEditWorksheet: null,
+            ),
+          ),
+        ],
+
+        // Commercial info — shown when at finance stage or beyond
+        if (isAtFinanceOrBeyond) ...[
+          const SizedBox(height: 12),
+          _CollapsibleDetailSection(
+            title: 'Informações Comerciais',
+            subtitle: 'Dados financeiros e de pagamento desta proposta.',
+            initiallyExpanded: true,
+            child: Builder(
+              builder: (context) {
+                final rows = <Widget>[
+                  if (order.commercialProposalNumber.trim().isNotEmpty)
+                    infoRow('Nº da proposta', order.commercialProposalNumber, emphasize: true),
+                  if (order.paymentType.trim().isNotEmpty)
+                    infoRow('Tipo de pagamento', order.paymentType),
+                  if (order.paymentMethod.trim().isNotEmpty)
+                    infoRow('Forma de pagamento', order.paymentMethod),
+                  if (order.installmentValue.trim().isNotEmpty)
+                    infoRow('Valor da parcela', order.installmentValue),
+                  if (order.installmentCount.trim().isNotEmpty)
+                    infoRow('Qtde de parcelas', order.installmentCount),
+                  if (order.paymentDate.trim().isNotEmpty)
+                    infoRow('Data do pagamento', order.paymentDate),
+                  if (order.paymentObservation.trim().isNotEmpty)
+                    infoRow('Observação', order.paymentObservation),
+                  if (order.rtValue.trim().isNotEmpty)
+                    infoRow('Valor RT', order.rtValue),
+                  if (order.integratorValue.trim().isNotEmpty)
+                    infoRow('Valor integrador', order.integratorValue),
+                  if (order.integratorName.trim().isNotEmpty)
+                    infoRow('Integrador', order.integratorName),
+                  if (order.architectName.trim().isNotEmpty)
+                    infoRow('Arquiteto', order.architectName),
+                ];
+                if (rows.isEmpty) {
+                  return Text(
+                    'Nenhuma informação comercial preenchida ainda.',
+                    style: TextStyle(
+                      fontSize: 13,
+                      color: secondaryTextColor,
+                    ),
+                  );
+                }
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: rows,
+                );
+              },
+            ),
+          ),
+        ],
+
+        // Identification
+        const SizedBox(height: 12),
+        _CollapsibleDetailSection(
+          title: 'Identificação',
+          subtitle: 'Código e versão desta proposta secundária.',
+          initiallyExpanded: false,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              infoRow('Código', order.code),
+              infoRow('Versão', 'Proposta ${order.proposalVersion}'),
+            ],
+          ),
+        ),
+      ],
     );
   }
 }
@@ -15200,7 +15781,6 @@ class _ProposalExtensionsCard extends StatelessWidget {
     );
   }
 }
-
 InstallationVisitLog? _plannedVisitForCurrentInstallationSchedule(
   WorkflowOrder order,
 ) {
@@ -15236,6 +15816,7 @@ class _OrderCard extends StatelessWidget {
     required this.onOpenConversation,
     required this.workspaceProfiles,
     this.onMoveToCompleted,
+    this.onUnmergeProposal,
   });
 
   final WorkflowOrder order;
@@ -15245,6 +15826,7 @@ class _OrderCard extends StatelessWidget {
   final VoidCallback onOpenConversation;
   final List<EmployeeWorkspaceProfile> workspaceProfiles;
   final Future<void> Function()? onMoveToCompleted;
+  final Future<void> Function(WorkflowOrder secondary)? onUnmergeProposal;
 
   @override
   Widget build(BuildContext context) {
@@ -15275,7 +15857,10 @@ class _OrderCard extends StatelessWidget {
         ? const Color(0xFF2F3134)
         : const Color(0xFFE8E8E5);
     final linkedProposals = _proposalExtensionsForPrimary(allOrders, order);
-    final proposalBadgeColor = order.proposalVersion > 1
+    final hasMergedProposals = linkedProposals.any(_isSubProposal);
+    final proposalBadgeColor = linkedProposals.isNotEmpty
+        ? const Color(0xFFB45309)
+        : order.proposalVersion > 1
         ? const Color(0xFF1D4ED8)
         : const Color(0xFF475569);
     final assemblyProfiles = _assemblyAssignedProfilesForOrder(
@@ -15287,7 +15872,19 @@ class _OrderCard extends StatelessWidget {
         : _proposalBadgeLabel(order);
     final displayCode = _displayOrderCode(order, allOrders);
     final effectiveProgress = _effectiveOrderProgress(order);
-    final visitProgressLabel = _visitProgressLabelForOrder(order);
+    final mergedLinked = linkedProposals.where(_isSubProposal).toList();
+    final visitProgressLabel = order.isServiceOrder
+        ? null
+        : () {
+            final allGroup = [order, ...mergedLinked];
+            final planned = allGroup.fold<int>(
+              0,
+              (s, o) => s + _plannedVisitCountForOrder(o),
+            );
+            if (planned <= 0) return null;
+            final completed = _completedVisitCountForOrder(order);
+            return '$completed/$planned';
+          }();
 
     return InkWell(
       onTap: onTap,
@@ -15343,13 +15940,27 @@ class _OrderCard extends StatelessWidget {
                                 fontWeight: FontWeight.w700,
                               ),
                             ),
-                          Text(
-                            proposalSummary,
-                            style: TextStyle(
-                              color: proposalBadgeColor,
-                              fontSize: 11,
-                              fontWeight: FontWeight.w700,
-                            ),
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              if (hasMergedProposals)
+                                Padding(
+                                  padding: const EdgeInsets.only(right: 3),
+                                  child: Icon(
+                                    Icons.merge_type_rounded,
+                                    size: 12,
+                                    color: proposalBadgeColor,
+                                  ),
+                                ),
+                              Text(
+                                proposalSummary,
+                                style: TextStyle(
+                                  color: proposalBadgeColor,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ],
                           ),
                         ],
                       ),
@@ -15471,21 +16082,12 @@ class _OrderCard extends StatelessWidget {
               ),
             ],
             if (linkedProposals.isNotEmpty) ...[
-              const SizedBox(height: 8),
-              Text(
-                linkedProposals
-                    .map(
-                      (proposal) =>
-                          '${_proposalBadgeLabel(proposal)} ${proposal.currentStage.title}',
-                    )
-                    .join(' • '),
-                style: TextStyle(
-                  color: secondaryTextColor,
-                  fontSize: 12,
-                  height: 1.35,
-                ),
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
+              const SizedBox(height: 10),
+              _MergedProposalsCardSection(
+                primaryOrder: order,
+                linkedProposals: linkedProposals,
+                isDarkMode: isDarkMode,
+                onUnmerge: onUnmergeProposal,
               ),
             ],
             const SizedBox(height: 10),
@@ -15543,6 +16145,418 @@ class _OrderCard extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _MergeCandidatesBanner extends StatelessWidget {
+  const _MergeCandidatesBanner({
+    required this.candidates,
+    required this.allOrders,
+    required this.onMerge,
+  });
+
+  final List<WorkflowOrder> candidates;
+  final List<WorkflowOrder> allOrders;
+  final Future<void> Function(WorkflowOrder secondary)? onMerge;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    final amber = const Color(0xFFB45309);
+    final borderColor = isDarkMode
+        ? const Color(0xFF3E4044)
+        : const Color(0xFFE8E8E5);
+
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: amber.withValues(alpha: isDarkMode ? 0.10 : 0.06),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: amber.withValues(alpha: 0.25)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.merge_type_rounded, color: amber, size: 18),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  candidates.length == 1
+                      ? 'Uma proposta pode ser juntada ao card principal'
+                      : '${candidates.length} propostas podem ser juntadas ao card principal',
+                  style: TextStyle(
+                    color: amber,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          ...candidates.map((secondary) {
+            final primary = _proposalGroupOrders(allOrders, secondary)
+                .firstWhere(
+                  (o) => o.isPrimaryProposal,
+                  orElse: () => secondary,
+                );
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 10,
+                ),
+                decoration: BoxDecoration(
+                  color: isDarkMode
+                      ? const Color(0xFF202225)
+                      : Colors.white,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: borderColor),
+                ),
+                child: Row(
+                  children: [
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          secondary.client.name,
+                          style: TextStyle(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w700,
+                            color: isDarkMode
+                                ? const Color(0xFFF2F2F0)
+                                : const Color(0xFF1A1A1A),
+                          ),
+                        ),
+                        const SizedBox(height: 3),
+                        Wrap(
+                          spacing: 6,
+                          children: [
+                            _StatusBadge(
+                              label: _proposalBadgeLabel(primary),
+                              color: const Color(0xFF475569),
+                            ),
+                            Icon(
+                              Icons.add_rounded,
+                              size: 12,
+                              color: isDarkMode
+                                  ? const Color(0xFFA3A39E)
+                                  : const Color(0xFF6B6B68),
+                            ),
+                            _StatusBadge(
+                              label: _proposalBadgeLabel(secondary),
+                              color: const Color(0xFF1D4ED8),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                    const Spacer(),
+                    FilledButton.icon(
+                      onPressed: onMerge == null
+                          ? null
+                          : () => onMerge!(secondary),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: amber,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 14,
+                          vertical: 10,
+                        ),
+                        minimumSize: const Size(0, 36),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                      ),
+                      icon: const Icon(Icons.merge_type_rounded, size: 15),
+                      label: const Text(
+                        'Juntar',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }),
+        ],
+      ),
+    );
+  }
+}
+
+class _MergedProposalsCardSection extends StatelessWidget {
+  const _MergedProposalsCardSection({
+    required this.primaryOrder,
+    required this.linkedProposals,
+    required this.isDarkMode,
+    this.onUnmerge,
+  });
+
+  final WorkflowOrder primaryOrder;
+  final List<WorkflowOrder> linkedProposals;
+  final bool isDarkMode;
+  final Future<void> Function(WorkflowOrder secondary)? onUnmerge;
+
+  @override
+  Widget build(BuildContext context) {
+    final stageColor = primaryOrder.currentStage.color;
+    final hasMerged = linkedProposals.any(_isSubProposal);
+    final accentColor = hasMerged
+        ? const Color(0xFFB45309)
+        : stageColor;
+    final borderColor = isDarkMode
+        ? const Color(0xFF3E4044)
+        : const Color(0xFFE8E8E5);
+    final primaryTextColor =
+        isDarkMode ? const Color(0xFFF2F2F0) : const Color(0xFF1A1A1A);
+    final secondaryTextColor =
+        isDarkMode ? const Color(0xFFA3A39E) : const Color(0xFF6B6B68);
+
+    Widget proposalPill(WorkflowOrder p, {required bool isPrimary}) {
+      final badgeColor = isPrimary
+          ? const Color(0xFF475569)
+          : const Color(0xFF1D4ED8);
+      final isMerged = !isPrimary && _isSubProposal(p);
+
+      return Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: p.currentStage.color.withValues(
+            alpha: isDarkMode ? 0.12 : 0.07,
+          ),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: p.currentStage.color.withValues(alpha: 0.22),
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (isMerged)
+              Padding(
+                padding: const EdgeInsets.only(right: 3),
+                child: Icon(
+                  Icons.link_rounded,
+                  size: 10,
+                  color: badgeColor,
+                ),
+              ),
+            Text(
+              _proposalBadgeLabel(p),
+              style: TextStyle(
+                color: badgeColor,
+                fontSize: 10,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+            const SizedBox(width: 4),
+            Text(
+              p.currentStage.title,
+              style: TextStyle(
+                color: p.currentStage.color,
+                fontSize: 10,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final allProposals = [primaryOrder, ...linkedProposals];
+    final mergedProposals = linkedProposals.where(_isSubProposal).toList();
+    final unmergedLinked =
+        linkedProposals.where((p) => !_isSubProposal(p)).toList();
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: accentColor.withValues(alpha: isDarkMode ? 0.08 : 0.05),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: accentColor.withValues(alpha: isDarkMode ? 0.20 : 0.15),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                hasMerged ? Icons.merge_type_rounded : Icons.layers_outlined,
+                size: 11,
+                color: accentColor,
+              ),
+              const SizedBox(width: 4),
+              Expanded(
+                child: Text(
+                  hasMerged
+                      ? '${allProposals.length} propostas juntas'
+                      : '${allProposals.length} propostas vinculadas',
+                  style: TextStyle(
+                    color: accentColor,
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 0.2,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          if (unmergedLinked.isNotEmpty)
+            Wrap(
+              spacing: 5,
+              runSpacing: 5,
+              children: [
+                proposalPill(primaryOrder, isPrimary: true),
+                ...unmergedLinked.map((p) => proposalPill(p, isPrimary: false)),
+              ],
+            ),
+          // Merged (sub-element) proposals — show expanded data
+          ...mergedProposals.map((p) {
+            final visitPlanned = _plannedVisitCountForOrder(p);
+            final hasNextAction = p.nextAction.trim().isNotEmpty;
+            final hasAddress = p.address.trim().isNotEmpty;
+            return Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: isDarkMode
+                      ? const Color(0xFF202225)
+                      : Colors.white,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: borderColor),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 6,
+                            vertical: 2,
+                          ),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF1D4ED8).withValues(
+                              alpha: 0.10,
+                            ),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(
+                                Icons.link_rounded,
+                                size: 9,
+                                color: Color(0xFF1D4ED8),
+                              ),
+                              const SizedBox(width: 3),
+                              Text(
+                                _proposalBadgeLabel(p),
+                                style: const TextStyle(
+                                  color: Color(0xFF1D4ED8),
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: Text(
+                            p.workName,
+                            style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
+                              color: primaryTextColor,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        if (onUnmerge != null)
+                          Tooltip(
+                            message: 'Desfazer junção',
+                            child: InkWell(
+                              onTap: () => onUnmerge!(p),
+                              borderRadius: BorderRadius.circular(6),
+                              child: Padding(
+                                padding: const EdgeInsets.all(4),
+                                child: Icon(
+                                  Icons.link_off_rounded,
+                                  size: 14,
+                                  color: secondaryTextColor,
+                                ),
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                    if (hasNextAction) ...[
+                      const SizedBox(height: 5),
+                      Text(
+                        p.nextAction,
+                        style: TextStyle(
+                          fontSize: 11,
+                          color: secondaryTextColor,
+                        ),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                    if (hasAddress) ...[
+                      const SizedBox(height: 3),
+                      Row(
+                        children: [
+                          Icon(
+                            Icons.location_on_outlined,
+                            size: 11,
+                            color: secondaryTextColor,
+                          ),
+                          const SizedBox(width: 3),
+                          Expanded(
+                            child: Text(
+                              p.address,
+                              style: TextStyle(
+                                fontSize: 10,
+                                color: secondaryTextColor,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                    if (visitPlanned > 0) ...[
+                      const SizedBox(height: 5),
+                      Text(
+                        '$visitPlanned visit${visitPlanned == 1 ? 'a' : 'as'} incl.',
+                        style: TextStyle(
+                          fontSize: 10,
+                          color: secondaryTextColor,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            );
+          }),
+        ],
       ),
     );
   }
@@ -16517,6 +17531,7 @@ class _StageOrdersKanbanBoard extends StatefulWidget {
     this.canAcceptRelationshipKanbanDrop,
     this.onMoveInstallationKanbanOrder,
     this.canAcceptInstallationKanbanDrop,
+    this.onUnmergeProposal,
   });
 
   final List<_OrdersKanbanColumnData> columns;
@@ -16551,6 +17566,7 @@ class _StageOrdersKanbanBoard extends StatefulWidget {
   onMoveInstallationKanbanOrder;
   final bool Function(WorkflowOrder order, InstallationWorkflowStatus target)?
   canAcceptInstallationKanbanDrop;
+  final Future<void> Function(WorkflowOrder secondary)? onUnmergeProposal;
 
   @override
   State<_StageOrdersKanbanBoard> createState() =>
@@ -16667,6 +17683,7 @@ class _StageOrdersKanbanBoardState extends State<_StageOrdersKanbanBoard> {
                         widget.canAcceptInstallationKanbanDrop,
                     onEngineeringCardDragUpdate:
                         _handleEngineeringCardDragUpdate,
+                    onUnmergeProposal: widget.onUnmergeProposal,
                   ),
                 ),
               ],
@@ -16711,6 +17728,7 @@ class _StageOrdersKanbanColumn extends StatefulWidget {
     this.onMoveInstallationKanbanOrder,
     this.canAcceptInstallationKanbanDrop,
     this.onEngineeringCardDragUpdate,
+    this.onUnmergeProposal,
   });
 
   final _OrdersKanbanColumnData column;
@@ -16746,6 +17764,7 @@ class _StageOrdersKanbanColumn extends StatefulWidget {
   final bool Function(WorkflowOrder order, InstallationWorkflowStatus target)?
   canAcceptInstallationKanbanDrop;
   final ValueChanged<Offset>? onEngineeringCardDragUpdate;
+  final Future<void> Function(WorkflowOrder secondary)? onUnmergeProposal;
 
   @override
   State<_StageOrdersKanbanColumn> createState() =>
@@ -17039,6 +18058,7 @@ class _StageOrdersKanbanColumnState extends State<_StageOrdersKanbanColumn> {
                                     onTap: () {},
                                     onOpenConversation: () {},
                                     workspaceProfiles: workspaceProfiles,
+                                    onUnmergeProposal: widget.onUnmergeProposal,
                                   ),
                                 ),
                               ),
@@ -17053,6 +18073,7 @@ class _StageOrdersKanbanColumnState extends State<_StageOrdersKanbanColumn> {
                                 onOpenConversation: () =>
                                     onOpenOrderConversation(order),
                                 workspaceProfiles: workspaceProfiles,
+                                onUnmergeProposal: widget.onUnmergeProposal,
                               ),
                             ),
                             child: _OrderCard(
@@ -17064,6 +18085,7 @@ class _StageOrdersKanbanColumnState extends State<_StageOrdersKanbanColumn> {
                                   onOpenOrderConversation(order),
                               workspaceProfiles: workspaceProfiles,
                               onMoveToCompleted: onMoveOrderToInstallationDone,
+                              onUnmergeProposal: widget.onUnmergeProposal,
                             ),
                           )
                         : _OrderCard(
@@ -17075,6 +18097,7 @@ class _StageOrdersKanbanColumnState extends State<_StageOrdersKanbanColumn> {
                                 onOpenOrderConversation(order),
                             workspaceProfiles: workspaceProfiles,
                             onMoveToCompleted: onMoveOrderToInstallationDone,
+                            onUnmergeProposal: widget.onUnmergeProposal,
                           ),
                   );
                 }),
