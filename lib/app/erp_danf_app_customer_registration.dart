@@ -522,6 +522,9 @@ const List<String> _proposalServiceNames = [
   'Som Ambiente',
   'Aspiração Central',
   'Piso Aquecido',
+  'Painel de Led',
+  'Painel de disjuntores',
+  'Tomadas e Pulsadores',
 ];
 
 const List<String> _yesNoOptions = ['Sim', 'Não'];

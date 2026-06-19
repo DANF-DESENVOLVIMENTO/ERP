@@ -14531,21 +14531,30 @@ class _OrderDetailsPanel extends StatelessWidget {
             title: 'Informações Comerciais',
             subtitle: 'Dados de pagamento, proposta e condições comerciais.',
             initiallyExpanded: isFinanceStage,
-            child: Builder(
-              builder: (context) {
-                final secondaryTextColor = isDarkMode
-                    ? const Color(0xFFA3A39E)
-                    : const Color(0xFF6B6B68);
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final spacing = 14.0;
+                final useTwoColumns = constraints.maxWidth >= 700;
+                final itemWidth = useTwoColumns
+                    ? (constraints.maxWidth - spacing) / 2
+                    : constraints.maxWidth;
+                final fullWidth = useTwoColumns
+                    ? constraints.maxWidth
+                    : itemWidth;
 
                 Widget infoRow(
                   String label,
                   String value, {
                   bool emphasize = false,
+                  bool full = false,
                 }) =>
-                    _InfoRow(
-                      label: label,
-                      value: value.trim().isEmpty ? 'Não informado' : value,
-                      emphasizeValue: emphasize,
+                    SizedBox(
+                      width: full ? fullWidth : itemWidth,
+                      child: _InfoRow(
+                        label: label,
+                        value: value.trim().isEmpty ? 'Não informado' : value,
+                        emphasizeValue: emphasize,
+                      ),
                     );
 
                 final rows = <Widget>[
@@ -14559,8 +14568,7 @@ class _OrderDetailsPanel extends StatelessWidget {
                     infoRow('Qtde de parcelas', order!.installmentCount),
                   if (order!.paymentDate.trim().isNotEmpty)
                     infoRow('Data do pagamento', order!.paymentDate),
-                  if (order!.paymentObservation.trim().isNotEmpty)
-                    infoRow('Observação', order!.paymentObservation),
+                  infoRow('Observação', order!.paymentObservation, full: true),
                   if (order!.rtValue.trim().isNotEmpty)
                     infoRow('Valor RT', order!.rtValue),
                   if (order!.integratorValue.trim().isNotEmpty)
@@ -14571,16 +14579,10 @@ class _OrderDetailsPanel extends StatelessWidget {
                     infoRow('Arquiteto', order!.architectName),
                 ];
 
-                return Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: rows
-                      .map(
-                        (w) => Padding(
-                          padding: const EdgeInsets.only(bottom: 10),
-                          child: w,
-                        ),
-                      )
-                      .toList(growable: false),
+                return Wrap(
+                  spacing: spacing,
+                  runSpacing: spacing,
+                  children: rows,
                 );
               },
             ),
