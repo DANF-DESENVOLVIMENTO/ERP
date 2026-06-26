@@ -26,6 +26,22 @@ service cloud.firestore {
       allow read, write: if signedIn();
     }
 
+    match /gartic_rooms/{roomId} {
+      allow read, write: if signedIn();
+
+      match /{subcollection=**} {
+        allow read, write: if signedIn();
+      }
+    }
+
+    match /gartic_players/{playerId} {
+      allow read, write: if signedIn();
+    }
+
+    match /gartic_matches/{matchId} {
+      allow read, write: if signedIn();
+    }
+
     match /{document=**} {
       allow read, write: if false;
     }

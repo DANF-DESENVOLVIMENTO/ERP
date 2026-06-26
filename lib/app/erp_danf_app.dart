@@ -30,6 +30,7 @@ part 'erp_danf_app_installation.dart';
 part 'erp_danf_app_engineering.dart';
 part 'erp_danf_app_assembly.dart';
 part 'erp_danf_app_checkers.dart';
+part 'erp_danf_app_gartic.dart';
 
 Future<void> _openLocalFile(BuildContext context, String? filePath) async {
   if (filePath == null || filePath.trim().isEmpty) {

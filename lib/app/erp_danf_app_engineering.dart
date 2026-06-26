@@ -450,43 +450,166 @@ class _SecretBlankScreen extends StatelessWidget {
         iconTheme: const IconThemeData(color: Colors.black),
       ),
       body: Center(
-        child: InkWell(
-          borderRadius: BorderRadius.circular(20),
-          onTap: () {
-            Navigator.of(context).push(
-              MaterialPageRoute(builder: (_) => const _CheckersHomeScreen()),
-            );
-          },
-          child: Container(
-            width: 180,
-            padding: const EdgeInsets.symmetric(vertical: 28, horizontal: 20),
-            decoration: BoxDecoration(
-              color: const Color(0xFFF5F5F3),
-              borderRadius: BorderRadius.circular(20),
-              border: Border.all(color: const Color(0xFFE0E0DD)),
+        child: Wrap(
+          spacing: 20,
+          runSpacing: 20,
+          alignment: WrapAlignment.center,
+          children: [
+            _SecretGameCard(
+              title: 'Damas',
+              subtitle: 'Jogue contra o computador ou com a equipe',
+              gradientColors: const [Color(0xFF8B5A2B), Color(0xFF4A2E1A)],
+              icon: const _CheckersPieceIcon(),
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const _CheckersHomeScreen()),
+              ),
             ),
-            child: const Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(
-                  Icons.grid_4x4_rounded,
-                  size: 36,
-                  color: Color(0xFF1A1A1A),
+            _SecretGameCard(
+              title: 'Gartic',
+              subtitle: 'Desenhe e adivinhe palavras com a equipe',
+              gradientColors: const [Color(0xFF7C3AED), Color(0xFF4C1D95)],
+              icon: const Icon(
+                Icons.brush_rounded,
+                color: Colors.white,
+                size: 48,
+              ),
+              onTap: () => Navigator.of(context).push(
+                MaterialPageRoute(builder: (_) => const _GarticHomeScreen()),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SecretGameCard extends StatelessWidget {
+  const _SecretGameCard({
+    required this.title,
+    required this.subtitle,
+    required this.gradientColors,
+    required this.icon,
+    required this.onTap,
+  });
+
+  final String title;
+  final String subtitle;
+  final List<Color> gradientColors;
+  final Widget icon;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      borderRadius: BorderRadius.circular(24),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(24),
+        onTap: onTap,
+        child: Container(
+          width: 240,
+          padding: const EdgeInsets.symmetric(vertical: 32, horizontal: 24),
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: gradientColors,
+            ),
+            borderRadius: BorderRadius.circular(24),
+            boxShadow: const [
+              BoxShadow(
+                color: Colors.black38,
+                blurRadius: 18,
+                offset: Offset(0, 10),
+              ),
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SizedBox(width: 64, height: 64, child: icon),
+              const SizedBox(height: 18),
+              Text(
+                title,
+                style: const TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.w800,
+                  color: Colors.white,
                 ),
-                SizedBox(height: 12),
-                Text(
-                  'Damas',
-                  style: TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.w800,
-                    color: Color(0xFF1A1A1A),
-                  ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                subtitle,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontSize: 12,
+                  color: Colors.white70,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _CheckersPieceIcon extends StatelessWidget {
+  const _CheckersPieceIcon();
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      children: [
+        Positioned(
+          left: 0,
+          top: 0,
+          child: Container(
+            width: 48,
+            height: 48,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              gradient: const RadialGradient(
+                center: Alignment(-0.3, -0.3),
+                colors: [Color(0xFFF6E3C5), Color(0xFFD8A85E)],
+              ),
+              border: Border.all(color: const Color(0xFF8B5A2B), width: 2),
+              boxShadow: const [
+                BoxShadow(
+                  color: Colors.black26,
+                  blurRadius: 4,
+                  offset: Offset(0, 2),
                 ),
               ],
             ),
           ),
         ),
-      ),
+        Positioned(
+          right: 0,
+          bottom: 0,
+          child: Container(
+            width: 36,
+            height: 36,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              gradient: const RadialGradient(
+                center: Alignment(-0.3, -0.3),
+                colors: [Color(0xFF5C4030), Color(0xFF1E120A)],
+              ),
+              border: Border.all(color: const Color(0xFFD8A85E), width: 2),
+              boxShadow: const [
+                BoxShadow(
+                  color: Colors.black38,
+                  blurRadius: 4,
+                  offset: Offset(0, 2),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
     );
   }
 }
