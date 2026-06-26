@@ -14523,8 +14523,8 @@ class _OrderDetailsPanel extends StatelessWidget {
               ),
             ),
           );
-    final showCommercialInfoSection = !showFullCustomerRegistrationData &&
-        (isFinanceStage || hasPassedFinance);
+    final showCommercialInfoSection =
+        !showFullCustomerRegistrationData && isFinanceStage;
     final commercialInfoSection = !showCommercialInfoSection
         ? null
         : _CollapsibleDetailSection(
@@ -15212,14 +15212,7 @@ class _SecondaryProposalPanelContent extends StatelessWidget {
     final visitPlanned = _plannedVisitCountForOrder(order);
     final hasWorksheet = order.estimatingIncludedVisits.isNotEmpty &&
         order.estimatingMaterials.isNotEmpty;
-    const financeAndBeyond = {
-      WorkflowStage.finance,
-      WorkflowStage.relationship,
-      WorkflowStage.engineering,
-      WorkflowStage.assembly,
-      WorkflowStage.installation,
-    };
-    final isAtFinanceOrBeyond = financeAndBeyond.contains(order.currentStage);
+    final isAtFinanceOrBeyond = order.currentStage == WorkflowStage.finance;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -15318,7 +15311,7 @@ class _SecondaryProposalPanelContent extends StatelessWidget {
           ),
         ],
 
-        // Commercial info — shown when at finance stage or beyond
+        // Commercial info — shown only at the finance stage
         if (isAtFinanceOrBeyond) ...[
           const SizedBox(height: 12),
           _CollapsibleDetailSection(
