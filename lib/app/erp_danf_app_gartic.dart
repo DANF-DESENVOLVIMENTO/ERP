@@ -930,7 +930,17 @@ class _GarticRoomScreenState extends State<_GarticRoomScreen> {
                             );
                           },
                         )
-                      : CustomPaint(painter: _GarticCanvasPainter(_localStrokes)),
+                      : LayoutBuilder(
+                          builder: (context, canvasConstraints) {
+                            return CustomPaint(
+                              size: Size(
+                                canvasConstraints.maxWidth,
+                                canvasConstraints.maxHeight,
+                              ),
+                              painter: _GarticCanvasPainter(_localStrokes),
+                            );
+                          },
+                        ),
                 ),
               ),
               if (isDrawer) ...[

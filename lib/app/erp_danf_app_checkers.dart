@@ -685,7 +685,7 @@ class _CheckersHomeScreen extends StatelessWidget {
               label: 'Jogar com outro membro',
               onTap: () => Navigator.of(context).push(
                 MaterialPageRoute(
-                  builder: (_) => const _CheckersMatchmakingScreen(),
+                  builder: (_) => const _CheckersRoomListScreen(),
                 ),
               ),
             ),
@@ -829,129 +829,98 @@ String get _checkersLocalUserId =>
     WorkspaceSession.instance.currentProfileId?.trim().toLowerCase() ??
     'desconhecido';
 
-class _CheckersMatchmakingScreen extends StatefulWidget {
-  const _CheckersMatchmakingScreen();
-
-  @override
-  State<_CheckersMatchmakingScreen> createState() =>
-      _CheckersMatchmakingScreenState();
+Future<bool> _checkersTryJoinRoom(String roomId) async {
+  final docRef = _checkersRoomsCollection.doc(roomId);
+  try {
+    return await FirebaseFirestore.instance.runTransaction<bool>((
+      transaction,
+    ) async {
+      final snapshot = await transaction.get(docRef);
+      if (!snapshot.exists || snapshot.data()?['status'] != 'waiting') {
+        return false;
+      }
+      transaction.update(docRef, {
+        'playerBId': _checkersLocalUserId,
+        'status': 'playing',
+        'updatedAt': DateTime.now().toIso8601String(),
+      });
+      return true;
+    });
+  } catch (_) {
+    return false;
+  }
 }
 
-class _CheckersMatchmakingScreenState
-    extends State<_CheckersMatchmakingScreen> {
-  String? _waitingRoomId;
-  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _subscription;
-  String _statusMessage = 'Procurando uma sala disponível...';
-  bool _navigated = false;
+class _CheckersRoomListScreen extends StatefulWidget {
+  const _CheckersRoomListScreen();
 
   @override
-  void initState() {
-    super.initState();
-    _findOrCreateRoom();
-  }
+  State<_CheckersRoomListScreen> createState() =>
+      _CheckersRoomListScreenState();
+}
 
-  @override
-  void dispose() {
-    _subscription?.cancel();
-    _deleteWaitingRoomIfAny();
-    super.dispose();
-  }
+class _CheckersRoomListScreenState extends State<_CheckersRoomListScreen> {
+  bool _creating = false;
 
-  void _deleteWaitingRoomIfAny() {
-    final roomId = _waitingRoomId;
-    if (roomId == null || _navigated) {
+  Future<void> _createRoom() async {
+    if (_creating) {
       return;
     }
-    _checkersRoomsCollection.doc(roomId).delete().catchError((_) {});
-  }
-
-  Future<void> _findOrCreateRoom() async {
+    setState(() => _creating = true);
     try {
-      final waitingRooms = await _checkersRoomsCollection
-          .where('status', isEqualTo: 'waiting')
-          .limit(10)
-          .get();
-      final candidates = waitingRooms.docs
-          .where((doc) => doc.data()['playerAId'] != _checkersLocalUserId)
-          .toList(growable: false);
-      for (final candidate in candidates) {
-        if (await _tryJoinRoom(candidate.id)) {
-          _navigateToGame(candidate.id, _CheckersPlayer.b);
-          return;
-        }
+      final docRef = _checkersRoomsCollection.doc();
+      final myId = _checkersLocalUserId;
+      final now = DateTime.now().toIso8601String();
+      await docRef.set({
+        'status': 'waiting',
+        'playerAId': myId,
+        'playerBId': null,
+        'turn': 'a',
+        'board': _checkersSerializeBoard(_checkersInitialBoard()),
+        'winner': null,
+        'winsA': 0,
+        'winsB': 0,
+        'createdAt': now,
+        'updatedAt': now,
+      });
+      if (!mounted) {
+        return;
       }
-      await _createRoomAndWait();
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => _CheckersWaitingRoomScreen(roomId: docRef.id),
+        ),
+      );
     } catch (error) {
       if (!mounted) {
         return;
       }
-      setState(() => _statusMessage = 'Erro ao procurar sala: $error');
-    }
-  }
-
-  Future<bool> _tryJoinRoom(String roomId) async {
-    final docRef = _checkersRoomsCollection.doc(roomId);
-    try {
-      return await FirebaseFirestore.instance.runTransaction<bool>((
-        transaction,
-      ) async {
-        final snapshot = await transaction.get(docRef);
-        if (!snapshot.exists || snapshot.data()?['status'] != 'waiting') {
-          return false;
-        }
-        transaction.update(docRef, {
-          'playerBId': _checkersLocalUserId,
-          'status': 'playing',
-          'updatedAt': DateTime.now().toIso8601String(),
-        });
-        return true;
-      });
-    } catch (_) {
-      return false;
-    }
-  }
-
-  Future<void> _createRoomAndWait() async {
-    final docRef = _checkersRoomsCollection.doc();
-    await docRef.set({
-      'status': 'waiting',
-      'playerAId': _checkersLocalUserId,
-      'playerBId': null,
-      'turn': 'a',
-      'board': _checkersSerializeBoard(_checkersInitialBoard()),
-      'winner': null,
-      'winsA': 0,
-      'winsB': 0,
-      'createdAt': DateTime.now().toIso8601String(),
-      'updatedAt': DateTime.now().toIso8601String(),
-    });
-    if (!mounted) {
-      await docRef.delete().catchError((_) {});
-      return;
-    }
-    setState(() {
-      _waitingRoomId = docRef.id;
-      _statusMessage = 'Sala criada. Aguardando outro membro entrar...';
-    });
-    _subscription = docRef.snapshots().listen((snapshot) {
-      final data = snapshot.data();
-      if (data != null && data['status'] == 'playing') {
-        _navigateToGame(docRef.id, _CheckersPlayer.a);
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Erro ao criar sala: $error')));
+    } finally {
+      if (mounted) {
+        setState(() => _creating = false);
       }
-    });
+    }
   }
 
-  void _navigateToGame(String roomId, _CheckersPlayer localPlayer) {
-    if (_navigated || !mounted) {
+  Future<void> _joinRoom(String roomId) async {
+    final joined = await _checkersTryJoinRoom(roomId);
+    if (!mounted) {
       return;
     }
-    _navigated = true;
-    _subscription?.cancel();
-    Navigator.of(context).pushReplacement(
+    if (!joined) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Essa sala já não está mais disponível.')),
+      );
+      return;
+    }
+    Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => _CheckersOnlineGameScreen(
           roomId: roomId,
-          localPlayer: localPlayer,
+          localPlayer: _CheckersPlayer.b,
         ),
       ),
     );
@@ -966,27 +935,236 @@ class _CheckersMatchmakingScreenState
         elevation: 0,
         iconTheme: const IconThemeData(color: Color(0xFF1A1A1A)),
         title: const Text(
-          'Procurando oponente',
+          'Salas de Damas',
+          style: TextStyle(color: Color(0xFF1A1A1A), fontWeight: FontWeight.w800),
+        ),
+      ),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: FilledButton.icon(
+              onPressed: _creating ? null : _createRoom,
+              icon: _creating
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.add_circle_outline),
+              label: const Text('Criar sala'),
+            ),
+          ),
+          Expanded(
+            child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+              stream: _checkersRoomsCollection
+                  .where('status', isEqualTo: 'waiting')
+                  .limit(20)
+                  .snapshots(),
+              builder: (context, snapshot) {
+                if (!snapshot.hasData) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+                final docs = snapshot.data!.docs
+                    .where(
+                      (doc) =>
+                          doc.data()['playerAId'] != _checkersLocalUserId,
+                    )
+                    .toList(growable: false);
+                if (docs.isEmpty) {
+                  return const Center(
+                    child: Text(
+                      'Nenhuma sala aberta. Crie uma para começar!',
+                      style: TextStyle(color: Color(0xFF6B6B68)),
+                    ),
+                  );
+                }
+                return ListView.separated(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  itemCount: docs.length,
+                  separatorBuilder: (_, _) => const SizedBox(height: 10),
+                  itemBuilder: (context, index) {
+                    final hostId = docs[index].data()['playerAId'] as String? ?? '';
+                    return Container(
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: const Color(0xFFE0E0DD)),
+                      ),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              'Sala de ${_checkersDisplayName(hostId)}',
+                              style: const TextStyle(fontWeight: FontWeight.w800),
+                            ),
+                          ),
+                          FilledButton(
+                            onPressed: () => _joinRoom(docs[index].id),
+                            child: const Text('Entrar'),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CheckersWaitingRoomScreen extends StatefulWidget {
+  const _CheckersWaitingRoomScreen({required this.roomId});
+
+  final String roomId;
+
+  @override
+  State<_CheckersWaitingRoomScreen> createState() =>
+      _CheckersWaitingRoomScreenState();
+}
+
+class _CheckersWaitingRoomScreenState
+    extends State<_CheckersWaitingRoomScreen> {
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _subscription;
+  bool _navigated = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _subscription = _checkersRoomsCollection
+        .doc(widget.roomId)
+        .snapshots()
+        .listen((snapshot) {
+          final data = snapshot.data();
+          if (data != null && data['status'] == 'playing') {
+            _navigateToGame();
+          }
+        });
+  }
+
+  @override
+  void dispose() {
+    _subscription?.cancel();
+    if (!_navigated) {
+      _checkersRoomsCollection.doc(widget.roomId).delete().catchError((_) {});
+    }
+    super.dispose();
+  }
+
+  void _navigateToGame() {
+    if (_navigated || !mounted) {
+      return;
+    }
+    _navigated = true;
+    _subscription?.cancel();
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(
+        builder: (_) => _CheckersOnlineGameScreen(
+          roomId: widget.roomId,
+          localPlayer: _CheckersPlayer.a,
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFF1E4D3),
+      appBar: AppBar(
+        backgroundColor: const Color(0xFFF1E4D3),
+        elevation: 0,
+        iconTheme: const IconThemeData(color: Color(0xFF1A1A1A)),
+        title: const Text(
+          'Damas',
           style: TextStyle(color: Color(0xFF1A1A1A), fontWeight: FontWeight.w800),
         ),
       ),
       body: Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const CircularProgressIndicator(color: Color(0xFF1A1A1A)),
-            const SizedBox(height: 20),
-            Text(
-              _statusMessage,
-              textAlign: TextAlign.center,
-              style: const TextStyle(fontWeight: FontWeight.w700),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 420),
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text(
+                  'Sala de espera',
+                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
+                ),
+                const SizedBox(height: 12),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: const Color(0xFFE0E0DD)),
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          _checkersDisplayName(_checkersLocalUserId),
+                          style: const TextStyle(fontWeight: FontWeight.w700),
+                        ),
+                      ),
+                      const Text(
+                        'Você (anfitrião)',
+                        style: TextStyle(
+                          color: Color(0xFF6B6B68),
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: const Color(0xFFE0E0DD),
+                      style: BorderStyle.solid,
+                    ),
+                  ),
+                  child: Row(
+                    children: [
+                      const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                      const SizedBox(width: 10),
+                      const Expanded(
+                        child: Text(
+                          'Aguardando outro membro entrar...',
+                          style: TextStyle(
+                            color: Color(0xFF6B6B68),
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+                OutlinedButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('Cancelar'),
+                ),
+              ],
             ),
-            const SizedBox(height: 24),
-            OutlinedButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('Cancelar'),
-            ),
-          ],
+          ),
         ),
       ),
     );
