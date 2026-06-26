@@ -7765,7 +7765,7 @@ class _AdminSectorCompletionPanelState
     final allTimeStart = DateTime(2000);
     final periods = [
       _CompletionPeriod(
-        title: 'Em Andamento',
+        title: 'Aguardando',
         subtitle: 'Pedidos ativos por setor',
         start: allTimeStart,
         end: now,
@@ -8287,7 +8287,7 @@ class _SectorCompletionChart extends StatelessWidget {
               ),
                       _StatusBadge(
                 label: period.focus == _CompletionPeriodFocus.inProgress
-                    ? 'Em andamento: $totalInProgress'
+                    ? 'Aguardando: $totalInProgress'
                     : 'Concluído: $total',
                 color: period.focus == _CompletionPeriodFocus.inProgress
                     ? const Color(0xFFF97316)
@@ -8356,7 +8356,7 @@ class _SectorCompletionBar extends StatelessWidget {
         const SizedBox(height: 6),
         _StatusBadge(
           label: isInProgress
-              ? 'Em andamento: ${entry.inProgressCount}'
+              ? 'Aguardando: ${entry.inProgressCount}'
               : 'Concluído: ${entry.count}',
           color: focusColor,
         ),
@@ -8426,7 +8426,7 @@ class _SectorCompletionBarChart extends StatelessWidget {
                       : const Color(0xFF0F172A),
                   getTooltipItem: (group, groupIndex, rod, rodIndex) {
                     final entry = entries[group.x];
-                    final label = isInProgress ? 'Em andamento' : 'Concluído';
+                    final label = isInProgress ? 'Aguardando' : 'Concluído';
                     return BarTooltipItem(
                       '${entry.stage.title}\n$label: ${rod.toY.round()}',
                       const TextStyle(
@@ -8510,7 +8510,7 @@ class _SectorCompletionBarChart extends StatelessWidget {
           children: [
             _ChartLegendItem(
               color: focusColor,
-              label: isInProgress ? 'Em andamento' : 'Concluído no período',
+              label: isInProgress ? 'Aguardando' : 'Concluído no período',
             ),
           ],
         ),
@@ -8566,11 +8566,45 @@ List<_SectorCompletionEntry> _completionEntriesForPeriod({
               )
               .length,
           inProgressCount: orders
-              .where((order) => order.currentStage == stage)
+              .where(
+                (order) =>
+                    order.currentStage == stage &&
+                    _isOrderAwaitingInStage(order, stage),
+              )
               .length,
         ),
       )
       .toList(growable: false);
+}
+
+bool _isOrderAwaitingInStage(WorkflowOrder order, WorkflowStage stage) {
+  switch (stage) {
+    case WorkflowStage.customerRegistration:
+      return true;
+    case WorkflowStage.estimating:
+      return order.isServiceOrder ||
+          _estimatingKanbanFlowSnapshot(order).currentTask?.key == 'waiting';
+    case WorkflowStage.finance:
+      return order.isServiceOrder ||
+          _financeContractFlowSnapshot(order).currentTask?.key == 'waiting';
+    case WorkflowStage.relationship:
+      return order.isServiceOrder ||
+          _relationshipKanbanFlowSnapshot(order).currentTask?.key ==
+              'in_progress';
+    case WorkflowStage.engineering:
+      return !order.engineeringDependsOnClient &&
+          _engineeringFlowSnapshot(order).currentTask?.key ==
+              'depending_on_client';
+    case WorkflowStage.assembly:
+      return order.assemblyWorkflowStatus == AssemblyWorkflowStatus.waiting;
+    case WorkflowStage.installation:
+      return order.isServiceOrder ||
+          order.installationWorkflowStatus ==
+              InstallationWorkflowStatus.waiting;
+    case WorkflowStage.warehouse:
+    case WorkflowStage.stock:
+      return true;
+  }
 }
 
 bool _wasStageCompletedInPeriod({
@@ -12330,7 +12364,9 @@ class _StageWorkspaceSection extends StatelessWidget {
         : <_OrdersKanbanColumnData>[
             if (currentKanbanOrders.isNotEmpty || !showingRegisteredCatalog)
               _OrdersKanbanColumnData(
-                title: stage.title,
+                title: stage == WorkflowStage.customerRegistration
+                    ? 'Aguardando'
+                    : stage.title,
                 subtitle: '${currentKanbanOrders.length} em andamento',
                 accent: stage.color,
                 icon: stage.icon,

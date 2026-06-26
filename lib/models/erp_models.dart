@@ -254,7 +254,7 @@ class RelationshipKanbanTask {
 }
 
 const List<RelationshipKanbanTask> relationshipKanbanTasks = [
-  RelationshipKanbanTask(key: 'in_progress', label: 'Em Andamento'),
+  RelationshipKanbanTask(key: 'in_progress', label: 'Aguardando'),
   RelationshipKanbanTask(
     key: 'create_omie_material_order',
     label: 'Criar Pedido Omie',
