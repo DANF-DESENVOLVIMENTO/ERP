@@ -19,40 +19,150 @@ class _EngineeringStageCalendarBoard extends StatefulWidget {
 class _EngineeringStageCalendarBoardState
     extends State<_EngineeringStageCalendarBoard> {
   late DateTime _selectedDate;
+  late DateTime _focusedMonth;
+
+  static const _monthNames = [
+    'Janeiro',
+    'Fevereiro',
+    'Março',
+    'Abril',
+    'Maio',
+    'Junho',
+    'Julho',
+    'Agosto',
+    'Setembro',
+    'Outubro',
+    'Novembro',
+    'Dezembro',
+  ];
+  static const _weekdayLabels = ['D', 'S', 'T', 'Q', 'Q', 'S', 'S'];
 
   @override
   void initState() {
     super.initState();
-    _selectedDate = _resolveInitialDate(widget.orders);
+    _selectedDate = DateUtils.dateOnly(DateTime.now());
+    _focusedMonth = DateTime(_selectedDate.year, _selectedDate.month);
   }
 
-  @override
-  void didUpdateWidget(covariant _EngineeringStageCalendarBoard oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.orders != widget.orders && widget.orders.isNotEmpty) {
-      final hasSchedulesForCurrentDate = widget.orders.any(
-        (order) => order.engineeringActivitySchedules.values.any(
-          (schedule) => _isSameDate(schedule.scheduledAt, _selectedDate),
+  void _changeFocusedMonth(int delta) {
+    setState(() {
+      _focusedMonth = DateTime(_focusedMonth.year, _focusedMonth.month + delta);
+    });
+  }
+
+  Widget _buildCalendarGrid({
+    required Set<DateTime> scheduledDates,
+    required Color secondaryTextColor,
+  }) {
+    final accent = WorkflowStage.engineering.color;
+    final daysInMonth = DateUtils.getDaysInMonth(
+      _focusedMonth.year,
+      _focusedMonth.month,
+    );
+    final leadingBlanks =
+        DateTime(_focusedMonth.year, _focusedMonth.month, 1).weekday % 7;
+    final totalCells = leadingBlanks + daysInMonth;
+    final rowCount = (totalCells / 7).ceil();
+
+    Widget buildDayCell(int index) {
+      final dayNumber = index - leadingBlanks + 1;
+      if (dayNumber < 1 || dayNumber > daysInMonth) {
+        return const SizedBox();
+      }
+
+      final date = DateTime(_focusedMonth.year, _focusedMonth.month, dayNumber);
+      final isSelected = _isSameDate(date, _selectedDate);
+      final isToday = _isSameDate(date, DateTime.now());
+      final hasSchedule = scheduledDates.any((d) => _isSameDate(d, date));
+
+      return InkWell(
+        borderRadius: BorderRadius.circular(10),
+        onTap: () => setState(() => _selectedDate = date),
+        child: Container(
+          margin: const EdgeInsets.all(2),
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          decoration: BoxDecoration(
+            color: isSelected ? accent.withValues(alpha: 0.16) : null,
+            border: isToday && !isSelected
+                ? Border.all(color: accent)
+                : null,
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                '$dayNumber',
+                style: TextStyle(
+                  fontWeight: isSelected ? FontWeight.w800 : FontWeight.w600,
+                  color: isSelected ? accent : null,
+                ),
+              ),
+              const SizedBox(height: 3),
+              Container(
+                width: 6,
+                height: 6,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: hasSchedule
+                      ? const Color(0xFF22C55E)
+                      : const Color(0xFFB7B7B2),
+                ),
+              ),
+            ],
+          ),
         ),
       );
-      if (!hasSchedulesForCurrentDate) {
-        _selectedDate = _resolveInitialDate(widget.orders);
-      }
-    }
-  }
-
-  DateTime _resolveInitialDate(List<WorkflowOrder> orders) {
-    DateTime? earliestSchedule;
-    for (final order in orders) {
-      for (final schedule in order.engineeringActivitySchedules.values) {
-        if (earliestSchedule == null ||
-            schedule.scheduledAt.isBefore(earliestSchedule)) {
-          earliestSchedule = schedule.scheduledAt;
-        }
-      }
     }
 
-    return DateUtils.dateOnly(earliestSchedule ?? DateTime.now());
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            IconButton(
+              icon: const Icon(Icons.chevron_left),
+              onPressed: () => _changeFocusedMonth(-1),
+            ),
+            Text(
+              '${_monthNames[_focusedMonth.month - 1]} de ${_focusedMonth.year}',
+              style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 16),
+            ),
+            IconButton(
+              icon: const Icon(Icons.chevron_right),
+              onPressed: () => _changeFocusedMonth(1),
+            ),
+          ],
+        ),
+        Row(
+          children: _weekdayLabels
+              .map(
+                (label) => Expanded(
+                  child: Center(
+                    child: Text(
+                      label,
+                      style: TextStyle(
+                        color: secondaryTextColor,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ),
+                ),
+              )
+              .toList(growable: false),
+        ),
+        const SizedBox(height: 4),
+        for (var row = 0; row < rowCount; row++)
+          Row(
+            children: [
+              for (var col = 0; col < 7; col++)
+                Expanded(child: buildDayCell(row * 7 + col)),
+            ],
+          ),
+      ],
+    );
   }
 
   @override
@@ -145,16 +255,11 @@ class _EngineeringStageCalendarBoardState
                   border: Border.all(color: borderColor),
                 ),
                 padding: const EdgeInsets.all(12),
-                child: CalendarDatePicker(
-                  initialDate: _selectedDate,
-                  currentDate: DateTime.now(),
-                  firstDate: DateTime(2020),
-                  lastDate: DateTime(2035, 12, 31),
-                  onDateChanged: (value) {
-                    setState(() {
-                      _selectedDate = DateUtils.dateOnly(value);
-                    });
-                  },
+                child: _buildCalendarGrid(
+                  scheduledDates: scheduledEntries
+                      .map((entry) => DateUtils.dateOnly(entry.schedule.scheduledAt))
+                      .toSet(),
+                  secondaryTextColor: secondaryTextColor,
                 ),
               );
               final agenda = Container(
@@ -327,6 +432,60 @@ class _EngineeringStageCalendarBoardState
             },
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _SecretBlankScreen extends StatelessWidget {
+  const _SecretBlankScreen();
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.white,
+      appBar: AppBar(
+        backgroundColor: Colors.white,
+        elevation: 0,
+        iconTheme: const IconThemeData(color: Colors.black),
+      ),
+      body: Center(
+        child: InkWell(
+          borderRadius: BorderRadius.circular(20),
+          onTap: () {
+            Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const _CheckersHomeScreen()),
+            );
+          },
+          child: Container(
+            width: 180,
+            padding: const EdgeInsets.symmetric(vertical: 28, horizontal: 20),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF5F5F3),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: const Color(0xFFE0E0DD)),
+            ),
+            child: const Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.grid_4x4_rounded,
+                  size: 36,
+                  color: Color(0xFF1A1A1A),
+                ),
+                SizedBox(height: 12),
+                Text(
+                  'Damas',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF1A1A1A),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }

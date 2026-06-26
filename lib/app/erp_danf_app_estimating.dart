@@ -49,6 +49,34 @@ class _EstimatingMaterialFormRow {
   }
 }
 
+List<String> _estimatingClosedServiceNamesForOrder(WorkflowOrder order) {
+  final names = <String>[];
+  for (final service in order.proposalServices) {
+    if (service.consolidated.trim().toLowerCase() != 'sim') {
+      continue;
+    }
+    final name = service.serviceName.trim();
+    if (name.isEmpty || names.contains(name)) {
+      continue;
+    }
+    names.add(name);
+  }
+  return names;
+}
+
+class _EstimatingMaterialGroup {
+  _EstimatingMaterialGroup({required this.serviceName});
+
+  final String serviceName;
+  final List<_EstimatingMaterialFormRow> rows = [];
+
+  void dispose() {
+    for (final row in rows) {
+      row.dispose();
+    }
+  }
+}
+
 class _EstimatingWorksheetDraft {
   const _EstimatingWorksheetDraft({
     required this.includedVisits,
@@ -73,7 +101,7 @@ class _EstimatingWorksheetDialogState
     extends State<_EstimatingWorksheetDialog> {
   final _formKey = GlobalKey<FormState>();
   late final List<_EstimatingIncludedVisitFormRow> _visitRows;
-  final List<_EstimatingMaterialFormRow> _materialRows = [];
+  late final List<_EstimatingMaterialGroup> _materialGroups;
 
   @override
   void initState() {
@@ -89,15 +117,41 @@ class _EstimatingWorksheetDialogState
         row.daysController.text = existing.first.days;
       }
     }
-    if (widget.order.estimatingMaterials.isEmpty) {
-      _materialRows.add(_EstimatingMaterialFormRow());
-    } else {
-      for (final material in widget.order.estimatingMaterials) {
+
+    final closedServiceNames = _estimatingClosedServiceNamesForOrder(
+      widget.order,
+    );
+    final groupNames = closedServiceNames.isEmpty ? [''] : closedServiceNames;
+    _materialGroups = groupNames
+        .map((name) => _EstimatingMaterialGroup(serviceName: name))
+        .toList(growable: false);
+
+    final materialsByService = <String, List<EstimatingMaterialEntry>>{};
+    for (final material in widget.order.estimatingMaterials) {
+      materialsByService
+          .putIfAbsent(material.serviceName, () => [])
+          .add(material);
+    }
+    for (final group in _materialGroups) {
+      final existing = materialsByService.remove(group.serviceName) ?? [];
+      for (final material in existing) {
         final row = _EstimatingMaterialFormRow();
         row.quantityController.text = material.quantity;
         row.descriptionController.text = material.description;
         row.modelController.text = material.model;
-        _materialRows.add(row);
+        group.rows.add(row);
+      }
+    }
+    for (final leftover in materialsByService.values.expand((m) => m)) {
+      final row = _EstimatingMaterialFormRow();
+      row.quantityController.text = leftover.quantity;
+      row.descriptionController.text = leftover.description;
+      row.modelController.text = leftover.model;
+      _materialGroups.first.rows.add(row);
+    }
+    for (final group in _materialGroups) {
+      if (group.rows.isEmpty) {
+        group.rows.add(_EstimatingMaterialFormRow());
       }
     }
   }
@@ -107,24 +161,24 @@ class _EstimatingWorksheetDialogState
     for (final row in _visitRows) {
       row.dispose();
     }
-    for (final row in _materialRows) {
-      row.dispose();
+    for (final group in _materialGroups) {
+      group.dispose();
     }
     super.dispose();
   }
 
-  void _addMaterialRow() {
+  void _addMaterialRow(_EstimatingMaterialGroup group) {
     setState(() {
-      _materialRows.add(_EstimatingMaterialFormRow());
+      group.rows.add(_EstimatingMaterialFormRow());
     });
   }
 
-  void _removeMaterialRow(int index) {
-    if (_materialRows.length == 1) {
+  void _removeMaterialRow(_EstimatingMaterialGroup group, int index) {
+    if (group.rows.length == 1) {
       return;
     }
     setState(() {
-      final row = _materialRows.removeAt(index);
+      final row = group.rows.removeAt(index);
       row.dispose();
     });
   }
@@ -152,21 +206,22 @@ class _EstimatingWorksheetDialogState
       return;
     }
 
-    final materials = _materialRows
-        .map(
-          (row) => EstimatingMaterialEntry(
-            quantity: row.quantityController.text.trim(),
-            description: row.descriptionController.text.trim(),
-            model: row.modelController.text.trim(),
-          ),
-        )
-        .where(
-          (entry) =>
-              entry.quantity.isNotEmpty ||
-              entry.description.isNotEmpty ||
-              entry.model.isNotEmpty,
-        )
-        .toList(growable: false);
+    final materials = <EstimatingMaterialEntry>[];
+    for (final group in _materialGroups) {
+      for (final row in group.rows) {
+        final entry = EstimatingMaterialEntry(
+          quantity: row.quantityController.text.trim(),
+          description: row.descriptionController.text.trim(),
+          model: row.modelController.text.trim(),
+          serviceName: group.serviceName,
+        );
+        if (entry.quantity.isNotEmpty ||
+            entry.description.isNotEmpty ||
+            entry.model.isNotEmpty) {
+          materials.add(entry);
+        }
+      }
+    }
 
     if (materials.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -320,122 +375,134 @@ class _EstimatingWorksheetDialogState
                         ),
                       ),
                       const SizedBox(height: 20),
-                      Container(
-                        width: double.infinity,
-                        padding: const EdgeInsets.all(18),
-                        decoration: _panelDecoration(context),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              children: [
-                                const Expanded(
-                                  child: Text(
-                                    'Materiais',
-                                    style: TextStyle(
-                                      fontSize: 18,
-                                      fontWeight: FontWeight.w800,
+                      for (final group in _materialGroups) ...[
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(18),
+                          decoration: _panelDecoration(context),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      group.serviceName.isEmpty
+                                          ? 'Materiais'
+                                          : '${group.serviceName}:',
+                                      style: const TextStyle(
+                                        fontSize: 18,
+                                        fontWeight: FontWeight.w800,
+                                      ),
                                     ),
                                   ),
-                                ),
-                                OutlinedButton.icon(
-                                  onPressed: _addMaterialRow,
-                                  icon: const Icon(Icons.add),
-                                  label: const Text('Adicionar'),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 14),
-                            for (
-                              var index = 0;
-                              index < _materialRows.length;
-                              index++
-                            ) ...[
-                              Container(
-                                padding: const EdgeInsets.all(12),
-                                decoration: BoxDecoration(
-                                  color: Colors.white,
-                                  borderRadius: BorderRadius.circular(16),
-                                  border: Border.all(
-                                    color: const Color(0xFFE0E0DD),
+                                  OutlinedButton.icon(
+                                    onPressed: () => _addMaterialRow(group),
+                                    icon: const Icon(Icons.add),
+                                    label: const Text('Adicionar'),
                                   ),
-                                ),
-                                child: Column(
-                                  children: [
-                                    Row(
-                                      children: [
-                                        Text(
-                                          'Material ${index + 1}',
-                                          style: const TextStyle(
-                                            fontWeight: FontWeight.w700,
-                                          ),
-                                        ),
-                                        const Spacer(),
-                                        if (_materialRows.length > 1)
-                                          IconButton(
-                                            onPressed: () =>
-                                                _removeMaterialRow(index),
-                                            icon: const Icon(
-                                              Icons.delete_outline,
+                                ],
+                              ),
+                              const SizedBox(height: 14),
+                              for (
+                                var index = 0;
+                                index < group.rows.length;
+                                index++
+                              ) ...[
+                                Container(
+                                  padding: const EdgeInsets.all(12),
+                                  decoration: BoxDecoration(
+                                    color: Colors.white,
+                                    borderRadius: BorderRadius.circular(16),
+                                    border: Border.all(
+                                      color: const Color(0xFFE0E0DD),
+                                    ),
+                                  ),
+                                  child: Column(
+                                    children: [
+                                      Row(
+                                        children: [
+                                          Text(
+                                            'Material ${index + 1}',
+                                            style: const TextStyle(
+                                              fontWeight: FontWeight.w700,
                                             ),
                                           ),
-                                      ],
-                                    ),
-                                    Row(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        Expanded(
-                                          child: _DialogField(
-                                            controller: _materialRows[index]
-                                                .quantityController,
-                                            label: 'Quantidade',
-                                            validator: _validateQuantity,
-                                            keyboardType: TextInputType.number,
-                                            inputFormatters: [
-                                              FilteringTextInputFormatter
-                                                  .digitsOnly,
-                                            ],
+                                          const Spacer(),
+                                          if (group.rows.length > 1)
+                                            IconButton(
+                                              onPressed: () =>
+                                                  _removeMaterialRow(
+                                                    group,
+                                                    index,
+                                                  ),
+                                              icon: const Icon(
+                                                Icons.delete_outline,
+                                              ),
+                                            ),
+                                        ],
+                                      ),
+                                      Row(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Expanded(
+                                            child: _DialogField(
+                                              controller: group
+                                                  .rows[index]
+                                                  .quantityController,
+                                              label: 'Quantidade',
+                                              validator: _validateQuantity,
+                                              keyboardType:
+                                                  TextInputType.number,
+                                              inputFormatters: [
+                                                FilteringTextInputFormatter
+                                                    .digitsOnly,
+                                              ],
+                                            ),
                                           ),
-                                        ),
-                                        const SizedBox(width: 12),
-                                        Expanded(
-                                          flex: 3,
-                                          child: _DialogField(
-                                            controller: _materialRows[index]
-                                                .descriptionController,
-                                            label: 'Descrição',
-                                            validator: (value) =>
-                                                _requiredField(
-                                                  value,
-                                                  label: 'Descrição',
-                                                ),
+                                          const SizedBox(width: 12),
+                                          Expanded(
+                                            flex: 3,
+                                            child: _DialogField(
+                                              controller: group
+                                                  .rows[index]
+                                                  .descriptionController,
+                                              label: 'Descrição',
+                                              validator: (value) =>
+                                                  _requiredField(
+                                                    value,
+                                                    label: 'Descrição',
+                                                  ),
+                                            ),
                                           ),
-                                        ),
-                                        const SizedBox(width: 12),
-                                        Expanded(
-                                          flex: 2,
-                                          child: _DialogField(
-                                            controller: _materialRows[index]
-                                                .modelController,
-                                            label: 'Modelo',
-                                            validator: (value) =>
-                                                _requiredField(
-                                                  value,
-                                                  label: 'Modelo',
-                                                ),
+                                          const SizedBox(width: 12),
+                                          Expanded(
+                                            flex: 2,
+                                            child: _DialogField(
+                                              controller: group
+                                                  .rows[index]
+                                                  .modelController,
+                                              label: 'Modelo',
+                                              validator: (value) =>
+                                                  _requiredField(
+                                                    value,
+                                                    label: 'Modelo',
+                                                  ),
+                                            ),
                                           ),
-                                        ),
-                                      ],
-                                    ),
-                                  ],
+                                        ],
+                                      ),
+                                    ],
+                                  ),
                                 ),
-                              ),
-                              const SizedBox(height: 12),
+                                const SizedBox(height: 12),
+                              ],
                             ],
-                          ],
+                          ),
                         ),
-                      ),
+                        const SizedBox(height: 20),
+                      ],
                     ],
                   ),
                 ),
@@ -471,11 +538,28 @@ class _EstimatingWorksheetSummaryCard extends StatelessWidget {
     required this.order,
     required this.canEdit,
     this.onEditWorksheet,
+    this.showConsolidatedProjects = false,
   });
 
   final WorkflowOrder order;
   final bool canEdit;
   final Future<void> Function()? onEditWorksheet;
+  final bool showConsolidatedProjects;
+
+  Map<String, List<EstimatingMaterialEntry>> get _materialsByService {
+    final map = <String, List<EstimatingMaterialEntry>>{};
+    for (final material in order.estimatingMaterials) {
+      map.putIfAbsent(material.serviceName, () => []).add(material);
+    }
+    return map;
+  }
+
+  bool get _hasNamedMaterialGroups =>
+      _materialsByService.keys.any((key) => key.isNotEmpty);
+
+  List<ProposalServiceEntry> get consolidatedServices => order.proposalServices
+      .where((service) => service.consolidated.trim().toLowerCase() == 'sim')
+      .toList(growable: false);
 
   @override
   Widget build(BuildContext context) {
@@ -544,76 +628,144 @@ class _EstimatingWorksheetSummaryCard extends StatelessWidget {
                   ),
                 ),
             const SizedBox(height: 14),
+            if (!_hasNamedMaterialGroups) ...[
+              const Text(
+                'Materiais',
+                style: TextStyle(fontWeight: FontWeight.w700),
+              ),
+              const SizedBox(height: 8),
+              _MaterialsTable(materials: order.estimatingMaterials),
+            ] else
+              for (final entry in _materialsByService.entries) ...[
+                Text(
+                  entry.key.isEmpty ? 'Outros materiais' : '${entry.key}:',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w800,
+                    fontSize: 15,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                _MaterialsTable(materials: entry.value),
+                const SizedBox(height: 14),
+              ],
+          ],
+          if (showConsolidatedProjects && consolidatedServices.isNotEmpty) ...[
+            const SizedBox(height: 14),
+            const Divider(height: 1, color: Color(0xFFE0E0DD)),
+            const SizedBox(height: 14),
             const Text(
-              'Materiais',
-              style: TextStyle(fontWeight: FontWeight.w700),
+              'Projetos consolidados (Engenharia)',
+              style: TextStyle(fontWeight: FontWeight.w800, fontSize: 15),
             ),
             const SizedBox(height: 8),
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: const [
-                SizedBox(
-                  width: 72,
-                  child: Text(
-                    'Material',
-                    style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w700,
-                      color: Color(0xFF6B6B68),
-                    ),
-                  ),
-                ),
-                Expanded(
-                  child: Text(
-                    'Descrição',
-                    style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w700,
-                      color: Color(0xFF6B6B68),
-                    ),
-                  ),
-                ),
-                SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    'Modelo',
-                    style: TextStyle(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w700,
-                      color: Color(0xFF6B6B68),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 6),
-            for (final material in order.estimatingMaterials)
+            for (final service in consolidatedServices)
               Padding(
                 padding: const EdgeInsets.only(bottom: 8),
-                child: Row(
+                child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    SizedBox(
-                      width: 72,
-                      child: Text(
-                        material.quantity,
-                        style: const TextStyle(fontWeight: FontWeight.w700),
+                    Text(
+                      service.serviceName,
+                      style: const TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                    Text(
+                      'Preparar em projeto: ${service.prepareInProject.trim().isEmpty ? 'Não informado' : service.prepareInProject}',
+                      style: const TextStyle(
+                        fontSize: 13,
+                        color: Color(0xFF6B6B68),
                       ),
                     ),
-                    Expanded(child: Text(material.description)),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Text(
-                        material.model,
-                        style: const TextStyle(color: Color(0xFF6B6B68)),
+                    if (service.observations.trim().isNotEmpty)
+                      Text(
+                        service.observations.trim(),
+                        style: const TextStyle(
+                          fontSize: 13,
+                          color: Color(0xFF6B6B68),
+                        ),
                       ),
-                    ),
                   ],
                 ),
               ),
           ],
         ],
       ),
+    );
+  }
+}
+
+class _MaterialsTable extends StatelessWidget {
+  const _MaterialsTable({required this.materials});
+
+  final List<EstimatingMaterialEntry> materials;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: const [
+            SizedBox(
+              width: 72,
+              child: Text(
+                'Material',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: Color(0xFF6B6B68),
+                ),
+              ),
+            ),
+            Expanded(
+              child: Text(
+                'Descrição',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: Color(0xFF6B6B68),
+                ),
+              ),
+            ),
+            SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                'Modelo',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: Color(0xFF6B6B68),
+                ),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 6),
+        for (final material in materials)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SizedBox(
+                  width: 72,
+                  child: Text(
+                    material.quantity,
+                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                ),
+                Expanded(child: Text(material.description)),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    material.model,
+                    style: const TextStyle(color: Color(0xFF6B6B68)),
+                  ),
+                ),
+              ],
+            ),
+          ),
+      ],
     );
   }
 }

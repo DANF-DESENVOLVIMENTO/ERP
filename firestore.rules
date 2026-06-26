@@ -14,6 +14,18 @@ service cloud.firestore {
       allow read, write: if signedIn();
     }
 
+    match /checkers_rooms/{roomId} {
+      allow read, write: if signedIn();
+    }
+
+    match /checkers_players/{playerId} {
+      allow read, write: if signedIn();
+    }
+
+    match /checkers_matches/{matchId} {
+      allow read, write: if signedIn();
+    }
+
     match /{document=**} {
       allow read, write: if false;
     }

@@ -848,26 +848,35 @@ class EstimatingMaterialEntry {
     required this.quantity,
     required this.description,
     required this.model,
+    this.serviceName = '',
   });
 
   final String quantity;
   final String description;
   final String model;
+  final String serviceName;
 
   EstimatingMaterialEntry copyWith({
     String? quantity,
     String? description,
     String? model,
+    String? serviceName,
   }) {
     return EstimatingMaterialEntry(
       quantity: quantity ?? this.quantity,
       description: description ?? this.description,
       model: model ?? this.model,
+      serviceName: serviceName ?? this.serviceName,
     );
   }
 
   Map<String, Object?> toMap() {
-    return {'quantity': quantity, 'description': description, 'model': model};
+    return {
+      'quantity': quantity,
+      'description': description,
+      'model': model,
+      'serviceName': serviceName,
+    };
   }
 
   factory EstimatingMaterialEntry.fromMap(Map<String, dynamic> map) {
@@ -875,6 +884,7 @@ class EstimatingMaterialEntry {
       quantity: (map['quantity'] ?? '').toString(),
       description: (map['description'] ?? '').toString(),
       model: (map['model'] ?? '').toString(),
+      serviceName: (map['serviceName'] ?? '').toString(),
     );
   }
 }

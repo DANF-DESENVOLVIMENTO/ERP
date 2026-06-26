@@ -1190,6 +1190,7 @@ class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
         .map((serviceName) => _ProposalServiceFormRow(serviceName: serviceName))
         .toList(growable: false);
     _whatsappMemberRows.add(_WhatsappMemberFormRow());
+    _addressController.text = widget.baseOrder.address;
   }
 
   @override

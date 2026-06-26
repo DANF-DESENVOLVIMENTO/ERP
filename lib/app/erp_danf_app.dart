@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io' as io;
 
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/foundation.dart';
@@ -28,6 +29,7 @@ part 'erp_danf_app_estimating.dart';
 part 'erp_danf_app_installation.dart';
 part 'erp_danf_app_engineering.dart';
 part 'erp_danf_app_assembly.dart';
+part 'erp_danf_app_checkers.dart';
 
 Future<void> _openLocalFile(BuildContext context, String? filePath) async {
   if (filePath == null || filePath.trim().isEmpty) {
@@ -6670,29 +6672,7 @@ class _DesktopShellHeader extends StatelessWidget {
           ),
           const SizedBox(width: 18),
           const SizedBox(width: 14),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-            decoration: BoxDecoration(
-              color: isDarkMode
-                  ? const Color(0xFF202225)
-                  : Colors.white.withValues(alpha: 0.92),
-              borderRadius: BorderRadius.circular(20),
-              border: Border.all(
-                color: isDarkMode
-                    ? const Color(0xFF26282B)
-                    : const Color(0xFFE8E8E5),
-              ),
-            ),
-            child: Text(
-              _formatDate(DateTime.now()),
-              style: TextStyle(
-                color: isDarkMode
-                    ? const Color(0xFFF2F2F0)
-                    : const Color(0xFF1A1A1A),
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-          ),
+          const _HeaderDateBadge(),
           const SizedBox(width: 10),
           _DriveSyncIndicator(status: driveSyncStatus),
           const SizedBox(width: 10),
@@ -6713,6 +6693,66 @@ class _DesktopShellHeader extends StatelessWidget {
             expanded: true,
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _HeaderDateBadge extends StatefulWidget {
+  const _HeaderDateBadge();
+
+  @override
+  State<_HeaderDateBadge> createState() => _HeaderDateBadgeState();
+}
+
+class _HeaderDateBadgeState extends State<_HeaderDateBadge> {
+  int _secretTapCount = 0;
+  DateTime? _lastSecretTapAt;
+
+  void _handleTap() {
+    final now = DateTime.now();
+    if (_lastSecretTapAt == null ||
+        now.difference(_lastSecretTapAt!) > const Duration(seconds: 2)) {
+      _secretTapCount = 0;
+    }
+    _lastSecretTapAt = now;
+    _secretTapCount++;
+    if (_secretTapCount >= 10) {
+      _secretTapCount = 0;
+      Navigator.of(context).push(
+        MaterialPageRoute(builder: (_) => const _SecretBlankScreen()),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+
+    return GestureDetector(
+      onTap: _handleTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        decoration: BoxDecoration(
+          color: isDarkMode
+              ? const Color(0xFF202225)
+              : Colors.white.withValues(alpha: 0.92),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: isDarkMode
+                ? const Color(0xFF26282B)
+                : const Color(0xFFE8E8E5),
+          ),
+        ),
+        child: Text(
+          _formatDate(DateTime.now()),
+          style: TextStyle(
+            color: isDarkMode
+                ? const Color(0xFFF2F2F0)
+                : const Color(0xFF1A1A1A),
+            fontWeight: FontWeight.w700,
+          ),
+        ),
       ),
     );
   }
@@ -14044,9 +14084,7 @@ class _OrderDetailsPanel extends StatelessWidget {
         (isRelationshipStage ||
             hasPassedRelationship ||
             order!.relationshipKanbanStatuses.isNotEmpty);
-    final showEditOrderAction =
-        onEditOrder != null &&
-        order!.currentStage == WorkflowStage.customerRegistration;
+    final showEditOrderAction = onEditOrder != null;
     final canSetEstimatingWasEstimate =
         showFlowActions &&
         isEstimatingStage &&
@@ -14558,6 +14596,17 @@ class _OrderDetailsPanel extends StatelessWidget {
                     );
 
                 final rows = <Widget>[
+                  infoRow('Data de nascimento', order!.client.birthDate),
+                  infoRow('E-mail', order!.client.email),
+                  infoRow('RG', order!.client.rg),
+                  infoRow('CPF', order!.client.cpf),
+                  infoRow('Telefone', order!.client.phone),
+                  infoRow('CEP cobrança', order!.client.postalCode),
+                  infoRow('Rua cobrança', order!.client.street),
+                  infoRow('Número cobrança', order!.client.number),
+                  infoRow('Bairro cobrança', order!.client.neighborhood),
+                  infoRow('Complemento cobrança', order!.client.complement),
+                  infoRow('Cidade cobrança', order!.client.city),
                   if (order!.commercialProposalNumber.trim().isNotEmpty)
                     infoRow('Nº da proposta', order!.commercialProposalNumber, emphasize: true),
                   infoRow('Tipo de pagamento', order!.paymentType),
@@ -14609,6 +14658,7 @@ class _OrderDetailsPanel extends StatelessWidget {
                   order: order!,
                   canEdit: showFlowActions && isEstimatingStage,
                   onEditWorksheet: onAttachMaterials,
+                  showConsolidatedProjects: isEngineeringStage,
                 ),
                 ...mergedSubProposals.map(
                   (p) => Padding(
@@ -14627,6 +14677,7 @@ class _OrderDetailsPanel extends StatelessWidget {
                           order: p,
                           canEdit: false,
                           onEditWorksheet: null,
+                          showConsolidatedProjects: isEngineeringStage,
                         ),
                       ],
                     ),
@@ -15307,6 +15358,8 @@ class _SecondaryProposalPanelContent extends StatelessWidget {
               order: order,
               canEdit: false,
               onEditWorksheet: null,
+              showConsolidatedProjects:
+                  order.currentStage == WorkflowStage.engineering,
             ),
           ),
         ],
@@ -15987,6 +16040,30 @@ class _OrderCard extends StatelessWidget {
                   color: secondaryTextColor,
                   fontSize: 12,
                   fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+            if (order.currentStage == WorkflowStage.engineering) ...[
+              const SizedBox(height: 6),
+              Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 8,
+                  vertical: 4,
+                ),
+                decoration: BoxDecoration(
+                  color: WorkflowStage.engineering.color.withValues(
+                    alpha: 0.12,
+                  ),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Text(
+                  _engineeringFlowSnapshot(order).currentTask?.label ??
+                      'Checklist concluído',
+                  style: TextStyle(
+                    color: WorkflowStage.engineering.color,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                  ),
                 ),
               ),
             ],
