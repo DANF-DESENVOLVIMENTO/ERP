@@ -299,7 +299,7 @@ class _AssemblyChecklistDialogState extends State<_AssemblyChecklistDialog> {
                     ),
                   ),
                   IconButton(
-                    onPressed: () => Navigator.of(context).pop(),
+                    onPressed: () => _confirmAndClose(context),
                     icon: const Icon(Icons.close, color: Colors.white),
                   ),
                 ],
@@ -489,7 +489,7 @@ class _AssemblyTeamSelectionDialogState
                     ),
                   ),
                   IconButton(
-                    onPressed: () => Navigator.of(context).pop(),
+                    onPressed: () => _confirmAndClose(context),
                     icon: const Icon(Icons.close, color: Colors.white),
                   ),
                 ],

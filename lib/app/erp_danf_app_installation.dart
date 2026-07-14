@@ -331,7 +331,7 @@ class _InstallationScheduleCard extends StatelessWidget {
   }
 }
 
-class _InstallationCalendarBoard extends StatelessWidget {
+class _InstallationCalendarBoard extends StatefulWidget {
   const _InstallationCalendarBoard({
     required this.orders,
     required this.selectedDate,
@@ -349,7 +349,178 @@ class _InstallationCalendarBoard extends StatelessWidget {
   final Future<void> Function()? onScheduleSelectedOrder;
 
   @override
+  State<_InstallationCalendarBoard> createState() =>
+      _InstallationCalendarBoardState();
+}
+
+class _InstallationCalendarBoardState
+    extends State<_InstallationCalendarBoard> {
+  late DateTime _focusedMonth;
+
+  static const _monthNames = [
+    'Janeiro',
+    'Fevereiro',
+    'Março',
+    'Abril',
+    'Maio',
+    'Junho',
+    'Julho',
+    'Agosto',
+    'Setembro',
+    'Outubro',
+    'Novembro',
+    'Dezembro',
+  ];
+  static const _weekdayLabels = ['D', 'S', 'T', 'Q', 'Q', 'S', 'S'];
+
+  @override
+  void initState() {
+    super.initState();
+    _focusedMonth = DateTime(
+      widget.selectedDate.year,
+      widget.selectedDate.month,
+    );
+  }
+
+  @override
+  void didUpdateWidget(_InstallationCalendarBoard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!_isSameDate(oldWidget.selectedDate, widget.selectedDate) &&
+        (oldWidget.selectedDate.year != widget.selectedDate.year ||
+            oldWidget.selectedDate.month != widget.selectedDate.month)) {
+      _focusedMonth = DateTime(
+        widget.selectedDate.year,
+        widget.selectedDate.month,
+      );
+    }
+  }
+
+  void _changeFocusedMonth(int delta) {
+    setState(() {
+      _focusedMonth = DateTime(_focusedMonth.year, _focusedMonth.month + delta);
+    });
+  }
+
+  Widget _buildCalendarGrid({
+    required Set<DateTime> scheduledDates,
+    required Color secondaryTextColor,
+    required Color accent,
+  }) {
+    final daysInMonth = DateUtils.getDaysInMonth(
+      _focusedMonth.year,
+      _focusedMonth.month,
+    );
+    final leadingBlanks =
+        DateTime(_focusedMonth.year, _focusedMonth.month, 1).weekday % 7;
+    final totalCells = leadingBlanks + daysInMonth;
+    final rowCount = (totalCells / 7).ceil();
+
+    Widget buildDayCell(int index) {
+      final dayNumber = index - leadingBlanks + 1;
+      if (dayNumber < 1 || dayNumber > daysInMonth) {
+        return const SizedBox();
+      }
+
+      final date = DateTime(_focusedMonth.year, _focusedMonth.month, dayNumber);
+      final isSelected = _isSameDate(date, widget.selectedDate);
+      final isToday = _isSameDate(date, DateTime.now());
+      final hasSchedule = scheduledDates.any((d) => _isSameDate(d, date));
+
+      return InkWell(
+        borderRadius: BorderRadius.circular(10),
+        onTap: () => widget.onDateSelected(date),
+        child: Container(
+          margin: const EdgeInsets.all(2),
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          decoration: BoxDecoration(
+            color: isSelected ? accent.withValues(alpha: 0.16) : null,
+            border: isToday && !isSelected ? Border.all(color: accent) : null,
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                '$dayNumber',
+                style: TextStyle(
+                  fontWeight: isSelected ? FontWeight.w800 : FontWeight.w600,
+                  color: isSelected ? accent : null,
+                ),
+              ),
+              const SizedBox(height: 3),
+              Container(
+                width: 6,
+                height: 6,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: hasSchedule
+                      ? const Color(0xFF22C55E)
+                      : const Color(0xFFB7B7B2),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            IconButton(
+              icon: const Icon(Icons.chevron_left),
+              onPressed: () => _changeFocusedMonth(-1),
+            ),
+            Text(
+              '${_monthNames[_focusedMonth.month - 1]} de ${_focusedMonth.year}',
+              style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 16),
+            ),
+            IconButton(
+              icon: const Icon(Icons.chevron_right),
+              onPressed: () => _changeFocusedMonth(1),
+            ),
+          ],
+        ),
+        Row(
+          children: _weekdayLabels
+              .map(
+                (label) => Expanded(
+                  child: Center(
+                    child: Text(
+                      label,
+                      style: TextStyle(
+                        color: secondaryTextColor,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ),
+                ),
+              )
+              .toList(growable: false),
+        ),
+        const SizedBox(height: 4),
+        for (var row = 0; row < rowCount; row++)
+          Row(
+            children: [
+              for (var col = 0; col < 7; col++)
+                Expanded(child: buildDayCell(row * 7 + col)),
+            ],
+          ),
+      ],
+    );
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final orders = widget.orders;
+    final selectedDate = widget.selectedDate;
+    final selectedOrder = widget.selectedOrder;
+    final onOrderSelected = widget.onOrderSelected;
+    final onScheduleSelectedOrder = widget.onScheduleSelectedOrder;
     final isDarkMode = Theme.of(context).brightness == Brightness.dark;
     final borderColor = isDarkMode
         ? const Color(0xFF3E4044)
@@ -454,12 +625,12 @@ class _InstallationCalendarBoard extends StatelessWidget {
                   border: Border.all(color: borderColor),
                 ),
                 padding: const EdgeInsets.all(12),
-                child: CalendarDatePicker(
-                  initialDate: selectedDate,
-                  currentDate: DateTime.now(),
-                  firstDate: DateTime(2020),
-                  lastDate: DateTime(2035, 12, 31),
-                  onDateChanged: onDateSelected,
+                child: _buildCalendarGrid(
+                  scheduledDates: scheduledOrders
+                      .map((order) => order.installationScheduledAt!)
+                      .toSet(),
+                  secondaryTextColor: secondaryTextColor,
+                  accent: WorkflowStage.installation.color,
                 ),
               );
               final agenda = Container(
@@ -836,7 +1007,7 @@ class _InstallationExecutionDialogState
                     ),
                   ),
                   IconButton(
-                    onPressed: () => Navigator.of(context).pop(),
+                    onPressed: () => _confirmAndClose(context),
                     icon: const Icon(Icons.close, color: Colors.white),
                   ),
                 ],
@@ -1101,7 +1272,7 @@ class _InstallationScheduleDialogState
                     ),
                   ),
                   IconButton(
-                    onPressed: () => Navigator.of(context).pop(),
+                    onPressed: () => _confirmAndClose(context),
                     icon: const Icon(Icons.close, color: Colors.white),
                   ),
                 ],

@@ -583,7 +583,14 @@ class _ServiceOrderDialogState extends State<_ServiceOrderDialog> {
   final _formKey = GlobalKey<FormState>();
   final _serviceTitleController = TextEditingController();
   final _serviceDescriptionController = TextEditingController();
+  final _clientSearchController = TextEditingController();
+  final _newClientNameController = TextEditingController();
+  final _newClientPhoneController = TextEditingController();
+  final _newClientAddressController = TextEditingController();
   String? _selectedClientId;
+  String _clientQuery = '';
+  bool _isCreatingNewClient = false;
+  bool _clientRequiredError = false;
 
   _ServiceOrderClientOption? get _selectedClient {
     final clientId = _selectedClientId;
@@ -600,10 +607,74 @@ class _ServiceOrderDialogState extends State<_ServiceOrderDialog> {
     return null;
   }
 
+  List<_ServiceOrderClientOption> get _filteredClients {
+    final normalizedQuery = _clientQuery.trim().toLowerCase();
+    if (normalizedQuery.isEmpty) {
+      return widget.clients;
+    }
+
+    return widget.clients
+        .where(
+          (option) =>
+              option.client.id.toLowerCase().contains(normalizedQuery) ||
+              option.client.name.toLowerCase().contains(normalizedQuery) ||
+              option.client.phone.toLowerCase().contains(normalizedQuery) ||
+              option.address.toLowerCase().contains(normalizedQuery),
+        )
+        .toList(growable: false);
+  }
+
+  String _nextNewClientId() {
+    var maxCode = 1000;
+    for (final option in widget.clients) {
+      final parsed = int.tryParse(option.client.id);
+      if (parsed != null && parsed > maxCode) {
+        maxCode = parsed;
+      }
+    }
+    return '${maxCode + 1}';
+  }
+
+  void _selectClient(String clientId) {
+    setState(() {
+      _selectedClientId = clientId;
+      _isCreatingNewClient = false;
+      _clientRequiredError = false;
+    });
+  }
+
+  void _clearSelectedClient() {
+    setState(() {
+      _selectedClientId = null;
+    });
+  }
+
+  void _startCreatingNewClient() {
+    setState(() {
+      _isCreatingNewClient = true;
+      _selectedClientId = null;
+      _clientRequiredError = false;
+      _newClientNameController.text = _clientQuery.trim();
+    });
+  }
+
+  void _cancelCreatingNewClient() {
+    setState(() {
+      _isCreatingNewClient = false;
+      _newClientNameController.clear();
+      _newClientPhoneController.clear();
+      _newClientAddressController.clear();
+    });
+  }
+
   @override
   void dispose() {
     _serviceTitleController.dispose();
     _serviceDescriptionController.dispose();
+    _clientSearchController.dispose();
+    _newClientNameController.dispose();
+    _newClientPhoneController.dispose();
+    _newClientAddressController.dispose();
     super.dispose();
   }
 
@@ -612,8 +683,47 @@ class _ServiceOrderDialogState extends State<_ServiceOrderDialog> {
       return;
     }
 
+    if (_isCreatingNewClient) {
+      final name = _newClientNameController.text.trim();
+      final phone = _newClientPhoneController.text.trim();
+      final address = _newClientAddressController.text.trim();
+      if (name.isEmpty || phone.isEmpty || address.isEmpty) {
+        return;
+      }
+
+      final newClient = ClientProfile(
+        id: _nextNewClientId(),
+        name: name,
+        birthDate: '',
+        email: '',
+        rg: '',
+        cpf: '',
+        city: '',
+        postalCode: '',
+        street: '',
+        number: '',
+        neighborhood: '',
+        complement: '',
+        segment: '',
+        contact: '',
+        phone: phone,
+        temperature: '',
+      );
+
+      Navigator.of(context).pop(
+        _ServiceOrderDraft(
+          client: newClient,
+          address: address,
+          serviceTitle: _serviceTitleController.text.trim(),
+          serviceDescription: _serviceDescriptionController.text.trim(),
+        ),
+      );
+      return;
+    }
+
     final selectedClient = _selectedClient;
     if (selectedClient == null) {
+      setState(() => _clientRequiredError = true);
       return;
     }
 
@@ -699,7 +809,7 @@ class _ServiceOrderDialogState extends State<_ServiceOrderDialog> {
                     ),
                   ),
                   IconButton(
-                    onPressed: () => Navigator.of(context).pop(),
+                    onPressed: () => _confirmAndClose(context),
                     icon: const Icon(Icons.close, color: Colors.white),
                   ),
                 ],
@@ -713,35 +823,12 @@ class _ServiceOrderDialogState extends State<_ServiceOrderDialog> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      DropdownButtonFormField<String>(
-                        initialValue: _selectedClientId,
-                        decoration: const InputDecoration(
-                          labelText: 'Cliente',
-                          border: OutlineInputBorder(),
-                        ),
-                        items: widget.clients
-                            .map(
-                              (option) => DropdownMenuItem<String>(
-                                value: option.client.id,
-                                child: Text(option.label),
-                              ),
-                            )
-                            .toList(growable: false),
-                        onChanged: (value) {
-                          setState(() {
-                            _selectedClientId = value;
-                          });
-                        },
-                        validator: (value) {
-                          if (value == null || value.trim().isEmpty) {
-                            return 'Selecione o cliente.';
-                          }
-
-                          return null;
-                        },
+                      const Text(
+                        'Cliente',
+                        style: TextStyle(fontWeight: FontWeight.w700),
                       ),
+                      const SizedBox(height: 8),
                       if (selectedClient != null) ...[
-                        const SizedBox(height: 16),
                         Container(
                           width: double.infinity,
                           padding: const EdgeInsets.all(16),
@@ -750,42 +837,195 @@ class _ServiceOrderDialogState extends State<_ServiceOrderDialog> {
                             borderRadius: BorderRadius.circular(20),
                             border: Border.all(color: const Color(0xFFE0E0DD)),
                           ),
-                          child: Wrap(
-                            spacing: 12,
-                            runSpacing: 12,
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              SizedBox(
-                                width: 220,
-                                child: _InfoRow(
-                                  label: 'Cliente',
-                                  value: selectedClient.client.name,
-                                  emphasizeValue: true,
-                                ),
+                              Wrap(
+                                spacing: 12,
+                                runSpacing: 12,
+                                children: [
+                                  SizedBox(
+                                    width: 220,
+                                    child: _InfoRow(
+                                      label: 'Cliente',
+                                      value: selectedClient.client.name,
+                                      emphasizeValue: true,
+                                    ),
+                                  ),
+                                  SizedBox(
+                                    width: 220,
+                                    child: _InfoRow(
+                                      label: 'Telefone',
+                                      value: selectedClient.client.phone,
+                                    ),
+                                  ),
+                                  SizedBox(
+                                    width: 220,
+                                    child: _InfoRow(
+                                      label: 'Última referência',
+                                      value: selectedClient.referenceWorkName,
+                                    ),
+                                  ),
+                                  SizedBox(
+                                    width: 320,
+                                    child: _InfoRow(
+                                      label: 'Endereço',
+                                      value: selectedClient.address,
+                                    ),
+                                  ),
+                                ],
                               ),
-                              SizedBox(
-                                width: 220,
-                                child: _InfoRow(
-                                  label: 'Telefone',
-                                  value: selectedClient.client.phone,
-                                ),
-                              ),
-                              SizedBox(
-                                width: 220,
-                                child: _InfoRow(
-                                  label: 'Última referência',
-                                  value: selectedClient.referenceWorkName,
-                                ),
-                              ),
-                              SizedBox(
-                                width: 320,
-                                child: _InfoRow(
-                                  label: 'Endereço',
-                                  value: selectedClient.address,
+                              const SizedBox(height: 8),
+                              Align(
+                                alignment: Alignment.centerLeft,
+                                child: TextButton.icon(
+                                  onPressed: _clearSelectedClient,
+                                  icon: const Icon(Icons.search),
+                                  label: const Text('Trocar cliente'),
                                 ),
                               ),
                             ],
                           ),
                         ),
+                      ] else if (_isCreatingNewClient) ...[
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(color: const Color(0xFFE0E0DD)),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const Text(
+                                'Cadastrar novo cliente',
+                                style: TextStyle(fontWeight: FontWeight.w800),
+                              ),
+                              const SizedBox(height: 12),
+                              _DialogField(
+                                controller: _newClientNameController,
+                                label: 'Nome do cliente',
+                                validator: _requiredField,
+                              ),
+                              const SizedBox(height: 12),
+                              _DialogField(
+                                controller: _newClientPhoneController,
+                                label: 'Telefone',
+                                validator: _requiredField,
+                                keyboardType: TextInputType.phone,
+                              ),
+                              const SizedBox(height: 12),
+                              _DialogField(
+                                controller: _newClientAddressController,
+                                label: 'Endereço',
+                                validator: _requiredField,
+                              ),
+                              const SizedBox(height: 8),
+                              Align(
+                                alignment: Alignment.centerLeft,
+                                child: TextButton.icon(
+                                  onPressed: _cancelCreatingNewClient,
+                                  icon: const Icon(Icons.search),
+                                  label: const Text('Pesquisar cliente existente'),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ] else ...[
+                        TextField(
+                          controller: _clientSearchController,
+                          onChanged: (value) {
+                            setState(() {
+                              _clientQuery = value;
+                              _clientRequiredError = false;
+                            });
+                          },
+                          decoration: InputDecoration(
+                            labelText: 'Pesquisar cliente',
+                            hintText: 'ID, nome, telefone ou endereço',
+                            prefixIcon: const Icon(Icons.search),
+                            border: const OutlineInputBorder(),
+                            suffixIcon: _clientQuery.trim().isEmpty
+                                ? null
+                                : IconButton(
+                                    onPressed: () {
+                                      _clientSearchController.clear();
+                                      setState(() => _clientQuery = '');
+                                    },
+                                    icon: const Icon(Icons.close),
+                                  ),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        if (_filteredClients.isEmpty)
+                          Container(
+                            width: double.infinity,
+                            padding: const EdgeInsets.all(16),
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(20),
+                              border: Border.all(
+                                color: const Color(0xFFE0E0DD),
+                              ),
+                            ),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Text(
+                                  'Nenhum cliente encontrado na base de dados.',
+                                  style: TextStyle(
+                                    color: Color(0xFF6B6B68),
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                                const SizedBox(height: 8),
+                                FilledButton.icon(
+                                  onPressed: _startCreatingNewClient,
+                                  icon: const Icon(Icons.person_add_outlined),
+                                  label: const Text('Cadastrar novo cliente'),
+                                ),
+                              ],
+                            ),
+                          )
+                        else
+                          ConstrainedBox(
+                            constraints: const BoxConstraints(maxHeight: 220),
+                            child: ListView.separated(
+                              shrinkWrap: true,
+                              itemCount: _filteredClients.length,
+                              separatorBuilder: (context, index) =>
+                                  const SizedBox(height: 8),
+                              itemBuilder: (context, index) {
+                                final option = _filteredClients[index];
+                                return InkWell(
+                                  onTap: () => _selectClient(option.client.id),
+                                  borderRadius: BorderRadius.circular(16),
+                                  child: Container(
+                                    width: double.infinity,
+                                    padding: const EdgeInsets.all(12),
+                                    decoration: BoxDecoration(
+                                      color: Colors.white,
+                                      borderRadius: BorderRadius.circular(16),
+                                      border: Border.all(
+                                        color: const Color(0xFFE0E0DD),
+                                      ),
+                                    ),
+                                    child: Text(option.label),
+                                  ),
+                                );
+                              },
+                            ),
+                          ),
+                        if (_clientRequiredError) ...[
+                          const SizedBox(height: 8),
+                          const Text(
+                            'Selecione um cliente ou cadastre um novo.',
+                            style: TextStyle(color: Color(0xFFB91C1C)),
+                          ),
+                        ],
                       ],
                       const SizedBox(height: 16),
                       _DialogField(
@@ -987,7 +1227,7 @@ class _AdditionalProposalClientPickerDialogState
                     ),
                   ),
                   IconButton(
-                    onPressed: () => Navigator.of(context).pop(),
+                    onPressed: () => _confirmAndClose(context),
                     icon: const Icon(Icons.close, color: Colors.white),
                   ),
                 ],
@@ -1499,7 +1739,7 @@ class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
                     ),
                   ),
                   IconButton(
-                    onPressed: () => Navigator.of(context).pop(),
+                    onPressed: () => _confirmAndClose(context),
                     icon: const Icon(Icons.close, color: Colors.white),
                   ),
                 ],
@@ -2631,7 +2871,7 @@ class _CustomerRegistrationDialogState
                         ),
                       ),
                       IconButton(
-                        onPressed: () => Navigator.of(context).pop(),
+                        onPressed: () => _confirmAndClose(context),
                         icon: const Icon(Icons.close, color: Colors.white),
                       ),
                     ],

@@ -823,7 +823,7 @@ class _EngineeringActivityScheduleDialogState
                     ),
                   ),
                   IconButton(
-                    onPressed: () => Navigator.of(context).pop(),
+                    onPressed: () => _confirmAndClose(context),
                     icon: const Icon(Icons.close, color: Colors.white),
                   ),
                 ],
@@ -2153,6 +2153,448 @@ _EstimatingKanbanFlowSnapshot _estimatingKanbanFlowSnapshotFromStatuses(
   );
 }
 
+class _RelationshipCalendarEntry {
+  const _RelationshipCalendarEntry({
+    required this.order,
+    required this.label,
+    required this.scheduledAt,
+    required this.accent,
+  });
+
+  final WorkflowOrder order;
+  final String label;
+  final DateTime scheduledAt;
+  final Color accent;
+}
+
+class _RelationshipStageCalendarBoard extends StatefulWidget {
+  const _RelationshipStageCalendarBoard({
+    required this.orders,
+    required this.onOrderSelected,
+    this.selectedOrder,
+  });
+
+  final List<WorkflowOrder> orders;
+  final WorkflowOrder? selectedOrder;
+  final ValueChanged<WorkflowOrder> onOrderSelected;
+
+  @override
+  State<_RelationshipStageCalendarBoard> createState() =>
+      _RelationshipStageCalendarBoardState();
+}
+
+class _RelationshipStageCalendarBoardState
+    extends State<_RelationshipStageCalendarBoard> {
+  late DateTime _selectedDate;
+  late DateTime _focusedMonth;
+
+  static const _monthNames = [
+    'Janeiro',
+    'Fevereiro',
+    'Março',
+    'Abril',
+    'Maio',
+    'Junho',
+    'Julho',
+    'Agosto',
+    'Setembro',
+    'Outubro',
+    'Novembro',
+    'Dezembro',
+  ];
+  static const _weekdayLabels = ['D', 'S', 'T', 'Q', 'Q', 'S', 'S'];
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedDate = DateUtils.dateOnly(DateTime.now());
+    _focusedMonth = DateTime(_selectedDate.year, _selectedDate.month);
+  }
+
+  void _changeFocusedMonth(int delta) {
+    setState(() {
+      _focusedMonth = DateTime(_focusedMonth.year, _focusedMonth.month + delta);
+    });
+  }
+
+  List<_RelationshipCalendarEntry> get _entries {
+    final entries = <_RelationshipCalendarEntry>[];
+    for (final order in widget.orders) {
+      final installationAt = order.installationScheduledAt;
+      if (installationAt != null) {
+        entries.add(
+          _RelationshipCalendarEntry(
+            order: order,
+            label: 'Instalação',
+            scheduledAt: installationAt,
+            accent: WorkflowStage.installation.color,
+          ),
+        );
+      }
+
+      for (final entry in order.engineeringActivitySchedules.entries) {
+        final task = _engineeringChecklistTaskByKey(entry.key);
+        if (task == null) {
+          continue;
+        }
+        entries.add(
+          _RelationshipCalendarEntry(
+            order: order,
+            label: 'Engenharia: ${task.label}',
+            scheduledAt: entry.value.scheduledAt,
+            accent: WorkflowStage.engineering.color,
+          ),
+        );
+      }
+    }
+
+    entries.sort((left, right) => left.scheduledAt.compareTo(right.scheduledAt));
+    return entries;
+  }
+
+  Widget _buildCalendarGrid({
+    required Set<DateTime> scheduledDates,
+    required Color secondaryTextColor,
+  }) {
+    final accent = WorkflowStage.relationship.color;
+    final daysInMonth = DateUtils.getDaysInMonth(
+      _focusedMonth.year,
+      _focusedMonth.month,
+    );
+    final leadingBlanks =
+        DateTime(_focusedMonth.year, _focusedMonth.month, 1).weekday % 7;
+    final totalCells = leadingBlanks + daysInMonth;
+    final rowCount = (totalCells / 7).ceil();
+
+    Widget buildDayCell(int index) {
+      final dayNumber = index - leadingBlanks + 1;
+      if (dayNumber < 1 || dayNumber > daysInMonth) {
+        return const SizedBox();
+      }
+
+      final date = DateTime(_focusedMonth.year, _focusedMonth.month, dayNumber);
+      final isSelected = _isSameDate(date, _selectedDate);
+      final isToday = _isSameDate(date, DateTime.now());
+      final hasSchedule = scheduledDates.any((d) => _isSameDate(d, date));
+
+      return InkWell(
+        borderRadius: BorderRadius.circular(10),
+        onTap: () => setState(() => _selectedDate = date),
+        child: Container(
+          margin: const EdgeInsets.all(2),
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          decoration: BoxDecoration(
+            color: isSelected ? accent.withValues(alpha: 0.16) : null,
+            border: isToday && !isSelected ? Border.all(color: accent) : null,
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                '$dayNumber',
+                style: TextStyle(
+                  fontWeight: isSelected ? FontWeight.w800 : FontWeight.w600,
+                  color: isSelected ? accent : null,
+                ),
+              ),
+              const SizedBox(height: 3),
+              Container(
+                width: 6,
+                height: 6,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: hasSchedule
+                      ? const Color(0xFF22C55E)
+                      : const Color(0xFFB7B7B2),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            IconButton(
+              icon: const Icon(Icons.chevron_left),
+              onPressed: () => _changeFocusedMonth(-1),
+            ),
+            Text(
+              '${_monthNames[_focusedMonth.month - 1]} de ${_focusedMonth.year}',
+              style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 16),
+            ),
+            IconButton(
+              icon: const Icon(Icons.chevron_right),
+              onPressed: () => _changeFocusedMonth(1),
+            ),
+          ],
+        ),
+        Row(
+          children: _weekdayLabels
+              .map(
+                (label) => Expanded(
+                  child: Center(
+                    child: Text(
+                      label,
+                      style: TextStyle(
+                        color: secondaryTextColor,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ),
+                ),
+              )
+              .toList(growable: false),
+        ),
+        const SizedBox(height: 4),
+        for (var row = 0; row < rowCount; row++)
+          Row(
+            children: [
+              for (var col = 0; col < 7; col++)
+                Expanded(child: buildDayCell(row * 7 + col)),
+            ],
+          ),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    final borderColor = isDarkMode
+        ? const Color(0xFF3E4044)
+        : const Color(0xFFE8E8E5);
+    final surfaceColor = isDarkMode ? const Color(0xFF1C1D20) : Colors.white;
+    final secondaryTextColor = isDarkMode
+        ? const Color(0xFFA3A39E)
+        : const Color(0xFF6B6B68);
+    final entries = _entries;
+    final installationCount = entries
+        .where((entry) => entry.label == 'Instalação')
+        .length;
+    final engineeringCount = entries.length - installationCount;
+    final selectedDayEntries = entries
+        .where((entry) => _isSameDate(entry.scheduledAt, _selectedDate))
+        .toList(growable: false);
+
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: _panelDecoration(context),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Calendário do relacionamento',
+            style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Acompanhe aqui os agendamentos de engenharia e instalação já marcados para os pedidos.',
+            style: TextStyle(color: secondaryTextColor, height: 1.35),
+          ),
+          const SizedBox(height: 16),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              _CalendarMetricPill(
+                label: 'Agendamentos',
+                value: '${entries.length}',
+                accent: WorkflowStage.relationship.color,
+              ),
+              _CalendarMetricPill(
+                label: 'Engenharia',
+                value: '$engineeringCount',
+                accent: WorkflowStage.engineering.color,
+              ),
+              _CalendarMetricPill(
+                label: 'Instalação',
+                value: '$installationCount',
+                accent: WorkflowStage.installation.color,
+              ),
+              _CalendarMetricPill(
+                label: 'Dia selecionado',
+                value: '${selectedDayEntries.length}',
+                accent: const Color(0xFF475569),
+              ),
+            ],
+          ),
+          const SizedBox(height: 18),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final useColumn = constraints.maxWidth < 980;
+              final calendar = Container(
+                decoration: BoxDecoration(
+                  color: surfaceColor,
+                  borderRadius: BorderRadius.circular(18),
+                  border: Border.all(color: borderColor),
+                ),
+                padding: const EdgeInsets.all(12),
+                child: _buildCalendarGrid(
+                  scheduledDates: entries
+                      .map((entry) => DateUtils.dateOnly(entry.scheduledAt))
+                      .toSet(),
+                  secondaryTextColor: secondaryTextColor,
+                ),
+              );
+              final agenda = Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: surfaceColor,
+                  borderRadius: BorderRadius.circular(18),
+                  border: Border.all(color: borderColor),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      _formatDayWithWeekday(_selectedDate),
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      selectedDayEntries.isEmpty
+                          ? 'Nenhum agendamento para este dia.'
+                          : '${selectedDayEntries.length} agendamento(s) programado(s).',
+                      style: TextStyle(color: secondaryTextColor),
+                    ),
+                    const SizedBox(height: 16),
+                    if (selectedDayEntries.isEmpty)
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: isDarkMode
+                              ? Colors.black.withValues(alpha: 0.12)
+                              : const Color(0xFFF5F5F3),
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(color: borderColor),
+                        ),
+                        child: Text(
+                          'Os agendamentos de engenharia e instalação aparecem aqui automaticamente.',
+                          style: TextStyle(
+                            color: secondaryTextColor,
+                            height: 1.35,
+                          ),
+                        ),
+                      )
+                    else
+                      ...selectedDayEntries.map(
+                        (entry) => Padding(
+                          padding: const EdgeInsets.only(bottom: 10),
+                          child: InkWell(
+                            onTap: () => widget.onOrderSelected(entry.order),
+                            borderRadius: BorderRadius.circular(14),
+                            child: Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.all(14),
+                              decoration: BoxDecoration(
+                                color: widget.selectedOrder?.code == entry.order.code
+                                    ? entry.accent.withValues(alpha: 0.08)
+                                    : isDarkMode
+                                    ? const Color(0xFF1C1D20)
+                                    : const Color(0xFFF5F5F3),
+                                borderRadius: BorderRadius.circular(14),
+                                border: Border.all(
+                                  color: widget.selectedOrder?.code == entry.order.code
+                                      ? entry.accent
+                                      : borderColor,
+                                ),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    children: [
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 10,
+                                          vertical: 6,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: entry.accent.withValues(alpha: 0.12),
+                                          borderRadius: BorderRadius.circular(999),
+                                        ),
+                                        child: Text(
+                                          entry.label,
+                                          style: TextStyle(
+                                            color: entry.accent,
+                                            fontWeight: FontWeight.w800,
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(width: 10),
+                                      Expanded(
+                                        child: Text(
+                                          _formatTimeOnly(entry.scheduledAt),
+                                          textAlign: TextAlign.end,
+                                          style: TextStyle(
+                                            color: secondaryTextColor,
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w700,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 10),
+                                  Text(
+                                    entry.order.workName,
+                                    style: const TextStyle(
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    '${entry.order.client.name} • ${entry.order.address}',
+                                    style: TextStyle(
+                                      color: secondaryTextColor,
+                                      height: 1.35,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              );
+
+              if (useColumn) {
+                return Column(
+                  children: [calendar, const SizedBox(height: 16), agenda],
+                );
+              }
+
+              return Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(flex: 5, child: calendar),
+                  const SizedBox(width: 16),
+                  Expanded(flex: 6, child: agenda),
+                ],
+              );
+            },
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _RelationshipChecklistCard extends StatelessWidget {
   const _RelationshipChecklistCard({
     required this.order,
@@ -2896,6 +3338,97 @@ bool _isSameDate(DateTime left, DateTime right) {
   return left.year == right.year &&
       left.month == right.month &&
       left.day == right.day;
+}
+
+Future<void> _confirmAndClose(BuildContext context) async {
+  final shouldClose = await showDialog<bool>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      title: const Text('Voltar sem salvar?'),
+      content: const Text(
+        'As alterações feitas nesta tela ainda não foram salvas. Deseja realmente sair?',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(dialogContext).pop(false),
+          child: const Text('Cancelar'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.of(dialogContext).pop(true),
+          child: const Text('Sair sem salvar'),
+        ),
+      ],
+    ),
+  );
+
+  if (shouldClose == true && context.mounted) {
+    Navigator.of(context).pop();
+  }
+}
+
+Future<void> _printEstimatingWorksheet(WorkflowOrder order) async {
+  final doc = pw.Document();
+  final visits = order.estimatingIncludedVisits
+      .where((visit) => visit.days.trim().isNotEmpty)
+      .toList(growable: false);
+  final materials = order.estimatingMaterials;
+
+  doc.addPage(
+    pw.MultiPage(
+      build: (pwContext) => [
+        pw.Header(
+          level: 0,
+          child: pw.Text(
+            'Levantamento do Orçamentista',
+            style: pw.TextStyle(fontSize: 18, fontWeight: pw.FontWeight.bold),
+          ),
+        ),
+        pw.Text('${order.code} • ${order.workName}'),
+        pw.SizedBox(height: 16),
+        pw.Text(
+          'Visitas inclusas',
+          style: pw.TextStyle(fontWeight: pw.FontWeight.bold),
+        ),
+        pw.SizedBox(height: 6),
+        if (visits.isEmpty)
+          pw.Text('Nenhuma visita informada.')
+        else
+          pw.TableHelper.fromTextArray(
+            headers: ['Visita', 'Dias'],
+            data: visits
+                .map((visit) => [visit.label, visit.days])
+                .toList(growable: false),
+          ),
+        pw.SizedBox(height: 16),
+        pw.Text(
+          'Materiais',
+          style: pw.TextStyle(fontWeight: pw.FontWeight.bold),
+        ),
+        pw.SizedBox(height: 6),
+        if (materials.isEmpty)
+          pw.Text('Nenhum material informado.')
+        else
+          pw.TableHelper.fromTextArray(
+            headers: ['Qtd.', 'Descrição', 'Modelo', 'Serviço'],
+            data: materials
+                .map(
+                  (material) => [
+                    material.quantity,
+                    material.description,
+                    material.model,
+                    material.serviceName,
+                  ],
+                )
+                .toList(growable: false),
+          ),
+      ],
+    ),
+  );
+
+  await Printing.layoutPdf(
+    onLayout: (format) async => doc.save(),
+    name: 'levantamento_${order.code}.pdf',
+  );
 }
 
 String _formatDateTime(DateTime date) {

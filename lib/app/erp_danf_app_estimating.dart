@@ -309,7 +309,7 @@ class _EstimatingWorksheetDialogState
                     ),
                   ),
                   IconButton(
-                    onPressed: () => Navigator.of(context).pop(),
+                    onPressed: () => _confirmAndClose(context),
                     icon: const Icon(Icons.close, color: Colors.white),
                   ),
                 ],

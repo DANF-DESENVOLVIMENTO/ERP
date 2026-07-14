@@ -12,6 +12,8 @@ import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:http/http.dart' as http;
+import 'package:pdf/widgets.dart' as pw;
+import 'package:printing/printing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'app_version.dart';
@@ -2670,13 +2672,6 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
 
   Future<void> _openServiceOrderForm() async {
     final clientOptions = _serviceOrderClientOptions;
-    if (clientOptions.isEmpty) {
-      _showAppMessage(
-        'Cadastre pelo menos um cliente antes de criar uma ordem de serviço.',
-        isError: true,
-      );
-      return;
-    }
 
     final draft = await showDialog<_ServiceOrderDraft>(
       context: context,
@@ -11579,7 +11574,8 @@ class _StageWorkspaceSection extends StatelessWidget {
         isCustomerRegistration && customerRegistrationSubtab == 1;
     final hasCalendarTab =
         stage == WorkflowStage.installation ||
-        stage == WorkflowStage.engineering;
+        stage == WorkflowStage.engineering ||
+        stage == WorkflowStage.relationship;
     final registeredCatalogTabIndex = hasCalendarTab ? 2 : 1;
     final showingWorkQueue =
         isStandaloneWorkspaceStage ||
@@ -11590,6 +11586,10 @@ class _StageWorkspaceSection extends StatelessWidget {
         stageWorkspaceSubtab == 1;
     final showingEngineeringCalendar =
         stage == WorkflowStage.engineering &&
+        hasWorkAndCatalogSubtabs &&
+        stageWorkspaceSubtab == 1;
+    final showingRelationshipCalendar =
+        stage == WorkflowStage.relationship &&
         hasWorkAndCatalogSubtabs &&
         stageWorkspaceSubtab == 1;
     final showingStageRegisteredClients =
@@ -11644,6 +11644,14 @@ class _StageWorkspaceSection extends StatelessWidget {
         : showingEngineeringCalendar
         ? orders
               .where((item) => item.currentStage == stage)
+              .toList(growable: false)
+        : showingRelationshipCalendar
+        ? orders
+              .where(
+                (item) =>
+                    item.installationScheduledAt != null ||
+                    item.engineeringActivitySchedules.isNotEmpty,
+              )
               .toList(growable: false)
         : showingWorkQueue
         ? orders
@@ -12485,6 +12493,15 @@ class _StageWorkspaceSection extends StatelessWidget {
         if (stage == WorkflowStage.engineering &&
             showingEngineeringCalendar) ...[
           _EngineeringStageCalendarBoard(
+            orders: visibleOrders,
+            selectedOrder: selectedOrder,
+            onOrderSelected: onOrderSelected,
+          ),
+          const SizedBox(height: 20),
+        ],
+        if (stage == WorkflowStage.relationship &&
+            showingRelationshipCalendar) ...[
+          _RelationshipStageCalendarBoard(
             orders: visibleOrders,
             selectedOrder: selectedOrder,
             onOrderSelected: onOrderSelected,
@@ -14223,6 +14240,14 @@ class _OrderDetailsPanel extends StatelessWidget {
           style: compactOutlinedHeaderButtonStyle,
           icon: const Icon(Icons.chevron_left),
           label: const Text('Voltar'),
+        ),
+      if (order!.estimatingIncludedVisits.isNotEmpty &&
+          order!.estimatingMaterials.isNotEmpty)
+        OutlinedButton.icon(
+          onPressed: () => _printEstimatingWorksheet(order!),
+          style: compactOutlinedHeaderButtonStyle,
+          icon: const Icon(Icons.print_outlined),
+          label: const Text('Imprimir levantamento'),
         ),
       if (showFlowActions && isRelationshipStage)
         FilledButton.icon(
@@ -17008,7 +17033,7 @@ class _OrderConversationDialogState extends State<_OrderConversationDialog> {
                     ),
                   ),
                   IconButton(
-                    onPressed: () => Navigator.of(context).pop(),
+                    onPressed: () => _confirmAndClose(context),
                     icon: const Icon(Icons.close),
                   ),
                 ],
