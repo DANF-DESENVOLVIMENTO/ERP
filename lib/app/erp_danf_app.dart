@@ -358,6 +358,9 @@ class _ErpDanfAppState extends State<ErpDanfApp> {
           theme: _buildTheme(seed: seed, brightness: Brightness.light),
           darkTheme: _buildTheme(seed: seed, brightness: Brightness.dark),
           themeMode: _themeMode,
+          builder: (context, child) => SelectionArea(
+            child: child ?? const SizedBox.shrink(),
+          ),
           home: home,
         );
       },
@@ -3988,6 +3991,10 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       }
 
       final primaryOrder = _resolvePrimaryProposal(order);
+      if (primaryOrder.financeClientApproved) {
+        continue;
+      }
+
       final proposalGroupCode = primaryOrder.proposalGroupCode.trim().isEmpty
           ? primaryOrder.code
           : primaryOrder.proposalGroupCode.trim();
@@ -4102,12 +4109,8 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       detailFilePath: primaryOrder.detailFilePath,
       materialFileName: '',
       materialFilePath: null,
-      estimatingIncludedVisits: List<EstimatingIncludedVisitEntry>.from(
-        primaryOrder.estimatingIncludedVisits,
-      ),
-      estimatingMaterials: List<EstimatingMaterialEntry>.from(
-        primaryOrder.estimatingMaterials,
-      ),
+      estimatingIncludedVisits: const [],
+      estimatingMaterials: const [],
       consolidatedProposalFileName: '',
       consolidatedProposalFilePath: null,
       contractFileName: '',
