@@ -536,8 +536,7 @@ extension InstallationWorkflowStatusPresentation on InstallationWorkflowStatus {
     InstallationWorkflowStatus.waiting => 'Aguardando',
     InstallationWorkflowStatus.dependsOnClient =>
       'inicializou e Depende do cliente',
-    InstallationWorkflowStatus.dependsOnDanf =>
-      'Inicializou e Depende da DANF',
+    InstallationWorkflowStatus.dependsOnDanf => 'Inicializou e Depende da DANF',
     InstallationWorkflowStatus.scheduled => 'Agendado',
     InstallationWorkflowStatus.doing => 'Em andamento',
     InstallationWorkflowStatus.done => 'Concluido',
@@ -949,6 +948,17 @@ class WorkflowOrder {
     required this.proposalVersion,
     required this.kind,
     required this.serviceDescription,
+    this.serviceOrderServiceType = '',
+    this.serviceOrderTravelCost = '',
+    this.serviceOrderTechnicalHourValue = '',
+    this.serviceOrderDanfClientDiscount = '',
+    this.serviceOrderMaterialsValue = '',
+    this.serviceOrderExecutionDate = '',
+    this.serviceOrderDepartureTime = '',
+    this.serviceOrderReturnTime = '',
+    this.serviceOrderTotalHours = '',
+    this.serviceOrderTotalHoursValue = '',
+    this.serviceOrderTotalValue = '',
     required this.serviceOrderFileName,
     this.serviceOrderFilePath,
     required this.financeClientApproved,
@@ -1033,6 +1043,17 @@ class WorkflowOrder {
   final int proposalVersion;
   final WorkflowOrderKind kind;
   final String serviceDescription;
+  final String serviceOrderServiceType;
+  final String serviceOrderTravelCost;
+  final String serviceOrderTechnicalHourValue;
+  final String serviceOrderDanfClientDiscount;
+  final String serviceOrderMaterialsValue;
+  final String serviceOrderExecutionDate;
+  final String serviceOrderDepartureTime;
+  final String serviceOrderReturnTime;
+  final String serviceOrderTotalHours;
+  final String serviceOrderTotalHoursValue;
+  final String serviceOrderTotalValue;
   final String serviceOrderFileName;
   final String? serviceOrderFilePath;
   final bool financeClientApproved;
@@ -1095,6 +1116,17 @@ class WorkflowOrder {
     int? proposalVersion,
     WorkflowOrderKind? kind,
     String? serviceDescription,
+    String? serviceOrderServiceType,
+    String? serviceOrderTravelCost,
+    String? serviceOrderTechnicalHourValue,
+    String? serviceOrderDanfClientDiscount,
+    String? serviceOrderMaterialsValue,
+    String? serviceOrderExecutionDate,
+    String? serviceOrderDepartureTime,
+    String? serviceOrderReturnTime,
+    String? serviceOrderTotalHours,
+    String? serviceOrderTotalHoursValue,
+    String? serviceOrderTotalValue,
     String? serviceOrderFileName,
     String? serviceOrderFilePath,
     bool? financeClientApproved,
@@ -1242,6 +1274,28 @@ class WorkflowOrder {
       proposalVersion: proposalVersion ?? this.proposalVersion,
       kind: kind ?? this.kind,
       serviceDescription: serviceDescription ?? this.serviceDescription,
+      serviceOrderServiceType:
+          serviceOrderServiceType ?? this.serviceOrderServiceType,
+      serviceOrderTravelCost:
+          serviceOrderTravelCost ?? this.serviceOrderTravelCost,
+      serviceOrderTechnicalHourValue:
+          serviceOrderTechnicalHourValue ?? this.serviceOrderTechnicalHourValue,
+      serviceOrderDanfClientDiscount:
+          serviceOrderDanfClientDiscount ?? this.serviceOrderDanfClientDiscount,
+      serviceOrderMaterialsValue:
+          serviceOrderMaterialsValue ?? this.serviceOrderMaterialsValue,
+      serviceOrderExecutionDate:
+          serviceOrderExecutionDate ?? this.serviceOrderExecutionDate,
+      serviceOrderDepartureTime:
+          serviceOrderDepartureTime ?? this.serviceOrderDepartureTime,
+      serviceOrderReturnTime:
+          serviceOrderReturnTime ?? this.serviceOrderReturnTime,
+      serviceOrderTotalHours:
+          serviceOrderTotalHours ?? this.serviceOrderTotalHours,
+      serviceOrderTotalHoursValue:
+          serviceOrderTotalHoursValue ?? this.serviceOrderTotalHoursValue,
+      serviceOrderTotalValue:
+          serviceOrderTotalValue ?? this.serviceOrderTotalValue,
       serviceOrderFileName: serviceOrderFileName ?? this.serviceOrderFileName,
       serviceOrderFilePath: serviceOrderFilePath ?? this.serviceOrderFilePath,
       financeClientApproved:
@@ -1369,6 +1423,17 @@ class WorkflowOrder {
       'proposalVersion': proposalVersion,
       'kind': kind.name,
       'serviceDescription': serviceDescription,
+      'serviceOrderServiceType': serviceOrderServiceType,
+      'serviceOrderTravelCost': serviceOrderTravelCost,
+      'serviceOrderTechnicalHourValue': serviceOrderTechnicalHourValue,
+      'serviceOrderDanfClientDiscount': serviceOrderDanfClientDiscount,
+      'serviceOrderMaterialsValue': serviceOrderMaterialsValue,
+      'serviceOrderExecutionDate': serviceOrderExecutionDate,
+      'serviceOrderDepartureTime': serviceOrderDepartureTime,
+      'serviceOrderReturnTime': serviceOrderReturnTime,
+      'serviceOrderTotalHours': serviceOrderTotalHours,
+      'serviceOrderTotalHoursValue': serviceOrderTotalHoursValue,
+      'serviceOrderTotalValue': serviceOrderTotalValue,
       'serviceOrderFileName': serviceOrderFileName,
       'serviceOrderFilePath': serviceOrderFilePath,
       'financeClientApproved': financeClientApproved,
@@ -1565,6 +1630,24 @@ class WorkflowOrder {
       proposalVersion: _readInt(map['proposalVersion'], fallback: 1),
       kind: _readWorkflowOrderKind((map['kind'] ?? '').toString()),
       serviceDescription: (map['serviceDescription'] ?? '').toString(),
+      serviceOrderServiceType: (map['serviceOrderServiceType'] ?? '')
+          .toString(),
+      serviceOrderTravelCost: (map['serviceOrderTravelCost'] ?? '').toString(),
+      serviceOrderTechnicalHourValue:
+          (map['serviceOrderTechnicalHourValue'] ?? '').toString(),
+      serviceOrderDanfClientDiscount:
+          (map['serviceOrderDanfClientDiscount'] ?? '').toString(),
+      serviceOrderMaterialsValue: (map['serviceOrderMaterialsValue'] ?? '')
+          .toString(),
+      serviceOrderExecutionDate: (map['serviceOrderExecutionDate'] ?? '')
+          .toString(),
+      serviceOrderDepartureTime: (map['serviceOrderDepartureTime'] ?? '')
+          .toString(),
+      serviceOrderReturnTime: (map['serviceOrderReturnTime'] ?? '').toString(),
+      serviceOrderTotalHours: (map['serviceOrderTotalHours'] ?? '').toString(),
+      serviceOrderTotalHoursValue: (map['serviceOrderTotalHoursValue'] ?? '')
+          .toString(),
+      serviceOrderTotalValue: (map['serviceOrderTotalValue'] ?? '').toString(),
       serviceOrderFileName: (map['serviceOrderFileName'] ?? '').toString(),
       serviceOrderFilePath: _readOptionalString(map['serviceOrderFilePath']),
       financeClientApproved: _readBool(map['financeClientApproved']),

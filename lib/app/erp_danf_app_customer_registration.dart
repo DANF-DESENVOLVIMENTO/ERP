@@ -542,8 +542,8 @@ List<TextInputFormatter> _currencyInputFormatters() {
 
 class _ProposalServiceFormRow {
   _ProposalServiceFormRow({required this.serviceName})
-    : consolidatedController = TextEditingController(),
-      prepareController = TextEditingController(),
+    : consolidatedController = TextEditingController(text: 'Não'),
+      prepareController = TextEditingController(text: 'Não'),
       observationsController = TextEditingController();
 
   final String serviceName;
@@ -933,7 +933,9 @@ class _ServiceOrderDialogState extends State<_ServiceOrderDialog> {
                                 child: TextButton.icon(
                                   onPressed: _cancelCreatingNewClient,
                                   icon: const Icon(Icons.search),
-                                  label: const Text('Pesquisar cliente existente'),
+                                  label: const Text(
+                                    'Pesquisar cliente existente',
+                                  ),
                                 ),
                               ),
                             ],
@@ -1635,7 +1637,8 @@ class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
         address: _addressController.text.trim(),
         proposalFileName: _proposalController.text.trim(),
         proposalFilePath: _proposalFilePath,
-        commercialProposalNumber: _commercialProposalNumberController.text.trim(),
+        commercialProposalNumber: _commercialProposalNumberController.text
+            .trim(),
         consolidatedValue: _consolidatedValueController.text.trim(),
         paymentType: _paymentTypeController.text.trim(),
         paymentMethod: _paymentMethodController.text.trim(),
@@ -1676,7 +1679,8 @@ class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
                   member.role.isNotEmpty,
             )
             .toList(growable: false),
-        whatsappGroupObservation: _whatsappGroupObservationController.text.trim(),
+        whatsappGroupObservation: _whatsappGroupObservationController.text
+            .trim(),
       ),
     );
   }
@@ -1813,7 +1817,8 @@ class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
                       const SizedBox(height: 16),
                       _AttachmentPickerField(
                         label: 'Arquivo da nova proposta (opcional)',
-                        helper: 'Anexe o arquivo da proposta, se já estiver disponível.',
+                        helper:
+                            'Anexe o arquivo da proposta, se já estiver disponível.',
                         controller: _proposalController,
                         onPick: _pickProposalFile,
                         validator: _validateAttachment,
@@ -1836,7 +1841,8 @@ class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
                             children: [
                               Expanded(
                                 child: _DialogField(
-                                  controller: _commercialProposalNumberController,
+                                  controller:
+                                      _commercialProposalNumberController,
                                   label: 'Número da proposta (opcional)',
                                   validator: (value) => _validateOptionalDigits(
                                     value,
@@ -1857,7 +1863,10 @@ class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
                                     value,
                                     label: 'o valor consolidado',
                                   ),
-                                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                  keyboardType:
+                                      const TextInputType.numberWithOptions(
+                                        decimal: true,
+                                      ),
                                   inputFormatters: _currencyInputFormatters(),
                                 ),
                               ),
@@ -1869,7 +1878,8 @@ class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
                             children: [
                               Expanded(
                                 child: _DialogChoiceField(
-                                  value: _paymentTypeController.text.trim().isEmpty
+                                  value:
+                                      _paymentTypeController.text.trim().isEmpty
                                       ? null
                                       : _paymentTypeController.text.trim(),
                                   label: 'Pagamento',
@@ -1885,7 +1895,10 @@ class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
                               const SizedBox(width: 16),
                               Expanded(
                                 child: _DialogChoiceField(
-                                  value: _paymentMethodController.text.trim().isEmpty
+                                  value:
+                                      _paymentMethodController.text
+                                          .trim()
+                                          .isEmpty
                                       ? null
                                       : _paymentMethodController.text.trim(),
                                   label: 'Forma de pagamento',
@@ -1893,7 +1906,8 @@ class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
                                   validator: _requiredField,
                                   onChanged: (value) {
                                     setState(() {
-                                      _paymentMethodController.text = value ?? '';
+                                      _paymentMethodController.text =
+                                          value ?? '';
                                     });
                                   },
                                 ),
@@ -1908,11 +1922,18 @@ class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
                                 child: _DialogField(
                                   controller: _installmentValueController,
                                   label: 'Valor da parcela',
-                                  validator: (value) => _validateCurrency(
-                                    value,
-                                    label: 'o valor da parcela',
-                                  ),
-                                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                  validator: (value) =>
+                                      _paymentMethodController.text.trim() ==
+                                          'À vista'
+                                      ? null
+                                      : _validateCurrency(
+                                          value,
+                                          label: 'o valor da parcela',
+                                        ),
+                                  keyboardType:
+                                      const TextInputType.numberWithOptions(
+                                        decimal: true,
+                                      ),
                                   inputFormatters: _currencyInputFormatters(),
                                 ),
                               ),
@@ -1921,10 +1942,14 @@ class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
                                 child: _DialogField(
                                   controller: _installmentCountController,
                                   label: 'Qtde de parcelas',
-                                  validator: (value) => _validateDigitsOnly(
-                                    value,
-                                    label: 'a quantidade de parcelas',
-                                  ),
+                                  validator: (value) =>
+                                      _paymentMethodController.text.trim() ==
+                                          'À vista'
+                                      ? null
+                                      : _validateDigitsOnly(
+                                          value,
+                                          label: 'a quantidade de parcelas',
+                                        ),
                                   keyboardType: TextInputType.number,
                                   inputFormatters: [
                                     FilteringTextInputFormatter.digitsOnly,
@@ -1953,10 +1978,10 @@ class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
                                 child: _DialogField(
                                   controller: _paymentDateController,
                                   label: 'Data',
-                                  validator: (value) => _validateDate(
-                                    value,
-                                    label: 'a data',
-                                  ),
+                                  validator: (value) =>
+                                      (value ?? '').trim().isEmpty
+                                      ? null
+                                      : _validateDate(value, label: 'a data'),
                                   keyboardType: TextInputType.number,
                                   inputFormatters: [
                                     FilteringTextInputFormatter.digitsOnly,
@@ -1982,11 +2007,15 @@ class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
                                 child: _DialogField(
                                   controller: _integratorValueController,
                                   label: 'Valor integrador',
-                                  validator: (value) => _validateOptionalCurrency(
-                                    value,
-                                    label: 'o valor integrador',
-                                  ),
-                                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                  validator: (value) =>
+                                      _validateOptionalCurrency(
+                                        value,
+                                        label: 'o valor integrador',
+                                      ),
+                                  keyboardType:
+                                      const TextInputType.numberWithOptions(
+                                        decimal: true,
+                                      ),
                                   inputFormatters: _currencyInputFormatters(),
                                 ),
                               ),
@@ -1995,11 +2024,15 @@ class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
                                 child: _DialogField(
                                   controller: _rtValueController,
                                   label: 'Valor RT',
-                                  validator: (value) => _validateOptionalCurrency(
-                                    value,
-                                    label: 'o valor RT',
-                                  ),
-                                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                  validator: (value) =>
+                                      _validateOptionalCurrency(
+                                        value,
+                                        label: 'o valor RT',
+                                      ),
+                                  keyboardType:
+                                      const TextInputType.numberWithOptions(
+                                        decimal: true,
+                                      ),
                                   inputFormatters: _currencyInputFormatters(),
                                 ),
                               ),
@@ -2032,30 +2065,40 @@ class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
                               decoration: BoxDecoration(
                                 color: Colors.white,
                                 borderRadius: BorderRadius.circular(16),
-                                border: Border.all(color: const Color(0xFFE0E0DD)),
+                                border: Border.all(
+                                  color: const Color(0xFFE0E0DD),
+                                ),
                               ),
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   Text(
                                     row.serviceName,
-                                    style: const TextStyle(fontWeight: FontWeight.w800),
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w800,
+                                    ),
                                   ),
                                   const SizedBox(height: 12),
                                   Row(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
                                     children: [
                                       Expanded(
                                         child: _DialogChoiceField(
-                                          value: row.consolidatedController.text.trim().isEmpty
+                                          value:
+                                              row.consolidatedController.text
+                                                  .trim()
+                                                  .isEmpty
                                               ? null
-                                              : row.consolidatedController.text.trim(),
+                                              : row.consolidatedController.text
+                                                    .trim(),
                                           label: 'Consolidado',
                                           options: _yesNoOptions,
                                           validator: _requiredField,
                                           onChanged: (value) {
                                             setState(() {
-                                              row.consolidatedController.text = value ?? '';
+                                              row.consolidatedController.text =
+                                                  value ?? '';
                                             });
                                           },
                                         ),
@@ -2063,15 +2106,20 @@ class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
                                       const SizedBox(width: 12),
                                       Expanded(
                                         child: _DialogChoiceField(
-                                          value: row.prepareController.text.trim().isEmpty
+                                          value:
+                                              row.prepareController.text
+                                                  .trim()
+                                                  .isEmpty
                                               ? null
-                                              : row.prepareController.text.trim(),
+                                              : row.prepareController.text
+                                                    .trim(),
                                           label: 'Preparar no projeto',
                                           options: _yesNoOptions,
                                           validator: _requiredField,
                                           onChanged: (value) {
                                             setState(() {
-                                              row.prepareController.text = value ?? '';
+                                              row.prepareController.text =
+                                                  value ?? '';
                                             });
                                           },
                                         ),
@@ -2095,7 +2143,10 @@ class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
                             children: [
                               Expanded(
                                 child: _DialogChoiceField(
-                                  value: _isDanfClientController.text.trim().isEmpty
+                                  value:
+                                      _isDanfClientController.text
+                                          .trim()
+                                          .isEmpty
                                       ? null
                                       : _isDanfClientController.text.trim(),
                                   label: 'Já é cliente DANF?',
@@ -2103,7 +2154,8 @@ class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
                                   validator: _requiredField,
                                   onChanged: (value) {
                                     setState(() {
-                                      _isDanfClientController.text = value ?? '';
+                                      _isDanfClientController.text =
+                                          value ?? '';
                                     });
                                   },
                                 ),
@@ -2111,15 +2163,20 @@ class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
                               const SizedBox(width: 16),
                               Expanded(
                                 child: _DialogChoiceField(
-                                  value: _danfInstallerNameController.text.trim().isEmpty
+                                  value:
+                                      _danfInstallerNameController.text
+                                          .trim()
+                                          .isEmpty
                                       ? null
-                                      : _danfInstallerNameController.text.trim(),
+                                      : _danfInstallerNameController.text
+                                            .trim(),
                                   label: 'DANF que vai fazer a instalação?',
                                   options: _yesNoOptions,
                                   validator: _requiredField,
                                   onChanged: (value) {
                                     setState(() {
-                                      _danfInstallerNameController.text = value ?? '';
+                                      _danfInstallerNameController.text =
+                                          value ?? '';
                                     });
                                   },
                                 ),
@@ -2128,7 +2185,8 @@ class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
                           ),
                           const SizedBox(height: 16),
                           _DialogChoiceField(
-                            value: _canHaveDanfPlateController.text.trim().isEmpty
+                            value:
+                                _canHaveDanfPlateController.text.trim().isEmpty
                                 ? null
                                 : _canHaveDanfPlateController.text.trim(),
                             label: 'Pode ter placa da DANF na obra?',
@@ -2142,7 +2200,8 @@ class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
                           ),
                           const SizedBox(height: 16),
                           _DialogChoiceField(
-                            value: _hasWhatsappGroupController.text.trim().isEmpty
+                            value:
+                                _hasWhatsappGroupController.text.trim().isEmpty
                                 ? null
                                 : _hasWhatsappGroupController.text.trim(),
                             label: 'Tem grupo criado no WhatsApp?',
@@ -2184,7 +2243,9 @@ class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
                               decoration: BoxDecoration(
                                 color: Colors.white,
                                 borderRadius: BorderRadius.circular(16),
-                                border: Border.all(color: const Color(0xFFE0E0DD)),
+                                border: Border.all(
+                                  color: const Color(0xFFE0E0DD),
+                                ),
                               ),
                               child: Column(
                                 children: [
@@ -2192,44 +2253,57 @@ class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
                                     children: [
                                       Text(
                                         'Membro ${index + 1}',
-                                        style: const TextStyle(fontWeight: FontWeight.w700),
+                                        style: const TextStyle(
+                                          fontWeight: FontWeight.w700,
+                                        ),
                                       ),
                                       const Spacer(),
                                       if (_whatsappMemberRows.length > 1)
                                         IconButton(
-                                          onPressed: () => _removeWhatsappMemberRow(index),
-                                          icon: const Icon(Icons.delete_outline),
+                                          onPressed: () =>
+                                              _removeWhatsappMemberRow(index),
+                                          icon: const Icon(
+                                            Icons.delete_outline,
+                                          ),
                                         ),
                                     ],
                                   ),
                                   Row(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
                                     children: [
                                       Expanded(
                                         child: _DialogField(
-                                          controller: _whatsappMemberRows[index].nameController,
+                                          controller: _whatsappMemberRows[index]
+                                              .nameController,
                                           label: 'Nome',
-                                          validator: _requiredField,
+                                          validator: (_) => null,
                                         ),
                                       ),
                                       const SizedBox(width: 12),
                                       Expanded(
                                         child: _DialogField(
-                                          controller: _whatsappMemberRows[index].phoneController,
+                                          controller: _whatsappMemberRows[index]
+                                              .phoneController,
                                           label: 'Telefone',
-                                          validator: _validatePhoneNumber,
+                                          validator: (value) =>
+                                              (value ?? '').trim().isEmpty
+                                              ? null
+                                              : _validatePhoneNumber(value),
                                           keyboardType: TextInputType.number,
                                           inputFormatters: [
-                                            FilteringTextInputFormatter.digitsOnly,
+                                            FilteringTextInputFormatter
+                                                .digitsOnly,
                                           ],
                                         ),
                                       ),
                                       const SizedBox(width: 12),
                                       Expanded(
                                         child: _DialogField(
-                                          controller: _whatsappMemberRows[index].roleController,
+                                          controller: _whatsappMemberRows[index]
+                                              .roleController,
                                           label: 'Cargo / função',
-                                          validator: _requiredField,
+                                          validator: (_) => null,
                                         ),
                                       ),
                                     ],
@@ -3223,10 +3297,15 @@ class _CustomerRegistrationDialogState
                                     child: _DialogField(
                                       controller: _installmentValueController,
                                       label: 'Valor da parcela',
-                                      validator: (value) => _validateCurrency(
-                                        value,
-                                        label: 'o valor da parcela',
-                                      ),
+                                      validator: (value) =>
+                                          _paymentMethodController.text
+                                                  .trim() ==
+                                              'À vista'
+                                          ? null
+                                          : _validateCurrency(
+                                              value,
+                                              label: 'o valor da parcela',
+                                            ),
                                       keyboardType:
                                           const TextInputType.numberWithOptions(
                                             decimal: true,
@@ -3240,10 +3319,15 @@ class _CustomerRegistrationDialogState
                                     child: _DialogField(
                                       controller: _installmentCountController,
                                       label: 'Qtde de parcelas',
-                                      validator: (value) => _validateDigitsOnly(
-                                        value,
-                                        label: 'a quantidade de parcelas',
-                                      ),
+                                      validator: (value) =>
+                                          _paymentMethodController.text
+                                                  .trim() ==
+                                              'À vista'
+                                          ? null
+                                          : _validateDigitsOnly(
+                                              value,
+                                              label: 'a quantidade de parcelas',
+                                            ),
                                       keyboardType: TextInputType.number,
                                       inputFormatters: [
                                         FilteringTextInputFormatter.digitsOnly,
@@ -3273,10 +3357,13 @@ class _CustomerRegistrationDialogState
                                     child: _DialogField(
                                       controller: _paymentDateController,
                                       label: 'Data',
-                                      validator: (value) => _validateDate(
-                                        value,
-                                        label: 'a data',
-                                      ),
+                                      validator: (value) =>
+                                          (value ?? '').trim().isEmpty
+                                          ? null
+                                          : _validateDate(
+                                              value,
+                                              label: 'a data',
+                                            ),
                                       keyboardType: TextInputType.number,
                                       inputFormatters: [
                                         FilteringTextInputFormatter.digitsOnly,
@@ -3592,7 +3679,7 @@ class _CustomerRegistrationDialogState
                                                   _whatsappMemberRows[index]
                                                       .nameController,
                                               label: 'Nome',
-                                              validator: _requiredField,
+                                              validator: (_) => null,
                                             ),
                                           ),
                                           const SizedBox(width: 12),
@@ -3602,7 +3689,10 @@ class _CustomerRegistrationDialogState
                                                   _whatsappMemberRows[index]
                                                       .phoneController,
                                               label: 'Telefone',
-                                              validator: _validatePhoneNumber,
+                                              validator: (value) =>
+                                                  (value ?? '').trim().isEmpty
+                                                  ? null
+                                                  : _validatePhoneNumber(value),
                                               keyboardType:
                                                   TextInputType.number,
                                               inputFormatters: [
@@ -3618,7 +3708,7 @@ class _CustomerRegistrationDialogState
                                                   _whatsappMemberRows[index]
                                                       .roleController,
                                               label: 'Cargo / função',
-                                              validator: _requiredField,
+                                              validator: (_) => null,
                                             ),
                                           ),
                                         ],

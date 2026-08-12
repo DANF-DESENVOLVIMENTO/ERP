@@ -1,5 +1,781 @@
 part of 'erp_danf_app.dart';
 
+class _ServiceOrderRealizedDraft {
+  const _ServiceOrderRealizedDraft({
+    required this.executionDate,
+    required this.executionReport,
+    required this.departureTime,
+    required this.returnTime,
+    required this.totalHours,
+    required this.travelValue,
+    required this.materialsValue,
+    required this.totalHoursValue,
+    required this.totalValue,
+  });
+
+  final String executionDate;
+  final String executionReport;
+  final String departureTime;
+  final String returnTime;
+  final String totalHours;
+  final String travelValue;
+  final String materialsValue;
+  final String totalHoursValue;
+  final String totalValue;
+}
+
+class _ServiceOrderRealizedDialog extends StatefulWidget {
+  const _ServiceOrderRealizedDialog({required this.order});
+  final WorkflowOrder order;
+
+  @override
+  State<_ServiceOrderRealizedDialog> createState() =>
+      _ServiceOrderRealizedDialogState();
+}
+
+class _ServiceOrderRealizedDialogState
+    extends State<_ServiceOrderRealizedDialog> {
+  final _formKey = GlobalKey<FormState>();
+  late final List<TextEditingController> _controllers;
+
+  TextEditingController get _date => _controllers[0];
+  TextEditingController get _report => _controllers[1];
+  TextEditingController get _departure => _controllers[2];
+  TextEditingController get _return => _controllers[3];
+  TextEditingController get _hours => _controllers[4];
+  TextEditingController get _travel => _controllers[5];
+  TextEditingController get _materials => _controllers[6];
+  TextEditingController get _hoursValue => _controllers[7];
+  TextEditingController get _total => _controllers[8];
+
+  @override
+  void initState() {
+    super.initState();
+    final completedVisit = widget.order.installationVisitHistory.reversed
+        .where((visit) => visit.serviceTime.trim().isNotEmpty)
+        .firstOrNull;
+    _controllers = [
+      TextEditingController(
+        text: widget.order.serviceOrderExecutionDate.trim().isNotEmpty
+            ? widget.order.serviceOrderExecutionDate
+            : _formatDate(completedVisit?.createdAt ?? DateTime.now()),
+      ),
+      TextEditingController(text: widget.order.installationNotes),
+      TextEditingController(text: widget.order.serviceOrderDepartureTime),
+      TextEditingController(text: widget.order.serviceOrderReturnTime),
+      TextEditingController(
+        text: widget.order.serviceOrderTotalHours.trim().isNotEmpty
+            ? widget.order.serviceOrderTotalHours
+            : completedVisit?.serviceTime ?? '',
+      ),
+      TextEditingController(text: widget.order.serviceOrderTravelCost),
+      TextEditingController(text: widget.order.serviceOrderMaterialsValue),
+      TextEditingController(text: widget.order.serviceOrderTotalHoursValue),
+      TextEditingController(text: widget.order.serviceOrderTotalValue),
+    ];
+  }
+
+  @override
+  void dispose() {
+    for (final controller in _controllers) {
+      controller.dispose();
+    }
+    super.dispose();
+  }
+
+  String? _required(String? value) =>
+      (value ?? '').trim().isEmpty ? 'Campo obrigatório.' : null;
+
+  void _submit() {
+    if (!(_formKey.currentState?.validate() ?? false)) return;
+    Navigator.of(context).pop(
+      _ServiceOrderRealizedDraft(
+        executionDate: _date.text.trim(),
+        executionReport: _report.text.trim(),
+        departureTime: _departure.text.trim(),
+        returnTime: _return.text.trim(),
+        totalHours: _hours.text.trim(),
+        travelValue: _travel.text.trim(),
+        materialsValue: _materials.text.trim(),
+        totalHoursValue: _hoursValue.text.trim(),
+        totalValue: _total.text.trim(),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final accent = WorkflowStage.estimating.color;
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 820, maxHeight: 850),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF1F5F9),
+          borderRadius: BorderRadius.circular(28),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: Column(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(22),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [accent, Color.lerp(accent, Colors.black, .4)!],
+                ),
+              ),
+              child: Row(
+                children: [
+                  const Icon(
+                    Icons.assignment_turned_in_outlined,
+                    color: Colors.white,
+                    size: 30,
+                  ),
+                  const SizedBox(width: 14),
+                  const Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'OS realizada',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 22,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        Text(
+                          'Revise a execução e feche os valores comerciais.',
+                          style: TextStyle(color: Color(0xFFE2E8F0)),
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    style: IconButton.styleFrom(
+                      backgroundColor: Colors.white,
+                      foregroundColor: accent,
+                    ),
+                    icon: const Icon(Icons.close),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(20),
+                child: Form(
+                  key: _formKey,
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      final width = constraints.maxWidth >= 650
+                          ? (constraints.maxWidth - 12) / 2
+                          : constraints.maxWidth;
+                      Widget field(
+                        TextEditingController controller,
+                        String label, {
+                        bool money = false,
+                      }) => SizedBox(
+                        width: width,
+                        child: _DialogField(
+                          controller: controller,
+                          label: label,
+                          validator: _required,
+                          keyboardType: money
+                              ? const TextInputType.numberWithOptions(
+                                  decimal: true,
+                                )
+                              : TextInputType.text,
+                          inputFormatters: money
+                              ? _currencyInputFormatters()
+                              : null,
+                        ),
+                      );
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'Execução',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                          const SizedBox(height: 14),
+                          Wrap(
+                            spacing: 12,
+                            runSpacing: 12,
+                            children: [
+                              field(_date, 'Data da execução'),
+                              field(_hours, 'Total de horas trabalhadas'),
+                              field(_departure, 'Horário de saída da DANF'),
+                              field(_return, 'Horário de retorno na DANF'),
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+                          _DialogField(
+                            controller: _report,
+                            label: 'Execução / relatório do serviço',
+                            validator: _required,
+                            maxLines: 5,
+                          ),
+                          const SizedBox(height: 22),
+                          const Text(
+                            'Comercial',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                          const SizedBox(height: 14),
+                          Wrap(
+                            spacing: 12,
+                            runSpacing: 12,
+                            children: [
+                              field(
+                                _travel,
+                                'Valor de deslocamento (R\$)',
+                                money: true,
+                              ),
+                              field(
+                                _materials,
+                                'Valor de materiais (R\$)',
+                                money: true,
+                              ),
+                              field(
+                                _hoursValue,
+                                'Valor total das horas (R\$)',
+                                money: true,
+                              ),
+                              field(_total, 'Valor total (R\$)', money: true),
+                            ],
+                          ),
+                        ],
+                      );
+                    },
+                  ),
+                ),
+              ),
+            ),
+            Container(
+              color: Colors.white,
+              padding: const EdgeInsets.all(18),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: const Text('Cancelar'),
+                  ),
+                  const SizedBox(width: 10),
+                  FilledButton.icon(
+                    onPressed: _submit,
+                    icon: const Icon(Icons.save_outlined),
+                    label: const Text('Salvar OS realizada'),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ServiceOrderBudgetDraft {
+  const _ServiceOrderBudgetDraft({
+    required this.proposalNumber,
+    required this.serviceType,
+    required this.serviceDescription,
+    required this.travelCost,
+    required this.technicalHourValue,
+    required this.danfClientDiscount,
+    required this.materialsValue,
+  });
+
+  final String proposalNumber;
+  final String serviceType;
+  final String serviceDescription;
+  final String travelCost;
+  final String technicalHourValue;
+  final String danfClientDiscount;
+  final String materialsValue;
+}
+
+class _ServiceOrderBudgetDialog extends StatefulWidget {
+  const _ServiceOrderBudgetDialog({required this.order});
+
+  final WorkflowOrder order;
+
+  @override
+  State<_ServiceOrderBudgetDialog> createState() =>
+      _ServiceOrderBudgetDialogState();
+}
+
+class _ServiceOrderBudgetDialogState extends State<_ServiceOrderBudgetDialog> {
+  final _formKey = GlobalKey<FormState>();
+  late final TextEditingController _proposalNumberController;
+  late final TextEditingController _serviceDescriptionController;
+  late final TextEditingController _travelCostController;
+  late final TextEditingController _technicalHourValueController;
+  late final TextEditingController _danfClientDiscountController;
+  late final TextEditingController _materialsValueController;
+  late String _serviceType;
+
+  static const _serviceTypes = [
+    'Orçamento',
+    'Inspeção técnica',
+    'Manutenção preventiva',
+    'Assistência técnica',
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _proposalNumberController = TextEditingController(
+      text: widget.order.commercialProposalNumber,
+    );
+    _serviceDescriptionController = TextEditingController(
+      text: widget.order.serviceDescription,
+    );
+    _travelCostController = TextEditingController(
+      text: widget.order.serviceOrderTravelCost.trim().isEmpty
+          ? '80,00'
+          : widget.order.serviceOrderTravelCost,
+    );
+    _technicalHourValueController = TextEditingController(
+      text: widget.order.serviceOrderTechnicalHourValue.trim().isEmpty
+          ? '200,00'
+          : widget.order.serviceOrderTechnicalHourValue,
+    );
+    _danfClientDiscountController = TextEditingController(
+      text: widget.order.serviceOrderDanfClientDiscount.trim().isEmpty
+          ? '80,00'
+          : widget.order.serviceOrderDanfClientDiscount,
+    );
+    _materialsValueController = TextEditingController(
+      text: widget.order.serviceOrderMaterialsValue,
+    );
+    _serviceType = _serviceTypes.contains(widget.order.serviceOrderServiceType)
+        ? widget.order.serviceOrderServiceType
+        : 'Assistência técnica';
+  }
+
+  @override
+  void dispose() {
+    _proposalNumberController.dispose();
+    _serviceDescriptionController.dispose();
+    _travelCostController.dispose();
+    _technicalHourValueController.dispose();
+    _danfClientDiscountController.dispose();
+    _materialsValueController.dispose();
+    super.dispose();
+  }
+
+  String? _required(String? value) =>
+      (value ?? '').trim().isEmpty ? 'Campo obrigatório.' : null;
+
+  void _submit() {
+    if (!(_formKey.currentState?.validate() ?? false)) {
+      return;
+    }
+    Navigator.of(context).pop(
+      _ServiceOrderBudgetDraft(
+        proposalNumber: _proposalNumberController.text.trim(),
+        serviceType: _serviceType,
+        serviceDescription: _serviceDescriptionController.text.trim(),
+        travelCost: _travelCostController.text.trim(),
+        technicalHourValue: _technicalHourValueController.text.trim(),
+        danfClientDiscount: _danfClientDiscountController.text.trim(),
+        materialsValue: _materialsValueController.text.trim(),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final screenWidth = MediaQuery.sizeOf(context).width;
+    final accentColor = WorkflowStage.estimating.color;
+
+    Widget infoTile(IconData icon, String label, String value) => Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF8FAFC),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 38,
+            height: 38,
+            decoration: BoxDecoration(
+              color: accentColor.withValues(alpha: 0.10),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(icon, size: 20, color: accentColor),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label.toUpperCase(),
+                  style: const TextStyle(
+                    color: Color(0xFF64748B),
+                    fontSize: 10,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0.7,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  value.trim().isEmpty ? 'Não informado' : value,
+                  style: const TextStyle(fontWeight: FontWeight.w700),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+
+    Widget section({
+      required String title,
+      required String subtitle,
+      required IconData icon,
+      required Widget child,
+    }) => Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x0A0F172A),
+            blurRadius: 18,
+            offset: Offset(0, 6),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(icon, color: accentColor),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: const TextStyle(
+                        fontSize: 17,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    Text(
+                      subtitle,
+                      style: const TextStyle(
+                        color: Color(0xFF64748B),
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          child,
+        ],
+      ),
+    );
+
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      insetPadding: EdgeInsets.symmetric(
+        horizontal: screenWidth < 640 ? 12 : 32,
+        vertical: 20,
+      ),
+      child: Container(
+        constraints: const BoxConstraints(maxWidth: 880, maxHeight: 900),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF1F5F9),
+          borderRadius: BorderRadius.circular(28),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: Column(
+          children: [
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(22),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [
+                    accentColor,
+                    Color.lerp(accentColor, Colors.black, 0.42)!,
+                  ],
+                ),
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.16),
+                      borderRadius: BorderRadius.circular(15),
+                    ),
+                    child: const Icon(
+                      Icons.request_quote_outlined,
+                      color: Colors.white,
+                      size: 28,
+                    ),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Orçamento da ordem de serviço',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 22,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        const SizedBox(height: 3),
+                        Text(
+                          '${widget.order.code} • Preencha as condições do atendimento',
+                          style: const TextStyle(color: Color(0xFFCBD5E1)),
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    style: IconButton.styleFrom(
+                      backgroundColor: Colors.white,
+                      foregroundColor: accentColor,
+                      hoverColor: const Color(0xFFE2E8F0),
+                    ),
+                    icon: const Icon(Icons.close),
+                    tooltip: 'Fechar',
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(20),
+                child: Form(
+                  key: _formKey,
+                  child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      final twoColumns = constraints.maxWidth >= 680;
+                      final fieldWidth = twoColumns
+                          ? (constraints.maxWidth - 12) / 2
+                          : constraints.maxWidth;
+                      return Column(
+                        children: [
+                          section(
+                            title: 'Dados do cliente',
+                            subtitle:
+                                'Informações trazidas automaticamente da OS',
+                            icon: Icons.person_outline,
+                            child: Wrap(
+                              spacing: 12,
+                              runSpacing: 12,
+                              children: [
+                                SizedBox(
+                                  width: fieldWidth,
+                                  child: infoTile(
+                                    Icons.business_outlined,
+                                    'Cliente',
+                                    widget.order.client.name,
+                                  ),
+                                ),
+                                SizedBox(
+                                  width: fieldWidth,
+                                  child: infoTile(
+                                    Icons.phone_outlined,
+                                    'Contato',
+                                    widget.order.client.phone,
+                                  ),
+                                ),
+                                SizedBox(
+                                  width: constraints.maxWidth,
+                                  child: infoTile(
+                                    Icons.location_on_outlined,
+                                    'Endereço',
+                                    widget.order.address,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          section(
+                            title: 'Dados do atendimento',
+                            subtitle: 'Identificação e escopo da proposta',
+                            icon: Icons.assignment_outlined,
+                            child: Column(
+                              children: [
+                                Wrap(
+                                  spacing: 12,
+                                  runSpacing: 12,
+                                  children: [
+                                    SizedBox(
+                                      width: fieldWidth,
+                                      child: _DialogField(
+                                        controller: _proposalNumberController,
+                                        label: 'Número da proposta',
+                                        validator: _required,
+                                      ),
+                                    ),
+                                    SizedBox(
+                                      width: fieldWidth,
+                                      child: DropdownButtonFormField<String>(
+                                        initialValue: _serviceType,
+                                        decoration: const InputDecoration(
+                                          labelText: 'Tipo do atendimento',
+                                          border: OutlineInputBorder(),
+                                          prefixIcon: Icon(
+                                            Icons.design_services_outlined,
+                                          ),
+                                        ),
+                                        items: _serviceTypes
+                                            .map(
+                                              (type) => DropdownMenuItem(
+                                                value: type,
+                                                child: Text(type),
+                                              ),
+                                            )
+                                            .toList(growable: false),
+                                        onChanged: (value) {
+                                          if (value != null) {
+                                            setState(
+                                              () => _serviceType = value,
+                                            );
+                                          }
+                                        },
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                const SizedBox(height: 12),
+                                _DialogField(
+                                  controller: _serviceDescriptionController,
+                                  label: 'Serviço solicitado',
+                                  validator: _required,
+                                  maxLines: 4,
+                                ),
+                              ],
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          section(
+                            title: 'Condições comerciais',
+                            subtitle:
+                                'Valores utilizados na composição do orçamento',
+                            icon: Icons.payments_outlined,
+                            child: Wrap(
+                              spacing: 12,
+                              runSpacing: 12,
+                              children: [
+                                for (final field in [
+                                  (
+                                    _travelCostController,
+                                    'Custo de deslocamento',
+                                    false,
+                                  ),
+                                  (
+                                    _technicalHourValueController,
+                                    'Valor da hora técnica',
+                                    false,
+                                  ),
+                                  (
+                                    _danfClientDiscountController,
+                                    'Desconto cliente DANF',
+                                    false,
+                                  ),
+                                  (
+                                    _materialsValueController,
+                                    'Valor de materiais',
+                                    true,
+                                  ),
+                                ])
+                                  SizedBox(
+                                    width: fieldWidth,
+                                    child: _DialogField(
+                                      controller: field.$1,
+                                      label:
+                                          '${field.$2} (R\$)${field.$3 ? ' • opcional' : ''}',
+                                      validator: field.$3
+                                          ? (_) => null
+                                          : _required,
+                                      keyboardType:
+                                          const TextInputType.numberWithOptions(
+                                            decimal: true,
+                                          ),
+                                      inputFormatters:
+                                          _currencyInputFormatters(),
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      );
+                    },
+                  ),
+                ),
+              ),
+            ),
+            Container(
+              padding: const EdgeInsets.fromLTRB(20, 14, 20, 20),
+              decoration: const BoxDecoration(
+                color: Colors.white,
+                border: Border(top: BorderSide(color: Color(0xFFE2E8F0))),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: const Text('Cancelar'),
+                  ),
+                  const SizedBox(width: 10),
+                  FilledButton.icon(
+                    onPressed: _submit,
+                    style: FilledButton.styleFrom(
+                      backgroundColor: accentColor,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 20,
+                        vertical: 16,
+                      ),
+                    ),
+                    icon: const Icon(Icons.save_outlined),
+                    label: const Text('Salvar orçamento'),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 List<String> _estimatingIncludedVisitLabelsForOrder(WorkflowOrder order) {
   final labels = <String>['Projeto'];
   for (final service in order.proposalServices) {

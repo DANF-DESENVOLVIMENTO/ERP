@@ -6,6 +6,7 @@ class _InstallationScheduleCard extends StatelessWidget {
     required this.workspaceProfiles,
     required this.canEdit,
     this.onScheduleInstallation,
+    this.onCompleteInstallation,
     this.onToggleExecutionItem,
   });
 
@@ -13,6 +14,7 @@ class _InstallationScheduleCard extends StatelessWidget {
   final List<EmployeeWorkspaceProfile> workspaceProfiles;
   final bool canEdit;
   final Future<void> Function()? onScheduleInstallation;
+  final Future<void> Function()? onCompleteInstallation;
   final Future<void> Function(int visitIndex, String item)?
   onToggleExecutionItem;
 
@@ -46,6 +48,7 @@ class _InstallationScheduleCard extends StatelessWidget {
     final notes = plannedVisit?.notes.trim() ?? order.installationNotes.trim();
     final status = order.installationWorkflowStatus;
     final plannedItems = plannedVisit?.plannedItems ?? const <String>[];
+    final isExecutionDay = hasSchedule && _isDateToday(scheduledAt);
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -75,13 +78,32 @@ class _InstallationScheduleCard extends StatelessWidget {
                   ],
                 ),
               ),
-              if (canEdit && onScheduleInstallation != null)
-                OutlinedButton.icon(
-                  onPressed: () async {
-                    await onScheduleInstallation!();
-                  },
-                  icon: const Icon(Icons.edit_calendar_outlined),
-                  label: Text(hasSchedule ? 'Reagendar' : 'Agendar'),
+              if (canEdit)
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  alignment: WrapAlignment.end,
+                  children: [
+                    if (isExecutionDay && onCompleteInstallation != null)
+                      FilledButton.icon(
+                        onPressed: () async {
+                          await onCompleteInstallation!();
+                        },
+                        style: FilledButton.styleFrom(
+                          backgroundColor: const Color(0xFF15803D),
+                        ),
+                        icon: const Icon(Icons.task_alt_rounded),
+                        label: const Text('Concluir'),
+                      ),
+                    if (onScheduleInstallation != null)
+                      OutlinedButton.icon(
+                        onPressed: () async {
+                          await onScheduleInstallation!();
+                        },
+                        icon: const Icon(Icons.edit_calendar_outlined),
+                        label: Text(hasSchedule ? 'Reagendar' : 'Agendar'),
+                      ),
+                  ],
                 ),
             ],
           ),
@@ -268,7 +290,7 @@ class _InstallationScheduleCard extends StatelessWidget {
                       if (visit.serviceTime.trim().isNotEmpty) ...[
                         const SizedBox(height: 4),
                         Text(
-                          'Tempo de serviço: ${visit.serviceTime}',
+                          'Horas do serviço: ${visit.serviceTime}',
                           style: TextStyle(color: secondaryTextColor),
                         ),
                       ],

@@ -7,6 +7,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
@@ -157,11 +158,6 @@ const List<_ServiceOrderFlowStepData> _serviceOrderFlowSteps = [
     color: Color(0xFFB45309),
   ),
   _ServiceOrderFlowStepData(
-    label: 'PDF da OS',
-    icon: Icons.picture_as_pdf_outlined,
-    color: Color(0xFF2563EB),
-  ),
-  _ServiceOrderFlowStepData(
     label: 'OS Aprovada',
     icon: Icons.verified_outlined,
     color: Color(0xFF15803D),
@@ -190,25 +186,22 @@ const List<_ServiceOrderFlowStepData> _serviceOrderFlowSteps = [
 
 int _serviceOrderFlowStageIndex(WorkflowOrder order) {
   if (order.serviceOrderFinanceStatus == ServiceOrderFinanceStatus.paid) {
-    return 6;
+    return 5;
   }
   if (order.serviceOrderFinanceStatus == ServiceOrderFinanceStatus.concluded) {
-    return 5;
+    return 4;
   }
   if (order.installationWorkflowStatus == InstallationWorkflowStatus.done &&
       order.currentStage == WorkflowStage.estimating &&
       order.financeClientApproved) {
-    return 4;
+    return 3;
   }
   if (order.currentStage == WorkflowStage.installation ||
       order.installationWorkflowStatus != InstallationWorkflowStatus.waiting) {
-    return 3;
+    return 2;
   }
   if (order.financeClientApproved ||
       order.serviceOrderFinanceStatus == ServiceOrderFinanceStatus.approved) {
-    return 2;
-  }
-  if (order.serviceOrderFileName.trim().isNotEmpty) {
     return 1;
   }
   return 0;
@@ -220,32 +213,28 @@ String _serviceOrderFlowHistory(WorkflowOrder order, int stepIndex) {
       return order.history[WorkflowStage.relationship] ??
           'Aguardando criação da OS';
     case 1:
-      return order.serviceOrderFileName.trim().isNotEmpty
-          ? (order.history[WorkflowStage.estimating] ?? 'PDF da OS emitido')
-          : 'Aguardando PDF da OS';
-    case 2:
       return order.financeClientApproved
           ? (order.history[WorkflowStage.finance] ??
                 'OS aprovada no Financeiro')
           : 'Aguardando aprovação do cliente';
-    case 3:
+    case 2:
       return order.installationWorkflowStatus ==
               InstallationWorkflowStatus.waiting
           ? 'Aguardando instalação'
           : (order.history[WorkflowStage.installation] ??
                 'Instalação em andamento');
-    case 4:
+    case 3:
       return order.installationWorkflowStatus == InstallationWorkflowStatus.done
           ? (order.history[WorkflowStage.estimating] ?? 'OS realizada')
           : 'Aguardando OS realizada';
-    case 5:
+    case 4:
       return order.serviceOrderFinanceStatus.index >=
               ServiceOrderFinanceStatus.concluded.index
           ? (order.serviceOrderFinanceStatus == ServiceOrderFinanceStatus.paid
                 ? 'OS concluída e enviada para pagamento.'
                 : (order.history[WorkflowStage.finance] ?? 'OS concluída'))
           : 'Aguardando OS concluída';
-    case 6:
+    case 5:
       return order.serviceOrderFinanceStatus == ServiceOrderFinanceStatus.paid
           ? (order.history[WorkflowStage.finance] ??
                 'Pagamento da OS registrado')
@@ -253,6 +242,26 @@ String _serviceOrderFlowHistory(WorkflowOrder order, int stepIndex) {
     default:
       return 'Aguardando etapa';
   }
+}
+
+bool _hasServiceOrderBudgetData(WorkflowOrder order) {
+  return order.commercialProposalNumber.trim().isNotEmpty &&
+      order.serviceOrderServiceType.trim().isNotEmpty &&
+      order.serviceDescription.trim().isNotEmpty &&
+      order.serviceOrderTravelCost.trim().isNotEmpty &&
+      order.serviceOrderTechnicalHourValue.trim().isNotEmpty &&
+      order.serviceOrderDanfClientDiscount.trim().isNotEmpty;
+}
+
+bool _hasServiceOrderRealizedData(WorkflowOrder order) {
+  return order.serviceOrderExecutionDate.trim().isNotEmpty &&
+      order.installationNotes.trim().isNotEmpty &&
+      order.serviceOrderDepartureTime.trim().isNotEmpty &&
+      order.serviceOrderReturnTime.trim().isNotEmpty &&
+      order.serviceOrderTotalHours.trim().isNotEmpty &&
+      order.serviceOrderMaterialsValue.trim().isNotEmpty &&
+      order.serviceOrderTotalHoursValue.trim().isNotEmpty &&
+      order.serviceOrderTotalValue.trim().isNotEmpty;
 }
 
 List<EmployeeWorkspaceProfile> _assemblyAssignedProfilesForOrder(
@@ -400,6 +409,13 @@ class _ErpDanfAppState extends State<ErpDanfApp> {
       theme: _buildTheme(seed: seed, brightness: Brightness.light),
       darkTheme: _buildTheme(seed: seed, brightness: Brightness.dark),
       themeMode: _themeMode,
+      locale: const Locale('pt', 'BR'),
+      supportedLocales: const [Locale('pt', 'BR')],
+      localizationsDelegates: const [
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
       home: SelectionArea(child: home),
     );
   }
@@ -496,21 +512,21 @@ ThemeData _buildTheme({required Color seed, required Brightness brightness}) {
   final isDark = brightness == Brightness.dark;
 
   final backgroundColor = isDark
-      ? const Color(0xFF18191B)
-      : const Color(0xFFF7F7F5);
-  final surfaceColor = isDark ? const Color(0xFF202225) : Colors.white;
+      ? const Color(0xFF0F172A)
+      : const Color(0xFFF1F5F9);
+  final surfaceColor = isDark ? const Color(0xFF1E293B) : Colors.white;
   final surfaceVariantColor = isDark
-      ? const Color(0xFF26282B)
-      : const Color(0xFFF5F5F3);
+      ? const Color(0xFF263449)
+      : const Color(0xFFF8FAFC);
   final borderColor = isDark
-      ? const Color(0xFF2F3134)
-      : const Color(0xFFE8E8E5);
+      ? const Color(0xFF334155)
+      : const Color(0xFFE2E8F0);
   final primaryTextColor = isDark
-      ? const Color(0xFFF2F2F0)
-      : const Color(0xFF1A1A1A);
+      ? const Color(0xFFF8FAFC)
+      : const Color(0xFF0F172A);
   final secondaryTextColor = isDark
-      ? const Color(0xFFA3A39E)
-      : const Color(0xFF6B6B68);
+      ? const Color(0xFFCBD5E1)
+      : const Color(0xFF64748B);
 
   return ThemeData(
     useMaterial3: true,
@@ -518,7 +534,12 @@ ThemeData _buildTheme({required Color seed, required Brightness brightness}) {
     colorScheme: colorScheme,
     scaffoldBackgroundColor: backgroundColor,
     cardColor: surfaceColor,
-    dialogTheme: DialogThemeData(backgroundColor: surfaceColor),
+    dialogTheme: DialogThemeData(
+      backgroundColor: surfaceColor,
+      surfaceTintColor: Colors.transparent,
+      elevation: 0,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
+    ),
     appBarTheme: AppBarTheme(
       backgroundColor: backgroundColor,
       foregroundColor: primaryTextColor,
@@ -529,10 +550,11 @@ ThemeData _buildTheme({required Color seed, required Brightness brightness}) {
     cardTheme: CardThemeData(
       color: surfaceColor,
       surfaceTintColor: Colors.transparent,
-      elevation: 0,
       margin: EdgeInsets.zero,
+      shadowColor: isDark ? Colors.transparent : const Color(0x140F172A),
+      elevation: isDark ? 0 : 2,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(20),
         side: BorderSide(color: borderColor),
       ),
     ),
@@ -544,18 +566,27 @@ ThemeData _buildTheme({required Color seed, required Brightness brightness}) {
       filled: true,
       fillColor: surfaceVariantColor,
       hintStyle: TextStyle(color: secondaryTextColor),
-      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      labelStyle: TextStyle(color: secondaryTextColor),
+      floatingLabelStyle: TextStyle(
+        color: colorScheme.primary,
+        fontWeight: FontWeight.w700,
+      ),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
       border: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(14),
         borderSide: BorderSide(color: borderColor),
       ),
       enabledBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(14),
         borderSide: BorderSide(color: borderColor),
       ),
       focusedBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(12),
-        borderSide: BorderSide(color: colorScheme.primary, width: 1.5),
+        borderRadius: BorderRadius.circular(14),
+        borderSide: BorderSide(color: colorScheme.primary, width: 1.8),
+      ),
+      errorBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(14),
+        borderSide: const BorderSide(color: Color(0xFFDC2626)),
       ),
     ),
     filledButtonTheme: FilledButtonThemeData(
@@ -563,8 +594,9 @@ ThemeData _buildTheme({required Color seed, required Brightness brightness}) {
         backgroundColor: colorScheme.primary,
         foregroundColor: colorScheme.onPrimary,
         padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        textStyle: const TextStyle(fontWeight: FontWeight.w600),
+        elevation: 0,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        textStyle: const TextStyle(fontWeight: FontWeight.w700),
       ),
     ),
     outlinedButtonTheme: OutlinedButtonThemeData(
@@ -572,8 +604,15 @@ ThemeData _buildTheme({required Color seed, required Brightness brightness}) {
         foregroundColor: primaryTextColor,
         side: BorderSide(color: borderColor),
         padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+        textStyle: const TextStyle(fontWeight: FontWeight.w700),
+      ),
+    ),
+    textButtonTheme: TextButtonThemeData(
+      style: TextButton.styleFrom(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-        textStyle: const TextStyle(fontWeight: FontWeight.w600),
+        textStyle: const TextStyle(fontWeight: FontWeight.w700),
       ),
     ),
     iconButtonTheme: IconButtonThemeData(
@@ -582,6 +621,35 @@ ThemeData _buildTheme({required Color seed, required Brightness brightness}) {
         foregroundColor: primaryTextColor,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       ),
+    ),
+    chipTheme: ChipThemeData(
+      backgroundColor: surfaceVariantColor,
+      selectedColor: colorScheme.primary.withValues(alpha: 0.14),
+      side: BorderSide(color: borderColor),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      labelStyle: TextStyle(
+        color: primaryTextColor,
+        fontWeight: FontWeight.w600,
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+    ),
+    tabBarTheme: TabBarThemeData(
+      dividerColor: Colors.transparent,
+      indicatorSize: TabBarIndicatorSize.tab,
+      indicator: BoxDecoration(
+        color: colorScheme.primary.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      labelColor: colorScheme.primary,
+      unselectedLabelColor: secondaryTextColor,
+      labelStyle: const TextStyle(fontWeight: FontWeight.w800),
+      unselectedLabelStyle: const TextStyle(fontWeight: FontWeight.w600),
+    ),
+    popupMenuTheme: PopupMenuThemeData(
+      color: surfaceColor,
+      surfaceTintColor: Colors.transparent,
+      elevation: 8,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
     ),
     snackBarTheme: SnackBarThemeData(
       behavior: SnackBarBehavior.floating,
@@ -1262,12 +1330,12 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
               _toggleFinanceClientApprovalForSelectedOrder,
           onScheduleInstallation: _scheduleInstallationForSelectedOrder,
           onToggleInstallationExecutionItem: _toggleInstallationExecutionItem,
-      onOpenAssemblyPreparationChecklist:
-          _openAssemblyChecklistForSelectedOrder,
-      onScheduleEngineeringActivity: _scheduleEngineeringActivity,
-      onSchedulePersonalEngineeringActivity:
-          _schedulePersonalEngineeringActivity,
-      onUpdateEngineeringChecklistStatus: _updateEngineeringChecklistStatus,
+          onOpenAssemblyPreparationChecklist:
+              _openAssemblyChecklistForSelectedOrder,
+          onScheduleEngineeringActivity: _scheduleEngineeringActivity,
+          onSchedulePersonalEngineeringActivity:
+              _schedulePersonalEngineeringActivity,
+          onUpdateEngineeringChecklistStatus: _updateEngineeringChecklistStatus,
           onUpdateFinanceContractStatus: _updateFinanceContractStatus,
           onUpdateRelationshipKanbanStatus: _updateRelationshipKanbanStatus,
           onEditOrder:
@@ -3112,13 +3180,14 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     required DateTime scheduledAt,
     required DateTime createdAt,
     required String report,
+    String serviceTime = '',
   }) {
     return InstallationVisitLog(
       scheduledAt: scheduledAt,
       employeeEmails: order.installationAssignedEmployeeEmails,
       plannedItems: const [],
       completedItems: const [],
-      serviceTime: '',
+      serviceTime: serviceTime,
       notes: report,
       createdAt: createdAt,
     );
@@ -3173,6 +3242,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     required String initialServiceTime,
     required String initialConclusionObservation,
   }) async {
+    final formKey = GlobalKey<FormState>();
     final serviceTimeController = TextEditingController(
       text: initialServiceTime,
     );
@@ -3184,31 +3254,56 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
           context: context,
           barrierDismissible: false,
           builder: (context) => AlertDialog(
-            title: const Text('Conclusão da OS'),
+            title: const Row(
+              children: [
+                Icon(Icons.task_alt_rounded),
+                SizedBox(width: 10),
+                Text('Concluir ordem de serviço'),
+              ],
+            ),
             content: SizedBox(
-              width: 420,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  TextField(
-                    controller: serviceTimeController,
-                    autofocus: true,
-                    decoration: const InputDecoration(
-                      labelText: 'Tempo de serviço',
-                      hintText: 'Ex.: 2h 30min',
+              width: 520,
+              child: Form(
+                key: formKey,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Registre os dados da execução antes de finalizar a OS.',
+                      style: TextStyle(color: Color(0xFF64748B), height: 1.35),
                     ),
-                  ),
-                  const SizedBox(height: 16),
-                  TextField(
-                    controller: observationController,
-                    maxLines: 4,
-                    decoration: const InputDecoration(
-                      labelText: 'Observação conclusão OS',
-                      hintText:
-                          'Informe o resultado da instalação para retorno ao Orçamentista.',
+                    const SizedBox(height: 18),
+                    TextFormField(
+                      controller: serviceTimeController,
+                      autofocus: true,
+                      decoration: const InputDecoration(
+                        labelText: 'Horas do serviço',
+                        hintText: 'Ex.: 2h30 ou 08:00 às 10:30',
+                        prefixIcon: Icon(Icons.schedule_outlined),
+                      ),
+                      validator: (value) => (value ?? '').trim().isEmpty
+                          ? 'Informe as horas do serviço.'
+                          : null,
                     ),
-                  ),
-                ],
+                    const SizedBox(height: 16),
+                    TextFormField(
+                      controller: observationController,
+                      minLines: 4,
+                      maxLines: 7,
+                      decoration: const InputDecoration(
+                        labelText: 'Relatório do serviço realizado',
+                        hintText:
+                            'Descreva o que foi executado, testes realizados e resultado final.',
+                        alignLabelWithHint: true,
+                        prefixIcon: Icon(Icons.description_outlined),
+                      ),
+                      validator: (value) => (value ?? '').trim().isEmpty
+                          ? 'Informe o relatório do serviço realizado.'
+                          : null,
+                    ),
+                  ],
+                ),
               ),
             ),
             actions: [
@@ -3216,12 +3311,18 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
                 onPressed: () => Navigator.of(context).pop(),
                 child: const Text('Cancelar'),
               ),
-              FilledButton(
-                onPressed: () => Navigator.of(context).pop((
-                  serviceTime: serviceTimeController.text.trim(),
-                  conclusionObservation: observationController.text.trim(),
-                )),
-                child: const Text('Salvar'),
+              FilledButton.icon(
+                onPressed: () {
+                  if (!(formKey.currentState?.validate() ?? false)) {
+                    return;
+                  }
+                  Navigator.of(context).pop((
+                    serviceTime: serviceTimeController.text.trim(),
+                    conclusionObservation: observationController.text.trim(),
+                  ));
+                },
+                icon: const Icon(Icons.check_circle_outline),
+                label: const Text('Concluir OS'),
               ),
             ],
           ),
@@ -3266,9 +3367,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     }
 
     var serviceTime = activeVisit?.serviceTime.trim() ?? '';
-    var completionObservation = selected.isServiceOrder
-        ? ''
-        : selected.installationNotes.trim();
+    var completionObservation = selected.installationNotes.trim();
     if (selected.isServiceOrder) {
       final completionData = await _promptServiceOrderCompletionData(
         initialServiceTime: serviceTime,
@@ -3286,7 +3385,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       }
       if (completionData.conclusionObservation.trim().isEmpty) {
         _showAppMessage(
-          'Informe a observação conclusão OS para concluir a ordem de serviço.',
+          'Informe o relatório do serviço realizado para concluir a ordem de serviço.',
           isError: true,
         );
         return;
@@ -3315,15 +3414,27 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       order: selected,
       scheduledAt: selected.installationScheduledAt ?? now,
       createdAt: now,
+      serviceTime: serviceTime,
       report:
           'Conclusão registrada em ${_formatDateTime(now)}.'
-          '${serviceTime.isEmpty ? '' : ' Tempo de serviço: $serviceTime.'}'
-          '${completionObservation.isEmpty ? '' : ' Observação conclusão OS: $completionObservation'}',
+          '${serviceTime.isEmpty ? '' : ' Horas do serviço: $serviceTime.'}'
+          '${completionObservation.isEmpty ? '' : ' Relatório do serviço: $completionObservation'}',
     );
     final returnedToEstimatingOrder = selected.copyWith(
       currentStage: WorkflowStage.estimating,
       installationWorkflowStatus: InstallationWorkflowStatus.done,
       installationVisitHistory: [...updatedVisits, completionReport],
+    );
+    final completedInstallationOrder = selected.copyWith(
+      installationWorkflowStatus: InstallationWorkflowStatus.done,
+      installationNotes: completionObservation,
+      installationVisitHistory: [...updatedVisits, completionReport],
+      progress: _effectiveOrderProgress(previewOrder),
+      nextAction: 'Retornar OS realizada ao Orçamentista',
+      blocker: 'Sem bloqueio. Ordem de serviço concluída na Instalação.',
+      history: Map<WorkflowStage, String>.from(selected.history)
+        ..[WorkflowStage.installation] =
+            'Instalação concluída em ${_formatDateTime(now)}',
     );
     final updatedOrder = selected.isServiceOrder
         ? selected.copyWith(
@@ -3356,26 +3467,36 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
                   'Instalação concluída em ${_formatDateTime(now)}',
           );
 
-    final savedOrder = await _runBusyTask(
-      () => _repository.saveOrder(updatedOrder),
+    final savedInstallationOrder = await _runBusyTask(
+      () => _repository.saveOrder(
+        selected.isServiceOrder ? completedInstallationOrder : updatedOrder,
+      ),
       busyMessage: 'Concluindo instalação...',
-      successMessage: selected.isServiceOrder
-          ? 'Instalação concluída e OS enviada ao Orçamentista.'
-          : 'Instalação concluída.',
+      successMessage: 'Instalação concluída.',
       errorPrefix: 'Não foi possível concluir a instalação',
     );
-    if (savedOrder == null) {
+    if (savedInstallationOrder == null) {
       return;
     }
+    _mergeOrderLocally(savedInstallationOrder);
 
     if (selected.isServiceOrder) {
+      final savedOrder = await _runBusyTask(
+        () => _repository.saveOrder(updatedOrder),
+        busyMessage: 'Retornando OS ao Orçamentista...',
+        successMessage: 'OS concluída e enviada ao Orçamentista.',
+        errorPrefix: 'Não foi possível retornar a OS ao Orçamentista',
+      );
+      if (savedOrder == null) {
+        return;
+      }
+      _mergeOrderLocally(savedOrder);
       setState(() {
         _selectedViewKey = 'stage:${WorkflowStage.estimating.name}';
         _stageWorkspaceSubtabs[WorkflowStage.estimating] = 0;
         _selectedOrderCode = savedOrder.code;
       });
     }
-    _mergeOrderLocally(savedOrder);
   }
 
   Future<void> _updateInstallationWorkflowStatus(
@@ -3582,7 +3703,8 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
 
   Future<void> _schedulePersonalEngineeringActivity() async {
     final selected = _selectedOrder;
-    if (selected == null || selected.currentStage != WorkflowStage.engineering) {
+    if (selected == null ||
+        selected.currentStage != WorkflowStage.engineering) {
       return;
     }
 
@@ -4423,10 +4545,20 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     }
 
     if (direction > 0 && selected.currentStage == WorkflowStage.estimating) {
-      if (selected.isServiceOrder &&
-          selected.serviceOrderFileName.trim().isEmpty) {
+      if (selected.isServiceOrder && !_hasServiceOrderBudgetData(selected)) {
         _showAppMessage(
-          'Anexe o PDF da ordem de serviço no Orçamentista antes de avançar a etapa.',
+          'Preencha os dados do orçamento da OS antes de avançar a etapa.',
+          isError: true,
+        );
+        return;
+      }
+      if (selected.isServiceOrder &&
+          selected.installationWorkflowStatus ==
+              InstallationWorkflowStatus.done &&
+          selected.financeClientApproved &&
+          !_hasServiceOrderRealizedData(selected)) {
+        _showAppMessage(
+          'Preencha os dados da OS realizada antes de enviar ao Financeiro.',
           isError: true,
         );
         return;
@@ -4707,6 +4839,11 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
         }
         if (selected.installationWorkflowStatus ==
             InstallationWorkflowStatus.scheduled) {
+          if (selected.isServiceOrder &&
+              _isDateToday(selected.installationScheduledAt)) {
+            await _completeInstallation(force: true);
+            return;
+          }
           await _startInstallationVisit();
           return;
         }
@@ -5038,6 +5175,81 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
   Future<void> _attachMaterialsToSelectedOrder() async {
     final selected = _selectedOrder;
     if (selected == null) {
+      return;
+    }
+
+    if (selected.isServiceOrder) {
+      if (selected.installationWorkflowStatus ==
+              InstallationWorkflowStatus.done &&
+          selected.financeClientApproved) {
+        final realizedDraft = await showDialog<_ServiceOrderRealizedDraft>(
+          context: context,
+          builder: (context) => _ServiceOrderRealizedDialog(order: selected),
+        );
+        if (realizedDraft == null) return;
+        final now = DateTime.now();
+        final updatedOrder = selected.copyWith(
+          serviceOrderExecutionDate: realizedDraft.executionDate,
+          installationNotes: realizedDraft.executionReport,
+          serviceOrderDepartureTime: realizedDraft.departureTime,
+          serviceOrderReturnTime: realizedDraft.returnTime,
+          serviceOrderTotalHours: realizedDraft.totalHours,
+          serviceOrderTravelCost: realizedDraft.travelValue,
+          serviceOrderMaterialsValue: realizedDraft.materialsValue,
+          serviceOrderTotalHoursValue: realizedDraft.totalHoursValue,
+          serviceOrderTotalValue: realizedDraft.totalValue,
+          history: Map<WorkflowStage, String>.from(selected.history)
+            ..[WorkflowStage.estimating] =
+                'Dados da OS realizada preenchidos em ${_formatDateTime(now)}',
+          nextAction: 'Enviar OS concluída ao Financeiro',
+          blocker: 'Sem bloqueio. OS realizada revisada pelo Orçamentista.',
+        );
+        final savedOrder = await _runBusyTask(
+          () => _repository.saveOrder(updatedOrder),
+          busyMessage: 'Salvando OS realizada...',
+          successMessage: 'Dados da OS realizada salvos.',
+          errorPrefix: 'Não foi possível salvar a OS realizada',
+        );
+        if (savedOrder != null) _mergeOrderLocally(savedOrder);
+        return;
+      }
+
+      final draft = await showDialog<_ServiceOrderBudgetDraft>(
+        context: context,
+        builder: (context) => _ServiceOrderBudgetDialog(order: selected),
+      );
+      if (draft == null) {
+        return;
+      }
+
+      final now = DateTime.now();
+      final updatedOrder = selected.copyWith(
+        commercialProposalNumber: draft.proposalNumber,
+        serviceOrderServiceType: draft.serviceType,
+        serviceDescription: draft.serviceDescription,
+        serviceOrderTravelCost: draft.travelCost,
+        serviceOrderTechnicalHourValue: draft.technicalHourValue,
+        serviceOrderDanfClientDiscount: draft.danfClientDiscount,
+        serviceOrderMaterialsValue: draft.materialsValue,
+        estimatingKanbanStatuses: const {
+          'waiting': EngineeringChecklistStatus.done,
+          'doing': EngineeringChecklistStatus.done,
+        },
+        history: Map<WorkflowStage, String>.from(selected.history)
+          ..[WorkflowStage.estimating] =
+              'Orçamento da OS atualizado em ${_formatDateTime(now)}',
+        nextAction: 'Orçamento concluído',
+        blocker: 'Sem bloqueio. Fluxo do Orçamentista concluído.',
+      );
+      final savedOrder = await _runBusyTask(
+        () => _repository.saveOrder(updatedOrder),
+        busyMessage: 'Salvando orçamento da OS...',
+        successMessage: 'Orçamento da OS salvo.',
+        errorPrefix: 'Não foi possível salvar o orçamento da OS',
+      );
+      if (savedOrder != null) {
+        _mergeOrderLocally(savedOrder);
+      }
       return;
     }
 
@@ -6671,6 +6883,8 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
                             children: [
                               _DesktopShellHeader(
                                 title: activeTab.label,
+                                icon: activeTab.icon,
+                                accent: activeTab.color,
                                 profile: _currentWorkspaceProfile,
                                 onSignOut: _signOut,
                                 notificationCount:
@@ -6776,7 +6990,15 @@ class _ShellBackdrop extends StatelessWidget {
     final isDarkMode = Theme.of(context).brightness == Brightness.dark;
 
     return Container(
-      color: isDarkMode ? const Color(0xFF18191B) : const Color(0xFFF7F7F5),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: isDarkMode
+              ? const [Color(0xFF0F172A), Color(0xFF111827)]
+              : const [Color(0xFFF8FAFC), Color(0xFFEEF2F7)],
+        ),
+      ),
       child: Stack(
         children: [
           Positioned(
@@ -6788,8 +7010,8 @@ class _ShellBackdrop extends StatelessWidget {
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 color: isDarkMode
-                    ? const Color(0xFF26282B).withValues(alpha: 0.34)
-                    : const Color(0xFFF5F5F3),
+                    ? const Color(0xFF4F46E5).withValues(alpha: 0.08)
+                    : const Color(0xFF4F46E5).withValues(alpha: 0.055),
               ),
             ),
           ),
@@ -6802,8 +7024,8 @@ class _ShellBackdrop extends StatelessWidget {
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 color: isDarkMode
-                    ? const Color(0xFF26282B).withValues(alpha: 0.42)
-                    : const Color(0xFFF5F5F3),
+                    ? const Color(0xFF0F766E).withValues(alpha: 0.08)
+                    : const Color(0xFF0F766E).withValues(alpha: 0.05),
               ),
             ),
           ),
@@ -6816,8 +7038,8 @@ class _ShellBackdrop extends StatelessWidget {
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 color: isDarkMode
-                    ? const Color(0xFF26282B).withValues(alpha: 0.34)
-                    : const Color(0xFFF5F5F3),
+                    ? const Color(0xFFC2410C).withValues(alpha: 0.07)
+                    : const Color(0xFFC2410C).withValues(alpha: 0.045),
               ),
             ),
           ),
@@ -6830,6 +7052,8 @@ class _ShellBackdrop extends StatelessWidget {
 class _DesktopShellHeader extends StatelessWidget {
   const _DesktopShellHeader({
     required this.title,
+    required this.icon,
+    required this.accent,
     required this.profile,
     required this.onSignOut,
     required this.notificationCount,
@@ -6841,6 +7065,8 @@ class _DesktopShellHeader extends StatelessWidget {
   });
 
   final String title;
+  final IconData icon;
+  final Color accent;
   final EmployeeWorkspaceProfile profile;
   final VoidCallback onSignOut;
   final int notificationCount;
@@ -6859,6 +7085,27 @@ class _DesktopShellHeader extends StatelessWidget {
       decoration: _panelDecoration(context),
       child: Row(
         children: [
+          Container(
+            width: 52,
+            height: 52,
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [accent, Color.lerp(accent, Colors.black, 0.28)!],
+              ),
+              borderRadius: BorderRadius.circular(16),
+              boxShadow: [
+                BoxShadow(
+                  color: accent.withValues(alpha: 0.24),
+                  blurRadius: 18,
+                  offset: const Offset(0, 8),
+                ),
+              ],
+            ),
+            child: Icon(icon, color: Colors.white, size: 25),
+          ),
+          const SizedBox(width: 14),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -6883,8 +7130,21 @@ class _DesktopShellHeader extends StatelessWidget {
                     fontSize: 13,
                   ),
                 ),
-                const SizedBox(height: 8),
-                const _SoftwareVersionLabel(),
+                const SizedBox(height: 7),
+                Row(
+                  children: [
+                    Container(
+                      width: 28,
+                      height: 3,
+                      decoration: BoxDecoration(
+                        color: accent,
+                        borderRadius: BorderRadius.circular(99),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    const _SoftwareVersionLabel(),
+                  ],
+                ),
               ],
             ),
           ),
@@ -11620,6 +11880,125 @@ class _StockMovementDialogState extends State<_StockMovementDialog> {
   }
 }
 
+class _StageWorkspaceHero extends StatelessWidget {
+  const _StageWorkspaceHero({
+    required this.stage,
+    required this.title,
+    required this.subtitle,
+    required this.itemCount,
+    required this.isCompact,
+  });
+
+  final WorkflowStage stage;
+  final String title;
+  final String subtitle;
+  final int itemCount;
+  final bool isCompact;
+
+  @override
+  Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    return Container(
+      width: double.infinity,
+      padding: EdgeInsets.all(isCompact ? 18 : 22),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            stage.color,
+            Color.lerp(stage.color, Colors.black, isDarkMode ? 0.38 : 0.25)!,
+          ],
+        ),
+        borderRadius: BorderRadius.circular(24),
+        boxShadow: [
+          BoxShadow(
+            color: stage.color.withValues(alpha: 0.24),
+            blurRadius: 24,
+            offset: const Offset(0, 10),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: isCompact ? 48 : 58,
+            height: isCompact ? 48 : 58,
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.16),
+              borderRadius: BorderRadius.circular(18),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.22)),
+            ),
+            child: Icon(
+              stage.icon,
+              color: Colors.white,
+              size: isCompact ? 24 : 29,
+            ),
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: isCompact ? 20 : 25,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: -0.3,
+                  ),
+                ),
+                const SizedBox(height: 5),
+                Text(
+                  subtitle,
+                  maxLines: isCompact ? 2 : 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: Color(0xFFE2E8F0),
+                    fontSize: 13,
+                    height: 1.35,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 14),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.14),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.20)),
+            ),
+            child: Column(
+              children: [
+                Text(
+                  '$itemCount',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 20,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+                const Text(
+                  'ITENS',
+                  style: TextStyle(
+                    color: Color(0xFFE2E8F0),
+                    fontSize: 9,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0.8,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _StageWorkspaceSection extends StatelessWidget {
   const _StageWorkspaceSection({
     required this.stage,
@@ -11952,8 +12331,10 @@ class _StageWorkspaceSection extends StatelessWidget {
           (order) =>
               order.isServiceOrder &&
               matchesKanbanSearch(order) &&
-              workflowStages.indexOf(order.currentStage) >=
-                  workflowStages.indexOf(WorkflowStage.installation),
+              (workflowStages.indexOf(order.currentStage) >=
+                      workflowStages.indexOf(WorkflowStage.installation) ||
+                  order.installationWorkflowStatus ==
+                      InstallationWorkflowStatus.done),
         )
         .toList(growable: false);
     if (stage == WorkflowStage.estimating) {
@@ -12113,40 +12494,50 @@ class _StageWorkspaceSection extends StatelessWidget {
             ),
           ]
         : const <_OrdersKanbanColumnData>[];
+    bool isEstimatingServiceOrderWaiting(WorkflowOrder order) {
+      return !order.financeClientApproved &&
+          workflowStages.indexOf(order.currentStage) <=
+              workflowStages.indexOf(WorkflowStage.estimating);
+    }
+
+    bool isEstimatingServiceOrderSent(WorkflowOrder order) {
+      if (order.serviceOrderFinanceStatus ==
+              ServiceOrderFinanceStatus.concluded ||
+          order.serviceOrderFinanceStatus == ServiceOrderFinanceStatus.paid) {
+        return false;
+      }
+      if (order.financeClientApproved &&
+          order.currentStage == WorkflowStage.estimating) {
+        return false;
+      }
+      return workflowStages.indexOf(order.currentStage) >=
+          workflowStages.indexOf(WorkflowStage.finance);
+    }
+
     final estimatingServiceOrderKanbanColumns =
         stage == WorkflowStage.estimating && showingWorkQueue
         ? <_OrdersKanbanColumnData>[
             _OrdersKanbanColumnData(
               title: 'Aguardando',
               subtitle:
-                  '${relationshipServiceOrderSource.where((order) => !order.financeClientApproved && workflowStages.indexOf(order.currentStage) <= workflowStages.indexOf(WorkflowStage.finance)).length} ordens de serviço',
+                  '${relationshipServiceOrderSource.where(isEstimatingServiceOrderWaiting).length} ordens de serviço',
               accent: const Color(0xFFB45309),
               icon: Icons.assignment_outlined,
               emptyMessage:
                   'Nenhuma ordem de serviço criada aguardando aprovação.',
               orders: relationshipServiceOrderSource
-                  .where(
-                    (order) =>
-                        !order.financeClientApproved &&
-                        workflowStages.indexOf(order.currentStage) <=
-                            workflowStages.indexOf(WorkflowStage.finance),
-                  )
+                  .where(isEstimatingServiceOrderWaiting)
                   .toList(growable: false),
             ),
             _OrdersKanbanColumnData(
               title: 'Enviado ao Financeiro',
               subtitle:
-                  '${relationshipServiceOrderSource.where((order) => order.currentStage == WorkflowStage.finance && order.serviceOrderFinanceStatus == ServiceOrderFinanceStatus.waitingApproval).length} ordens de serviço',
+                  '${relationshipServiceOrderSource.where(isEstimatingServiceOrderSent).length} ordens de serviço',
               accent: const Color(0xFF2563EB),
               icon: Icons.forward_to_inbox_outlined,
               emptyMessage: 'Nenhuma ordem de serviço enviada ao Financeiro.',
               orders: relationshipServiceOrderSource
-                  .where(
-                    (order) =>
-                        order.currentStage == WorkflowStage.finance &&
-                        order.serviceOrderFinanceStatus ==
-                            ServiceOrderFinanceStatus.waitingApproval,
-                  )
+                  .where(isEstimatingServiceOrderSent)
                   .toList(growable: false),
             ),
             _OrdersKanbanColumnData(
@@ -12590,46 +12981,6 @@ class _StageWorkspaceSection extends StatelessWidget {
         ),
       );
     }
-    final topMetricCards = [
-      _MetricCard(
-        title: showingRegisteredCatalog
-            ? 'Clientes cadastrados'
-            : showingWorkQueue
-            ? 'Trabalhos'
-            : isCustomerRegistration
-            ? 'Em andamento'
-            : 'Pedidos na etapa',
-        value: visibleOrders.length.toString(),
-        icon: registeredCatalogAccentStage.icon,
-        accent: registeredCatalogAccentStage.color,
-      ),
-      if (!isCustomerRegistration)
-        _MetricCard(
-          title: showingRegisteredCatalog
-              ? 'No fluxo'
-              : showingWorkQueue
-              ? 'Em espera'
-              : 'Com bloqueio',
-          value: showingRegisteredCatalog
-              ? visibleOrders.length.toString()
-              : showingWorkQueue
-              ? visibleOrders.length.toString()
-              : visibleOrders
-                    .where(
-                      (item) => !item.blocker.startsWith('Nenhum bloqueio'),
-                    )
-                    .length
-                    .toString(),
-          icon: showingRegisteredCatalog
-              ? Icons.sync_alt_outlined
-              : showingWorkQueue
-              ? Icons.pending_actions_outlined
-              : Icons.report_problem_outlined,
-          accent: showingWorkQueue
-              ? stage.color
-              : registeredCatalogAccentStage.color,
-        ),
-    ];
     void handleOrderTap(WorkflowOrder order) {
       unawaited(onOpenOrderDetails(order));
     }
@@ -12641,6 +12992,18 @@ class _StageWorkspaceSection extends StatelessWidget {
     return ListView(
       padding: const EdgeInsets.all(20),
       children: [
+        _StageWorkspaceHero(
+          stage: registeredCatalogAccentStage,
+          title: showingRegisteredCatalog
+              ? 'Clientes cadastrados'
+              : stage.title,
+          subtitle: showingRegisteredCatalog
+              ? 'Consulte clientes, propostas e informações do fluxo em um só lugar.'
+              : stage.subtitle,
+          itemCount: visibleOrders.length,
+          isCompact: !isMedium,
+        ),
+        const SizedBox(height: 18),
         if (isCustomerRegistration) ...[
           _CustomerRegistrationSubtabs(
             selectedIndex: customerRegistrationSubtab!,
@@ -12861,23 +13224,6 @@ class _StageWorkspaceSection extends StatelessWidget {
         if (showingRegistrationInProgress ||
             showingRegisteredCatalog ||
             showingWorkQueue) ...[
-          LayoutBuilder(
-            builder: (context, constraints) {
-              final useTwoColumns = constraints.maxWidth >= 760;
-              final cardWidth = useTwoColumns
-                  ? (constraints.maxWidth - 16) / 2
-                  : constraints.maxWidth;
-
-              return Wrap(
-                spacing: 12,
-                runSpacing: 12,
-                children: topMetricCards
-                    .map((card) => SizedBox(width: cardWidth, child: card))
-                    .toList(growable: false),
-              );
-            },
-          ),
-          const SizedBox(height: 20),
           if (stage == WorkflowStage.finance && showingWorkQueue) ...[
             const Text(
               'Contratos',
@@ -13578,20 +13924,18 @@ class _FlowNavbarTab extends StatelessWidget {
           height: 56,
           decoration: BoxDecoration(
             color: selected
-                ? (isDarkMode
-                      ? const Color(0xFFF2F2F0)
-                      : const Color(0xFF1A1A1A))
+                ? item.color
                 : (isDarkMode
-                      ? const Color(0xFF202225)
-                      : Colors.white.withValues(alpha: 0.92)),
+                      ? const Color(0xFF263449)
+                      : const Color(0xFFF8FAFC)),
             borderRadius: BorderRadius.circular(20),
             border: Border.all(color: borderColor),
-            boxShadow: selected && !isDarkMode
-                ? const [
+            boxShadow: selected
+                ? [
                     BoxShadow(
-                      color: Color(0x140F172A),
+                      color: item.color.withValues(alpha: 0.28),
                       blurRadius: 18,
-                      offset: Offset(0, 10),
+                      offset: const Offset(0, 8),
                     ),
                   ]
                 : null,
@@ -13602,9 +13946,7 @@ class _FlowNavbarTab extends StatelessWidget {
               Icon(
                 item.icon,
                 size: 22,
-                color: selected
-                    ? (isDarkMode ? const Color(0xFF1A1A1A) : Colors.white)
-                    : foregroundColor,
+                color: selected ? Colors.white : foregroundColor,
               ),
               if (item.badgeCount > 0)
                 Positioned(
@@ -13660,18 +14002,18 @@ class _FlowTopNavbarTab extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 15, vertical: 11),
         decoration: BoxDecoration(
           color: selected
-              ? (isDarkMode ? const Color(0xFFF2F2F0) : const Color(0xFF1A1A1A))
+              ? item.color
               : (isDarkMode
-                    ? const Color(0xFF202225)
-                    : Colors.white.withValues(alpha: 0.92)),
+                    ? const Color(0xFF263449)
+                    : const Color(0xFFF8FAFC)),
           borderRadius: BorderRadius.circular(999),
           border: Border.all(color: borderColor),
-          boxShadow: selected && !isDarkMode
-              ? const [
+          boxShadow: selected
+              ? [
                   BoxShadow(
-                    color: Color(0x120F172A),
+                    color: item.color.withValues(alpha: 0.24),
                     blurRadius: 16,
-                    offset: Offset(0, 8),
+                    offset: const Offset(0, 8),
                   ),
                 ]
               : null,
@@ -13685,9 +14027,7 @@ class _FlowTopNavbarTab extends StatelessWidget {
                 Icon(
                   item.icon,
                   size: 18,
-                  color: selected
-                      ? (isDarkMode ? const Color(0xFF1A1A1A) : Colors.white)
-                      : foregroundColor,
+                  color: selected ? Colors.white : foregroundColor,
                 ),
                 if (item.badgeCount > 0)
                   Positioned(
@@ -13709,7 +14049,7 @@ class _FlowTopNavbarTab extends StatelessWidget {
               item.label,
               style: TextStyle(
                 color: selected
-                    ? (isDarkMode ? const Color(0xFF1A1A1A) : Colors.white)
+                    ? Colors.white
                     : isDarkMode
                     ? const Color(0xFFF2F2F0)
                     : const Color(0xFF1A1A1A),
@@ -14274,7 +14614,6 @@ class _OrderDetailsPanel extends StatelessWidget {
         order!.currentStage == WorkflowStage.installation;
     final isServiceOrder = order!.isServiceOrder;
     final hasMaterialsFile = _hasEstimatingWorksheetData(order!);
-    final hasServiceOrderPdf = order!.serviceOrderFileName.trim().isNotEmpty;
     final hasElectricalProject = order!.electricalProjectFileName
         .trim()
         .isNotEmpty;
@@ -14358,7 +14697,9 @@ class _OrderDetailsPanel extends StatelessWidget {
                 order!.installationWorkflowStatus !=
                     InstallationWorkflowStatus.done)) &&
         (!isEstimatingStage ||
-            (isServiceOrder ? hasServiceOrderPdf : hasMaterialsFile)) &&
+            (isServiceOrder
+                ? _hasServiceOrderBudgetData(order!)
+                : hasMaterialsFile)) &&
         (!isFinanceStage ||
             (isServiceOrder
                 ? (order!.financeClientApproved &&
@@ -14725,6 +15066,7 @@ class _OrderDetailsPanel extends StatelessWidget {
                   order: order!,
                   canEdit: showFlowActions,
                   onAttachServiceOrderPdf: onAttachServiceOrderPdf,
+                  onEditBudget: onAttachMaterials,
                   onToggleFinanceClientApproval: onToggleFinanceClientApproval,
                 ),
                 if (showFlowActions &&
@@ -15186,6 +15528,7 @@ class _OrderDetailsPanel extends StatelessWidget {
               workspaceProfiles: workspaceProfiles,
               canEdit: showFlowActions,
               onScheduleInstallation: onScheduleInstallation,
+              onCompleteInstallation: onAdvanceOrder,
               onToggleExecutionItem: onToggleInstallationExecutionItem,
             ),
           );
@@ -15719,12 +16062,14 @@ class _ServiceOrderSummaryCard extends StatelessWidget {
     required this.order,
     required this.canEdit,
     this.onAttachServiceOrderPdf,
+    this.onEditBudget,
     this.onToggleFinanceClientApproval,
   });
 
   final WorkflowOrder order;
   final bool canEdit;
   final Future<void> Function()? onAttachServiceOrderPdf;
+  final Future<void> Function()? onEditBudget;
   final Future<void> Function()? onToggleFinanceClientApproval;
 
   @override
@@ -15739,7 +16084,6 @@ class _ServiceOrderSummaryCard extends StatelessWidget {
     final secondaryTextColor = isDarkMode
         ? const Color(0xFFA3A39E)
         : const Color(0xFF6B6B68);
-    final hasPdf = order.serviceOrderFileName.trim().isNotEmpty;
     final approvalColor = order.financeClientApproved
         ? const Color(0xFF15803D)
         : const Color(0xFFB45309);
@@ -15891,7 +16235,7 @@ class _ServiceOrderSummaryCard extends StatelessWidget {
                     SizedBox(
                       width: itemWidth,
                       child: _InfoRow(
-                        label: 'Tempo de serviço',
+                        label: 'Horas do serviço',
                         value: serviceTime ?? 'Não informado',
                       ),
                     ),
@@ -15899,7 +16243,7 @@ class _ServiceOrderSummaryCard extends StatelessWidget {
                     SizedBox(
                       width: itemWidth,
                       child: _InfoRow(
-                        label: 'Observação conclusão OS',
+                        label: 'Relatório do serviço realizado',
                         value: completionObservation,
                       ),
                     ),
@@ -15966,24 +16310,112 @@ class _ServiceOrderSummaryCard extends StatelessWidget {
             },
           ),
           const SizedBox(height: 12),
+          if (order.serviceOrderServiceType.trim().isNotEmpty) ...[
+            Wrap(
+              spacing: 12,
+              runSpacing: 12,
+              children: [
+                _InfoRow(
+                  label: 'Número da proposta',
+                  value: order.commercialProposalNumber,
+                ),
+                _InfoRow(
+                  label: 'Tipo do atendimento',
+                  value: order.serviceOrderServiceType,
+                ),
+                _InfoRow(
+                  label: 'Custo de deslocamento',
+                  value: 'R\$ ${order.serviceOrderTravelCost}',
+                ),
+                _InfoRow(
+                  label: 'Valor da hora técnica',
+                  value: 'R\$ ${order.serviceOrderTechnicalHourValue}',
+                ),
+                _InfoRow(
+                  label: 'Desconto cliente DANF',
+                  value: 'R\$ ${order.serviceOrderDanfClientDiscount}',
+                ),
+                _InfoRow(
+                  label: 'Valor de materiais',
+                  value: order.serviceOrderMaterialsValue.trim().isEmpty
+                      ? 'Não informado'
+                      : 'R\$ ${order.serviceOrderMaterialsValue}',
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+          ],
+          if (_hasServiceOrderRealizedData(order)) ...[
+            const Divider(),
+            const SizedBox(height: 12),
+            const Text(
+              'OS realizada',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
+            ),
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 12,
+              runSpacing: 12,
+              children: [
+                _InfoRow(
+                  label: 'Data da execução',
+                  value: order.serviceOrderExecutionDate,
+                ),
+                _InfoRow(
+                  label: 'Saída da DANF',
+                  value: order.serviceOrderDepartureTime,
+                ),
+                _InfoRow(
+                  label: 'Retorno na DANF',
+                  value: order.serviceOrderReturnTime,
+                ),
+                _InfoRow(
+                  label: 'Total de horas',
+                  value: order.serviceOrderTotalHours,
+                ),
+                _InfoRow(
+                  label: 'Valor das horas',
+                  value: 'R\$ ${order.serviceOrderTotalHoursValue}',
+                ),
+                _InfoRow(
+                  label: 'Valor de materiais',
+                  value: 'R\$ ${order.serviceOrderMaterialsValue}',
+                ),
+                _InfoRow(
+                  label: 'Valor total',
+                  value: 'R\$ ${order.serviceOrderTotalValue}',
+                ),
+                _InfoRow(
+                  label: 'Relatório da execução',
+                  value: order.installationNotes,
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+          ],
           Wrap(
             spacing: 10,
             runSpacing: 10,
             children: [
               if (canEdit &&
                   order.currentStage == WorkflowStage.estimating &&
-                  onAttachServiceOrderPdf != null)
-                OutlinedButton.icon(
+                  onEditBudget != null)
+                FilledButton.icon(
                   onPressed: () async {
-                    await onAttachServiceOrderPdf!();
+                    await onEditBudget!();
                   },
-                  style: _attachmentReadyButtonStyle(hasPdf),
-                  icon: Icon(
-                    hasPdf
-                        ? Icons.upload_file_outlined
-                        : Icons.picture_as_pdf_outlined,
+                  icon: const Icon(Icons.request_quote_outlined),
+                  label: Text(
+                    order.installationWorkflowStatus ==
+                                InstallationWorkflowStatus.done &&
+                            order.financeClientApproved
+                        ? (_hasServiceOrderRealizedData(order)
+                              ? 'Editar OS realizada'
+                              : 'Preencher OS realizada')
+                        : order.serviceOrderServiceType.trim().isEmpty
+                        ? 'Preencher orçamento'
+                        : 'Editar orçamento',
                   ),
-                  label: Text(hasPdf ? 'Trocar PDF da OS' : 'Anexar PDF da OS'),
                 ),
               if (canEdit &&
                   order.currentStage == WorkflowStage.finance &&
@@ -16024,11 +16456,9 @@ class _ProposalExtensionsCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final isDarkMode = Theme.of(context).brightness == Brightness.dark;
     final borderColor = isDarkMode
-        ? const Color(0xFF3E4044)
-        : const Color(0xFFE8E8E5);
-    final surfaceColor = isDarkMode
-        ? const Color(0xFF1C1D20)
-        : const Color(0xFFF5F5F3);
+        ? const Color(0xFF334155)
+        : const Color(0xFFE2E8F0);
+    final surfaceColor = isDarkMode ? const Color(0xFF1E293B) : Colors.white;
     final secondaryTextColor = isDarkMode
         ? const Color(0xFFA3A39E)
         : const Color(0xFF6B6B68);
@@ -16215,14 +16645,25 @@ class _OrderCard extends StatelessWidget {
 
     return InkWell(
       onTap: onTap,
-      borderRadius: BorderRadius.circular(14),
+      borderRadius: BorderRadius.circular(18),
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 180),
-        padding: const EdgeInsets.all(14),
+        padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
           color: cardBackgroundColor,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: cardBorderColor, width: selected ? 1.4 : 1),
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: cardBorderColor, width: selected ? 1.6 : 1),
+          boxShadow: isDarkMode
+              ? null
+              : [
+                  BoxShadow(
+                    color: selected
+                        ? order.currentStage.color.withValues(alpha: 0.14)
+                        : const Color(0x0A0F172A),
+                    blurRadius: selected ? 20 : 12,
+                    offset: const Offset(0, 6),
+                  ),
+                ],
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -17698,12 +18139,26 @@ class _MetricCard extends StatelessWidget {
       constraints: const BoxConstraints(minHeight: 92),
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: isDarkMode ? const Color(0xFF26282B) : Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: isDarkMode ? const Color(0xFF6B6B68) : const Color(0xFFE8E8E5),
-          width: isDarkMode ? 1.1 : 1,
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: isDarkMode
+              ? [const Color(0xFF263449), const Color(0xFF1E293B)]
+              : [Colors.white, accent.withValues(alpha: 0.045)],
         ),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: accent.withValues(alpha: isDarkMode ? 0.32 : 0.16),
+        ),
+        boxShadow: isDarkMode
+            ? null
+            : const [
+                BoxShadow(
+                  color: Color(0x0A0F172A),
+                  blurRadius: 18,
+                  offset: Offset(0, 6),
+                ),
+              ],
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -17743,7 +18198,7 @@ class _MetricCard extends StatelessWidget {
                 height: 34,
                 decoration: BoxDecoration(
                   color: accent.withValues(alpha: isDarkMode ? 0.14 : 0.08),
-                  borderRadius: BorderRadius.circular(10),
+                  borderRadius: BorderRadius.circular(12),
                 ),
                 child: Icon(icon, color: accent, size: 16),
               ),
@@ -17885,7 +18340,8 @@ bool _isInstallationDependsOnClientColumnOrder(WorkflowOrder order) {
 bool _isInstallationDependsOnDanfColumnOrder(WorkflowOrder order) {
   return order.installationWorkflowStatus ==
           InstallationWorkflowStatus.dependsOnDanf ||
-      (order.installationWorkflowStatus == InstallationWorkflowStatus.scheduled &&
+      (order.installationWorkflowStatus ==
+              InstallationWorkflowStatus.scheduled &&
           order.installationScheduledAt != null &&
           !_isDateToday(order.installationScheduledAt));
 }
@@ -18374,7 +18830,10 @@ class _StageOrdersKanbanColumnState extends State<_StageOrdersKanbanColumn> {
             ),
             color: isActiveTarget
                 ? column.accent.withValues(alpha: isDarkMode ? 0.12 : 0.08)
-                : null,
+                : Color.alphaBlend(
+                    column.accent.withValues(alpha: isDarkMode ? 0.04 : 0.025),
+                    isDarkMode ? const Color(0xFF1E293B) : Colors.white,
+                  ),
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -18456,15 +18915,26 @@ class _StageOrdersKanbanColumnState extends State<_StageOrdersKanbanColumn> {
                       ),
                     ),
                   ),
-                  child: Text(
-                    column.emptyMessage,
-                    style: TextStyle(
-                      color: isDarkMode
-                          ? const Color(0xFFA3A39E)
-                          : const Color(0xFF6B6B68),
-                      fontSize: 13,
-                      height: 1.35,
-                    ),
+                  child: Column(
+                    children: [
+                      Icon(
+                        Icons.inbox_outlined,
+                        color: column.accent.withValues(alpha: 0.65),
+                        size: 28,
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        column.emptyMessage,
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: isDarkMode
+                              ? const Color(0xFFCBD5E1)
+                              : const Color(0xFF64748B),
+                          fontSize: 13,
+                          height: 1.35,
+                        ),
+                      ),
+                    ],
                   ),
                 )
               else
@@ -18490,8 +18960,7 @@ class _StageOrdersKanbanColumnState extends State<_StageOrdersKanbanColumn> {
                                 alignment: Alignment.centerRight,
                                 child: LongPressDraggable<WorkflowOrder>(
                                   data: order,
-                                  dragAnchorStrategy:
-                                      pointerDragAnchorStrategy,
+                                  dragAnchorStrategy: pointerDragAnchorStrategy,
                                   onDragUpdate: (details) {
                                     onEngineeringCardDragUpdate?.call(
                                       details.globalPosition,
@@ -19261,8 +19730,17 @@ class _CollapsibleDetailSectionState extends State<_CollapsibleDetailSection> {
     return Container(
       decoration: BoxDecoration(
         color: surfaceColor,
-        borderRadius: BorderRadius.circular(18),
+        borderRadius: BorderRadius.circular(20),
         border: Border.all(color: borderColor),
+        boxShadow: isDarkMode
+            ? null
+            : const [
+                BoxShadow(
+                  color: Color(0x0A0F172A),
+                  blurRadius: 18,
+                  offset: Offset(0, 6),
+                ),
+              ],
       ),
       child: Column(
         children: [
@@ -19272,7 +19750,7 @@ class _CollapsibleDetailSectionState extends State<_CollapsibleDetailSection> {
                 _expanded = !_expanded;
               });
             },
-            borderRadius: BorderRadius.circular(18),
+            borderRadius: BorderRadius.circular(20),
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
               child: Row(
@@ -19290,8 +19768,8 @@ class _CollapsibleDetailSectionState extends State<_CollapsibleDetailSection> {
                     height: 32,
                     decoration: BoxDecoration(
                       color: isDarkMode
-                          ? Colors.black.withValues(alpha: 0.14)
-                          : Colors.white,
+                          ? const Color(0xFF263449)
+                          : const Color(0xFFF8FAFC),
                       borderRadius: BorderRadius.circular(10),
                       border: Border.all(color: borderColor),
                     ),
@@ -19610,19 +20088,19 @@ BoxDecoration _panelDecoration(BuildContext context) {
   final isDarkMode = Theme.of(context).brightness == Brightness.dark;
 
   return BoxDecoration(
-    color: isDarkMode ? const Color(0xFF202225) : Colors.white,
-    borderRadius: BorderRadius.circular(16),
+    color: isDarkMode ? const Color(0xFF1E293B) : Colors.white,
+    borderRadius: BorderRadius.circular(20),
     border: Border.all(
-      color: isDarkMode ? const Color(0xFF2F3134) : const Color(0xFFE8E8E5),
+      color: isDarkMode ? const Color(0xFF334155) : const Color(0xFFE2E8F0),
       width: 1,
     ),
     boxShadow: isDarkMode
         ? null
         : const [
             BoxShadow(
-              color: Color(0x080F172A),
-              blurRadius: 12,
-              offset: Offset(0, 4),
+              color: Color(0x0A0F172A),
+              blurRadius: 18,
+              offset: Offset(0, 6),
             ),
           ],
   );
