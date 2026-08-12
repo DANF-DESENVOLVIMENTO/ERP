@@ -528,7 +528,12 @@ const List<String> _proposalServiceNames = [
 ];
 
 const List<String> _yesNoOptions = ['Sim', 'Não'];
-const List<String> _paymentTypeOptions = ['Pix', 'Cartão de crédito', 'Boleto'];
+const List<String> _paymentTypeOptions = [
+  'Pix',
+  'Cartão de crédito',
+  'Boleto',
+  'Dinheiro',
+];
 const List<String> _paymentMethodOptions = ['À vista', 'Parcelado', 'Outro'];
 
 List<TextInputFormatter> _currencyInputFormatters() {
@@ -1935,20 +1940,28 @@ class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
                             validator: _validatePaymentObservation,
                             maxLines: 2,
                           ),
-                          const SizedBox(height: 16),
+                        ],
+                      ),
+                      const SizedBox(height: 20),
+                      _AdditionalProposalSectionCard(
+                        title: 'Integrador',
+                        children: [
                           Row(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Expanded(
                                 child: _DialogField(
-                                  controller: _integratorValueController,
-                                  label: 'Valor integrador',
-                                  validator: (value) => _validateOptionalCurrency(
+                                  controller: _paymentDateController,
+                                  label: 'Data',
+                                  validator: (value) => _validateDate(
                                     value,
-                                    label: 'o valor integrador',
+                                    label: 'a data',
                                   ),
-                                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                                  inputFormatters: _currencyInputFormatters(),
+                                  keyboardType: TextInputType.number,
+                                  inputFormatters: [
+                                    FilteringTextInputFormatter.digitsOnly,
+                                    _DateTextInputFormatter(),
+                                  ],
                                 ),
                               ),
                               const SizedBox(width: 16),
@@ -1967,17 +1980,14 @@ class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
                             children: [
                               Expanded(
                                 child: _DialogField(
-                                  controller: _paymentDateController,
-                                  label: 'Data do pagamento',
-                                  validator: (value) => _validateDate(
+                                  controller: _integratorValueController,
+                                  label: 'Valor integrador',
+                                  validator: (value) => _validateOptionalCurrency(
                                     value,
-                                    label: 'a data do pagamento',
+                                    label: 'o valor integrador',
                                   ),
-                                  keyboardType: TextInputType.number,
-                                  inputFormatters: [
-                                    FilteringTextInputFormatter.digitsOnly,
-                                    _DateTextInputFormatter(),
-                                  ],
+                                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                                  inputFormatters: _currencyInputFormatters(),
                                 ),
                               ),
                               const SizedBox(width: 16),
@@ -1999,7 +2009,7 @@ class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
                           _DialogField(
                             controller: _architectNameController,
                             label: 'Nome do arquiteto',
-                            validator: _requiredField,
+                            validator: (_) => null,
                           ),
                         ],
                       ),
@@ -3249,6 +3259,41 @@ class _CustomerRegistrationDialogState
                                 validator: _validatePaymentObservation,
                                 maxLines: 2,
                               ),
+                            ],
+                          ),
+                          const SizedBox(height: 20),
+                          _buildSectionCard(
+                            context,
+                            title: 'Integrador',
+                            children: [
+                              Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Expanded(
+                                    child: _DialogField(
+                                      controller: _paymentDateController,
+                                      label: 'Data',
+                                      validator: (value) => _validateDate(
+                                        value,
+                                        label: 'a data',
+                                      ),
+                                      keyboardType: TextInputType.number,
+                                      inputFormatters: [
+                                        FilteringTextInputFormatter.digitsOnly,
+                                        _DateTextInputFormatter(),
+                                      ],
+                                    ),
+                                  ),
+                                  const SizedBox(width: 16),
+                                  Expanded(
+                                    child: _DialogField(
+                                      controller: _integratorNameController,
+                                      label: 'Nome do integrador',
+                                      validator: (_) => null,
+                                    ),
+                                  ),
+                                ],
+                              ),
                               const SizedBox(height: 16),
                               Row(
                                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -3268,35 +3313,6 @@ class _CustomerRegistrationDialogState
                                           ),
                                       inputFormatters:
                                           _currencyInputFormatters(),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 16),
-                                  Expanded(
-                                    child: _DialogField(
-                                      controller: _integratorNameController,
-                                      label: 'Nome do integrador',
-                                      validator: (_) => null,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 16),
-                              Row(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Expanded(
-                                    child: _DialogField(
-                                      controller: _paymentDateController,
-                                      label: 'Data do pagamento',
-                                      validator: (value) => _validateDate(
-                                        value,
-                                        label: 'a data do pagamento',
-                                      ),
-                                      keyboardType: TextInputType.number,
-                                      inputFormatters: [
-                                        FilteringTextInputFormatter.digitsOnly,
-                                        _DateTextInputFormatter(),
-                                      ],
                                     ),
                                   ),
                                   const SizedBox(width: 16),
@@ -3322,7 +3338,7 @@ class _CustomerRegistrationDialogState
                                     child: _DialogField(
                                       controller: _architectNameController,
                                       label: 'Nome do arquiteto',
-                                      validator: _requiredField,
+                                      validator: (_) => null,
                                     ),
                                   ),
                                 ],

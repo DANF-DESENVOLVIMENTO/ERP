@@ -585,7 +585,7 @@ class _InstallationCalendarBoardState
               if (canScheduleSelectedOrder)
                 FilledButton.icon(
                   onPressed: () async {
-                    await onScheduleSelectedOrder!();
+                    await onScheduleSelectedOrder();
                   },
                   icon: const Icon(Icons.event_outlined),
                   label: const Text('Agendar pedido selecionado'),

@@ -522,18 +522,31 @@ extension AssemblyWorkflowStatusPresentation on AssemblyWorkflowStatus {
   };
 }
 
-enum InstallationWorkflowStatus { waiting, scheduled, doing, done }
+enum InstallationWorkflowStatus {
+  waiting,
+  dependsOnClient,
+  dependsOnDanf,
+  scheduled,
+  doing,
+  done,
+}
 
 extension InstallationWorkflowStatusPresentation on InstallationWorkflowStatus {
   String get title => switch (this) {
     InstallationWorkflowStatus.waiting => 'Aguardando',
+    InstallationWorkflowStatus.dependsOnClient =>
+      'inicializou e Depende do cliente',
+    InstallationWorkflowStatus.dependsOnDanf =>
+      'Inicializou e Depende da DANF',
     InstallationWorkflowStatus.scheduled => 'Agendado',
     InstallationWorkflowStatus.doing => 'Em andamento',
-    InstallationWorkflowStatus.done => 'Concluído',
+    InstallationWorkflowStatus.done => 'Concluido',
   };
 
   Color get color => switch (this) {
     InstallationWorkflowStatus.waiting => const Color(0xFFB45309),
+    InstallationWorkflowStatus.dependsOnClient => const Color(0xFFDC2626),
+    InstallationWorkflowStatus.dependsOnDanf => const Color(0xFF7C2D12),
     InstallationWorkflowStatus.scheduled => const Color(0xFF7C3AED),
     InstallationWorkflowStatus.doing => const Color(0xFF2563EB),
     InstallationWorkflowStatus.done => const Color(0xFF15803D),

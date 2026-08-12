@@ -5,11 +5,13 @@ class _EngineeringStageCalendarBoard extends StatefulWidget {
     required this.orders,
     required this.onOrderSelected,
     this.selectedOrder,
+    this.onSchedulePersonalActivity,
   });
 
   final List<WorkflowOrder> orders;
   final WorkflowOrder? selectedOrder;
   final ValueChanged<WorkflowOrder> onOrderSelected;
+  final Future<void> Function()? onSchedulePersonalActivity;
 
   @override
   State<_EngineeringStageCalendarBoard> createState() =>
@@ -181,7 +183,9 @@ class _EngineeringStageCalendarBoardState
     final scheduledEntries = <_EngineeringCalendarEntry>[];
     for (final order in stageOrders) {
       for (final entry in order.engineeringActivitySchedules.entries) {
-        final task = _engineeringChecklistTaskByKey(entry.key);
+        final task = entry.key == _engineeringPersonalScheduleKey
+            ? _engineeringPersonalScheduleTask
+            : _engineeringChecklistTaskByKey(entry.key);
         if (task == null) {
           continue;
         }
@@ -217,6 +221,17 @@ class _EngineeringStageCalendarBoardState
             'Calendário da engenharia',
             style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
           ),
+          if (widget.selectedOrder?.currentStage == WorkflowStage.engineering &&
+              widget.onSchedulePersonalActivity != null) ...[
+            const SizedBox(height: 10),
+            OutlinedButton.icon(
+              onPressed: () async {
+                await widget.onSchedulePersonalActivity!();
+              },
+              icon: const Icon(Icons.event_note_outlined),
+              label: const Text('Agendar pessoal'),
+            ),
+          ],
           const SizedBox(height: 6),
           Text(
             'Concentre aqui as apresentações, visitas em obra e conferências de cabos já agendadas.',
@@ -435,6 +450,519 @@ class _EngineeringStageCalendarBoardState
       ),
     );
   }
+}
+
+class _GeneralCalendarSection extends StatefulWidget {
+  const _GeneralCalendarSection({
+    required this.orders,
+    required this.onOrderSelected,
+    this.selectedOrder,
+  });
+
+  final List<WorkflowOrder> orders;
+  final WorkflowOrder? selectedOrder;
+  final ValueChanged<String> onOrderSelected;
+
+  @override
+  State<_GeneralCalendarSection> createState() => _GeneralCalendarSectionState();
+}
+
+class _GeneralCalendarSectionState extends State<_GeneralCalendarSection> {
+  late DateTime _selectedDate;
+  late DateTime _focusedMonth;
+
+  static const _monthNames = [
+    'Janeiro',
+    'Fevereiro',
+    'Março',
+    'Abril',
+    'Maio',
+    'Junho',
+    'Julho',
+    'Agosto',
+    'Setembro',
+    'Outubro',
+    'Novembro',
+    'Dezembro',
+  ];
+  static const _weekdayLabels = ['D', 'S', 'T', 'Q', 'Q', 'S', 'S'];
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedDate = DateUtils.dateOnly(DateTime.now());
+    _focusedMonth = DateTime(_selectedDate.year, _selectedDate.month);
+  }
+
+  void _changeFocusedMonth(int delta) {
+    setState(() {
+      _focusedMonth = DateTime(_focusedMonth.year, _focusedMonth.month + delta);
+    });
+  }
+
+  List<_GeneralCalendarEntry> _buildEntries() {
+    final entries = <_GeneralCalendarEntry>[];
+    for (final order in widget.orders) {
+      for (final scheduleEntry in order.engineeringActivitySchedules.entries) {
+        final task = scheduleEntry.key == _engineeringPersonalScheduleKey
+            ? _engineeringPersonalScheduleTask
+            : _engineeringChecklistTaskByKey(scheduleEntry.key);
+        if (task == null) {
+          continue;
+        }
+        entries.add(
+          _GeneralCalendarEntry(
+            order: order,
+            stage: WorkflowStage.engineering,
+            scheduledAt: scheduleEntry.value.scheduledAt,
+            title: task.label,
+            notes: scheduleEntry.value.notes,
+            accent: WorkflowStage.engineering.color,
+            icon: scheduleEntry.key == _engineeringPersonalScheduleKey
+                ? Icons.event_note_outlined
+                : Icons.architecture_outlined,
+          ),
+        );
+      }
+
+      if (order.currentStage == WorkflowStage.assembly) {
+        entries.add(
+          _GeneralCalendarEntry(
+            order: order,
+            stage: WorkflowStage.assembly,
+            scheduledAt: order.deadline,
+            title: 'Montagem',
+            notes: order.nextAction,
+            accent: WorkflowStage.assembly.color,
+            icon: Icons.precision_manufacturing_outlined,
+          ),
+        );
+      }
+
+      final installationDate = order.installationScheduledAt;
+      if (installationDate != null) {
+        entries.add(
+          _GeneralCalendarEntry(
+            order: order,
+            stage: WorkflowStage.installation,
+            scheduledAt: installationDate,
+            title: 'Instalação',
+            notes: order.nextAction,
+            accent: WorkflowStage.installation.color,
+            icon: Icons.home_repair_service_outlined,
+          ),
+        );
+      }
+    }
+
+    entries.sort((left, right) => left.scheduledAt.compareTo(right.scheduledAt));
+    return entries;
+  }
+
+  Widget _buildCalendarGrid({
+    required List<_GeneralCalendarEntry> entries,
+    required Color secondaryTextColor,
+  }) {
+    final accent = const Color(0xFF0F766E);
+    final scheduledDates = entries
+        .map((entry) => DateUtils.dateOnly(entry.scheduledAt))
+        .toSet();
+    final daysInMonth = DateUtils.getDaysInMonth(
+      _focusedMonth.year,
+      _focusedMonth.month,
+    );
+    final leadingBlanks =
+        DateTime(_focusedMonth.year, _focusedMonth.month, 1).weekday % 7;
+    final totalCells = leadingBlanks + daysInMonth;
+    final rowCount = (totalCells / 7).ceil();
+
+    Widget buildDayCell(int index) {
+      final dayNumber = index - leadingBlanks + 1;
+      if (dayNumber < 1 || dayNumber > daysInMonth) {
+        return const SizedBox();
+      }
+
+      final date = DateTime(_focusedMonth.year, _focusedMonth.month, dayNumber);
+      final isSelected = _isSameDate(date, _selectedDate);
+      final isToday = _isSameDate(date, DateTime.now());
+      final hasSchedule = scheduledDates.any((d) => _isSameDate(d, date));
+
+      return InkWell(
+        borderRadius: BorderRadius.circular(10),
+        onTap: () => setState(() => _selectedDate = date),
+        child: Container(
+          margin: const EdgeInsets.all(2),
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          decoration: BoxDecoration(
+            color: isSelected ? accent.withValues(alpha: 0.16) : null,
+            border: isToday && !isSelected ? Border.all(color: accent) : null,
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                '$dayNumber',
+                style: TextStyle(
+                  fontWeight: isSelected ? FontWeight.w800 : FontWeight.w600,
+                  color: isSelected ? accent : null,
+                ),
+              ),
+              const SizedBox(height: 3),
+              Container(
+                width: 6,
+                height: 6,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: hasSchedule ? accent : const Color(0xFFB7B7B2),
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            IconButton(
+              icon: const Icon(Icons.chevron_left),
+              onPressed: () => _changeFocusedMonth(-1),
+            ),
+            Text(
+              '${_monthNames[_focusedMonth.month - 1]} de ${_focusedMonth.year}',
+              style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 16),
+            ),
+            IconButton(
+              icon: const Icon(Icons.chevron_right),
+              onPressed: () => _changeFocusedMonth(1),
+            ),
+          ],
+        ),
+        Row(
+          children: _weekdayLabels
+              .map(
+                (label) => Expanded(
+                  child: Center(
+                    child: Text(
+                      label,
+                      style: TextStyle(
+                        color: secondaryTextColor,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ),
+                ),
+              )
+              .toList(growable: false),
+        ),
+        const SizedBox(height: 4),
+        for (var row = 0; row < rowCount; row++)
+          Row(
+            children: [
+              for (var col = 0; col < 7; col++)
+                Expanded(child: buildDayCell(row * 7 + col)),
+            ],
+          ),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    final borderColor = isDarkMode
+        ? const Color(0xFF3E4044)
+        : const Color(0xFFE8E8E5);
+    final surfaceColor = isDarkMode ? const Color(0xFF1C1D20) : Colors.white;
+    final secondaryTextColor = isDarkMode
+        ? const Color(0xFFA3A39E)
+        : const Color(0xFF6B6B68);
+    final entries = _buildEntries();
+    final selectedDayEntries = entries
+        .where((entry) => _isSameDate(entry.scheduledAt, _selectedDate))
+        .toList(growable: false);
+    final engineeringCount = entries
+        .where((entry) => entry.stage == WorkflowStage.engineering)
+        .length;
+    final assemblyCount = entries
+        .where((entry) => entry.stage == WorkflowStage.assembly)
+        .length;
+    final installationCount = entries
+        .where((entry) => entry.stage == WorkflowStage.installation)
+        .length;
+
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: _panelDecoration(context),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            'Calendário geral',
+            style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Agenda unificada da engenharia, montagem e instalação.',
+            style: TextStyle(color: secondaryTextColor, height: 1.35),
+          ),
+          const SizedBox(height: 16),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              _CalendarMetricPill(
+                label: 'Agendas',
+                value: '${entries.length}',
+                accent: const Color(0xFF0F766E),
+              ),
+              _CalendarMetricPill(
+                label: 'Engenharia',
+                value: '$engineeringCount',
+                accent: WorkflowStage.engineering.color,
+              ),
+              _CalendarMetricPill(
+                label: 'Montagem',
+                value: '$assemblyCount',
+                accent: WorkflowStage.assembly.color,
+              ),
+              _CalendarMetricPill(
+                label: 'Instalação',
+                value: '$installationCount',
+                accent: WorkflowStage.installation.color,
+              ),
+              _CalendarMetricPill(
+                label: 'Dia selecionado',
+                value: '${selectedDayEntries.length}',
+                accent: const Color(0xFF475569),
+              ),
+            ],
+          ),
+          const SizedBox(height: 18),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final useColumn = constraints.maxWidth < 980;
+              final calendar = Container(
+                decoration: BoxDecoration(
+                  color: surfaceColor,
+                  borderRadius: BorderRadius.circular(18),
+                  border: Border.all(color: borderColor),
+                ),
+                padding: const EdgeInsets.all(12),
+                child: _buildCalendarGrid(
+                  entries: entries,
+                  secondaryTextColor: secondaryTextColor,
+                ),
+              );
+              final agenda = Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: surfaceColor,
+                  borderRadius: BorderRadius.circular(18),
+                  border: Border.all(color: borderColor),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      _formatDayWithWeekday(_selectedDate),
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      selectedDayEntries.isEmpty
+                          ? 'Nenhuma agenda marcada para este dia.'
+                          : '${selectedDayEntries.length} agenda(s) programada(s).',
+                      style: TextStyle(color: secondaryTextColor),
+                    ),
+                    const SizedBox(height: 16),
+                    if (selectedDayEntries.isEmpty)
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(16),
+                        decoration: BoxDecoration(
+                          color: isDarkMode
+                              ? Colors.black.withValues(alpha: 0.12)
+                              : const Color(0xFFF5F5F3),
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(color: borderColor),
+                        ),
+                        child: Text(
+                          'As agendas criadas nos setores aparecem aqui automaticamente.',
+                          style: TextStyle(
+                            color: secondaryTextColor,
+                            height: 1.35,
+                          ),
+                        ),
+                      )
+                    else
+                      ...selectedDayEntries.map((entry) {
+                        final isSelected =
+                            widget.selectedOrder?.code == entry.order.code;
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 10),
+                          child: InkWell(
+                            onTap: () => widget.onOrderSelected(entry.order.code),
+                            borderRadius: BorderRadius.circular(14),
+                            child: Container(
+                              width: double.infinity,
+                              padding: const EdgeInsets.all(14),
+                              decoration: BoxDecoration(
+                                color: isSelected
+                                    ? entry.accent.withValues(alpha: 0.08)
+                                    : isDarkMode
+                                    ? const Color(0xFF1C1D20)
+                                    : const Color(0xFFF5F5F3),
+                                borderRadius: BorderRadius.circular(14),
+                                border: Border.all(
+                                  color: isSelected ? entry.accent : borderColor,
+                                ),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    children: [
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 10,
+                                          vertical: 6,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: entry.accent.withValues(
+                                            alpha: 0.12,
+                                          ),
+                                          borderRadius: BorderRadius.circular(
+                                            999,
+                                          ),
+                                        ),
+                                        child: Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            Icon(
+                                              entry.icon,
+                                              size: 14,
+                                              color: entry.accent,
+                                            ),
+                                            const SizedBox(width: 6),
+                                            Text(
+                                              _formatTimeOnly(entry.scheduledAt),
+                                              style: TextStyle(
+                                                color: entry.accent,
+                                                fontWeight: FontWeight.w800,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                      const SizedBox(width: 10),
+                                      _StatusBadge(
+                                        label: entry.stage.title,
+                                        color: entry.accent,
+                                      ),
+                                      const SizedBox(width: 10),
+                                      Expanded(
+                                        child: Text(
+                                          _displayOrderCode(
+                                            entry.order,
+                                            widget.orders,
+                                          ),
+                                          textAlign: TextAlign.right,
+                                          style: TextStyle(
+                                            color: secondaryTextColor,
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w700,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  const SizedBox(height: 10),
+                                  Text(
+                                    entry.title,
+                                    style: const TextStyle(
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    '${entry.order.workName} • ${entry.order.client.name}',
+                                    style: TextStyle(
+                                      color: secondaryTextColor,
+                                      height: 1.35,
+                                    ),
+                                  ),
+                                  if (entry.notes.trim().isNotEmpty) ...[
+                                    const SizedBox(height: 8),
+                                    Text(
+                                      entry.notes,
+                                      style: TextStyle(
+                                        color: secondaryTextColor,
+                                        fontSize: 12,
+                                        height: 1.35,
+                                      ),
+                                    ),
+                                  ],
+                                ],
+                              ),
+                            ),
+                          ),
+                        );
+                      }),
+                  ],
+                ),
+              );
+
+              if (useColumn) {
+                return Column(
+                  children: [calendar, const SizedBox(height: 16), agenda],
+                );
+              }
+
+              return Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(flex: 5, child: calendar),
+                  const SizedBox(width: 16),
+                  Expanded(flex: 6, child: agenda),
+                ],
+              );
+            },
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _GeneralCalendarEntry {
+  const _GeneralCalendarEntry({
+    required this.order,
+    required this.stage,
+    required this.scheduledAt,
+    required this.title,
+    required this.notes,
+    required this.accent,
+    required this.icon,
+  });
+
+  final WorkflowOrder order;
+  final WorkflowStage stage;
+  final DateTime scheduledAt;
+  final String title;
+  final String notes;
+  final Color accent;
+  final IconData icon;
 }
 
 class _SecretBlankScreen extends StatelessWidget {
@@ -1456,6 +1984,8 @@ double _effectiveOrderProgress(WorkflowOrder order) {
       2 => 0.75,
       3 => switch (order.installationWorkflowStatus) {
         InstallationWorkflowStatus.waiting => 0.15,
+        InstallationWorkflowStatus.dependsOnClient => 0.65,
+        InstallationWorkflowStatus.dependsOnDanf => 0.65,
         InstallationWorkflowStatus.scheduled => 0.35,
         InstallationWorkflowStatus.doing => 0.70,
         InstallationWorkflowStatus.done => 1.0,
@@ -1506,6 +2036,8 @@ double _stageProgressFraction(WorkflowOrder order) {
     },
     WorkflowStage.installation => switch (order.installationWorkflowStatus) {
       InstallationWorkflowStatus.waiting => 0.10,
+      InstallationWorkflowStatus.dependsOnClient => 0.65,
+      InstallationWorkflowStatus.dependsOnDanf => 0.65,
       InstallationWorkflowStatus.scheduled => 0.35,
       InstallationWorkflowStatus.doing => 0.70,
       InstallationWorkflowStatus.done => 1.0,

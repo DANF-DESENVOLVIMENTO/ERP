@@ -300,7 +300,15 @@ List<EmployeeWorkspaceProfile> _profilesForEmails(
 
 enum _DriveSyncStatus { checking, synced, offline, notConfigured }
 
-enum _InstallationProgressAction { complete, scheduleReturn }
+enum _InstallationProgressAction { complete, dependsOnClient, dependsOnDanf }
+
+const String _engineeringPersonalScheduleKey = '__personal_engineering__';
+const EngineeringChecklistTask _engineeringPersonalScheduleTask =
+    EngineeringChecklistTask(
+      key: _engineeringPersonalScheduleKey,
+      label: 'Agenda pessoal',
+      supportsScheduling: true,
+    );
 
 class ErpDanfApp extends StatefulWidget {
   const ErpDanfApp({
@@ -318,6 +326,32 @@ class ErpDanfApp extends StatefulWidget {
 
 class _ErpDanfAppState extends State<ErpDanfApp> {
   ThemeMode _themeMode = ThemeMode.light;
+  Object? _runtimeError;
+
+  @override
+  void initState() {
+    super.initState();
+    _runtimeError = widget.runtimeErrorListenable.value;
+    widget.runtimeErrorListenable.addListener(_handleRuntimeErrorChanged);
+  }
+
+  @override
+  void didUpdateWidget(covariant ErpDanfApp oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.runtimeErrorListenable == widget.runtimeErrorListenable) {
+      return;
+    }
+
+    oldWidget.runtimeErrorListenable.removeListener(_handleRuntimeErrorChanged);
+    _runtimeError = widget.runtimeErrorListenable.value;
+    widget.runtimeErrorListenable.addListener(_handleRuntimeErrorChanged);
+  }
+
+  @override
+  void dispose() {
+    widget.runtimeErrorListenable.removeListener(_handleRuntimeErrorChanged);
+    super.dispose();
+  }
 
   void _setThemeMode(ThemeMode mode) {
     if (_themeMode == mode) {
@@ -329,41 +363,44 @@ class _ErpDanfAppState extends State<ErpDanfApp> {
     });
   }
 
+  void _handleRuntimeErrorChanged() {
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _runtimeError = widget.runtimeErrorListenable.value;
+      });
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     const seed = Color(0xFF2F6B4F);
 
-    return ValueListenableBuilder<Object?>(
-      valueListenable: widget.runtimeErrorListenable,
-      builder: (context, runtimeError, _) {
-        final firebaseError =
-            widget.firebaseInitializationError ??
-            (_looksLikeFirebaseConfigurationError(runtimeError)
-                ? runtimeError
-                : null);
+    final firebaseError =
+        widget.firebaseInitializationError ??
+        (_looksLikeFirebaseConfigurationError(_runtimeError)
+            ? _runtimeError
+            : null);
 
-        final home = firebaseError != null
-            ? FirebaseConfigurationScreen(error: firebaseError)
-            : FirebaseAuthShell(
-                firebaseInitializationError: widget.firebaseInitializationError,
-                authenticatedBuilder: (context) => ErpDashboardPage(
-                  themeMode: _themeMode,
-                  onThemeModeChanged: _setThemeMode,
-                ),
-              );
+    final home = firebaseError != null
+        ? FirebaseConfigurationScreen(error: firebaseError)
+        : FirebaseAuthShell(
+            firebaseInitializationError: widget.firebaseInitializationError,
+            authenticatedBuilder: (context) => ErpDashboardPage(
+              themeMode: _themeMode,
+              onThemeModeChanged: _setThemeMode,
+            ),
+          );
 
-        return MaterialApp(
-          debugShowCheckedModeBanner: false,
-          title: 'ERP DANF',
-          theme: _buildTheme(seed: seed, brightness: Brightness.light),
-          darkTheme: _buildTheme(seed: seed, brightness: Brightness.dark),
-          themeMode: _themeMode,
-          builder: (context, child) => SelectionArea(
-            child: child ?? const SizedBox.shrink(),
-          ),
-          home: home,
-        );
-      },
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      title: 'ERP DANF',
+      theme: _buildTheme(seed: seed, brightness: Brightness.light),
+      darkTheme: _buildTheme(seed: seed, brightness: Brightness.dark),
+      themeMode: _themeMode,
+      home: SelectionArea(child: home),
     );
   }
 }
@@ -1225,10 +1262,12 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
               _toggleFinanceClientApprovalForSelectedOrder,
           onScheduleInstallation: _scheduleInstallationForSelectedOrder,
           onToggleInstallationExecutionItem: _toggleInstallationExecutionItem,
-          onOpenAssemblyPreparationChecklist:
-              _openAssemblyChecklistForSelectedOrder,
-          onScheduleEngineeringActivity: _scheduleEngineeringActivity,
-          onUpdateEngineeringChecklistStatus: _updateEngineeringChecklistStatus,
+      onOpenAssemblyPreparationChecklist:
+          _openAssemblyChecklistForSelectedOrder,
+      onScheduleEngineeringActivity: _scheduleEngineeringActivity,
+      onSchedulePersonalEngineeringActivity:
+          _schedulePersonalEngineeringActivity,
+      onUpdateEngineeringChecklistStatus: _updateEngineeringChecklistStatus,
           onUpdateFinanceContractStatus: _updateFinanceContractStatus,
           onUpdateRelationshipKanbanStatus: _updateRelationshipKanbanStatus,
           onEditOrder:
@@ -1289,6 +1328,12 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
         label: 'Área de trabalho',
         icon: Icons.workspaces_outline,
         color: Color(0xFF12372A),
+      ),
+      const _FlowNavItem(
+        routeKey: 'general_calendar',
+        label: 'Calendário geral',
+        icon: Icons.calendar_month_outlined,
+        color: Color(0xFF0F766E),
       ),
       ...(profile.isAdministrator ? workspaceStages : profile.allowedStages)
           .map(
@@ -2245,6 +2290,14 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       );
     }
 
+    if (tab.routeKey == 'general_calendar') {
+      return _GeneralCalendarSection(
+        orders: _orders,
+        selectedOrder: _selectedOrder,
+        onOrderSelected: _openOrderFromWorkspace,
+      );
+    }
+
     if (tab.routeKey == 'log') {
       if (!_currentWorkspaceProfile.isAdministrator) {
         return _WorkflowSection(
@@ -2316,6 +2369,8 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       onOpenAssemblyPreparationChecklist:
           _openAssemblyChecklistForSelectedOrder,
       onScheduleEngineeringActivity: _scheduleEngineeringActivity,
+      onSchedulePersonalEngineeringActivity:
+          _schedulePersonalEngineeringActivity,
       onUpdateEngineeringChecklistStatus: _updateEngineeringChecklistStatus,
       onUpdateFinanceContractStatus: _updateFinanceContractStatus,
       onUpdateRelationshipKanbanStatus: _updateRelationshipKanbanStatus,
@@ -2836,7 +2891,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
               DateTime(
                 DateTime.now().year,
                 DateTime.now().month,
-                DateTime.now().day + 1,
+                DateTime.now().day,
                 8,
               ),
           assignedTeam: '',
@@ -3323,6 +3378,47 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     _mergeOrderLocally(savedOrder);
   }
 
+  Future<void> _updateInstallationWorkflowStatus(
+    WorkflowOrder order,
+    InstallationWorkflowStatus status, {
+    bool clearSchedule = false,
+  }) async {
+    final previewOrder = order.copyWith(
+      installationWorkflowStatus: status,
+      clearInstallationScheduledAt: clearSchedule,
+      installationAssignedEmployeeEmails: clearSchedule ? const [] : null,
+      installationAssignedTeam: clearSchedule ? '' : null,
+    );
+    final now = DateTime.now();
+    final updatedOrder = order.copyWith(
+      installationWorkflowStatus: status,
+      clearInstallationScheduledAt: clearSchedule,
+      installationAssignedEmployeeEmails: clearSchedule ? const [] : null,
+      installationAssignedTeam: clearSchedule ? '' : null,
+      progress: _effectiveOrderProgress(previewOrder),
+      nextAction: _defaultNextActionForStage(
+        WorkflowStage.installation,
+        previewOrder,
+      ),
+      blocker: _installationWorkflowBlocker(status),
+      history: Map<WorkflowStage, String>.from(order.history)
+        ..[WorkflowStage.installation] =
+            'Instalação movida para ${status.title} em ${_formatDateTime(now)}',
+    );
+
+    final savedOrder = await _runBusyTask(
+      () => _repository.saveOrder(updatedOrder),
+      busyMessage: 'Atualizando instalação...',
+      successMessage: 'Instalação atualizada.',
+      errorPrefix: 'Não foi possível atualizar a instalação',
+    );
+    if (savedOrder == null) {
+      return;
+    }
+
+    _mergeOrderLocally(savedOrder);
+  }
+
   Future<void> _toggleInstallationExecutionItem(
     int visitIndex,
     String item,
@@ -3369,7 +3465,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       builder: (context) => AlertDialog(
         title: const Text('Instalação em andamento'),
         content: const Text(
-          'Concluir a instalação ou agendar retorno para outro dia?',
+          'Defina o resultado desta visita para mover o cartão.',
         ),
         actions: [
           TextButton(
@@ -3379,8 +3475,14 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
           OutlinedButton(
             onPressed: () => Navigator.of(
               context,
-            ).pop(_InstallationProgressAction.scheduleReturn),
-            child: const Text('Agendar retorno'),
+            ).pop(_InstallationProgressAction.dependsOnClient),
+            child: const Text('Depende do cliente'),
+          ),
+          OutlinedButton(
+            onPressed: () => Navigator.of(
+              context,
+            ).pop(_InstallationProgressAction.dependsOnDanf),
+            child: const Text('Depende da DANF'),
           ),
           FilledButton(
             onPressed: () =>
@@ -3396,8 +3498,25 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       return;
     }
 
-    if (action == _InstallationProgressAction.scheduleReturn) {
-      await _scheduleInstallationForSelectedOrder();
+    if (action == _InstallationProgressAction.dependsOnClient) {
+      final selected = _selectedOrder;
+      if (selected != null) {
+        await _updateInstallationWorkflowStatus(
+          selected,
+          InstallationWorkflowStatus.dependsOnClient,
+        );
+      }
+      return;
+    }
+
+    if (action == _InstallationProgressAction.dependsOnDanf) {
+      final selected = _selectedOrder;
+      if (selected != null) {
+        await _updateInstallationWorkflowStatus(
+          selected,
+          InstallationWorkflowStatus.dependsOnDanf,
+        );
+      }
     }
   }
 
@@ -3457,6 +3576,80 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
         area: 'Engenharia',
         details:
             '${_displayOrderCode(savedOrder)} • ${task.label} • ${_formatDateTime(scheduled.scheduledAt)}',
+      ),
+    );
+  }
+
+  Future<void> _schedulePersonalEngineeringActivity() async {
+    final selected = _selectedOrder;
+    if (selected == null || selected.currentStage != WorkflowStage.engineering) {
+      return;
+    }
+
+    final existingSchedule =
+        selected.engineeringActivitySchedules[_engineeringPersonalScheduleKey];
+    final draft = await showDialog<_EngineeringActivityScheduleDraft>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => _EngineeringActivityScheduleDialog(
+        order: selected,
+        task: _engineeringPersonalScheduleTask,
+        initialDraft: _EngineeringActivityScheduleDraft(
+          scheduledAt:
+              existingSchedule?.scheduledAt ??
+              DateTime(
+                DateTime.now().year,
+                DateTime.now().month,
+                DateTime.now().day,
+                8,
+              ),
+          notes: existingSchedule?.notes ?? '',
+        ),
+      ),
+    );
+
+    if (draft == null) {
+      return;
+    }
+
+    final scheduled = EngineeringTaskSchedule(
+      scheduledAt: draft.scheduledAt,
+      notes: draft.notes.trim(),
+    );
+    final updatedSchedules = Map<String, EngineeringTaskSchedule>.from(
+      selected.engineeringActivitySchedules,
+    )..[_engineeringPersonalScheduleKey] = scheduled;
+
+    final historyMessage =
+        'Agenda pessoal da Engenharia marcada para ${_formatDateTime(scheduled.scheduledAt)}';
+    final updatedOrder = selected.copyWith(
+      engineeringActivitySchedules: updatedSchedules,
+      history: Map<WorkflowStage, String>.from(selected.history)
+        ..[WorkflowStage.engineering] = historyMessage,
+    );
+
+    final savedOrder = await _runBusyTask(
+      () => _repository.saveOrder(updatedOrder),
+      busyMessage: 'Salvando agenda pessoal da engenharia...',
+      successMessage: 'Agenda pessoal da engenharia salva.',
+      errorPrefix: 'Não foi possível salvar a agenda pessoal da engenharia',
+    );
+    if (savedOrder == null) {
+      return;
+    }
+
+    setState(() {
+      _selectedOrderCode = savedOrder.code;
+    });
+    _mergeOrderLocally(savedOrder);
+    unawaited(
+      _appendPlatformLog(
+        action: existingSchedule == null
+            ? 'Agendou organização pessoal da engenharia'
+            : 'Reagendou organização pessoal da engenharia',
+        area: 'Engenharia',
+        details:
+            '${_displayOrderCode(savedOrder)} • Agenda pessoal • ${_formatDateTime(scheduled.scheduledAt)}',
       ),
     );
   }
@@ -3628,6 +3821,10 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     return switch (status) {
       InstallationWorkflowStatus.waiting =>
         'Aguardando liberação da agenda de instalação.',
+      InstallationWorkflowStatus.dependsOnClient =>
+        'Instalação iniciada. Aguardando retorno do cliente.',
+      InstallationWorkflowStatus.dependsOnDanf =>
+        'Instalação iniciada. Aguardando ação da DANF.',
       InstallationWorkflowStatus.scheduled =>
         'Instalação agendada. Aguardando definição da equipe.',
       InstallationWorkflowStatus.doing => 'Instalação em andamento em campo.',
@@ -3659,6 +3856,8 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
   String _installationNextAction(WorkflowOrder order) {
     return switch (order.installationWorkflowStatus) {
       InstallationWorkflowStatus.waiting => 'Agendar instalação',
+      InstallationWorkflowStatus.dependsOnClient => 'Gerar agenda',
+      InstallationWorkflowStatus.dependsOnDanf => 'Gerar agenda',
       InstallationWorkflowStatus.scheduled => 'Selecionar equipe da instalação',
       InstallationWorkflowStatus.doing => 'Concluir ou agendar retorno',
       InstallationWorkflowStatus.done => 'Instalação concluída',
@@ -4498,7 +4697,11 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     if (selected.currentStage == WorkflowStage.installation) {
       if (direction > 0) {
         if (selected.installationWorkflowStatus ==
-            InstallationWorkflowStatus.waiting) {
+                InstallationWorkflowStatus.waiting ||
+            selected.installationWorkflowStatus ==
+                InstallationWorkflowStatus.dependsOnClient ||
+            selected.installationWorkflowStatus ==
+                InstallationWorkflowStatus.dependsOnDanf) {
           await _scheduleInstallationForSelectedOrder();
           return;
         }
@@ -4663,22 +4866,24 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
         details: '${savedOrder.code} • ${savedOrder.workName}',
       ),
     );
-
   }
 
   List<WorkflowOrder> get _mergeableCandidates {
     final relationshipIndex = workflowStages.indexOf(
       WorkflowStage.relationship,
     );
-    return _orders.where((order) {
-      if (order.proposalVersion <= 1) return false;
-      if (_isSubProposal(order)) return false;
-      final stageIndex = workflowStages.indexOf(order.currentStage);
-      if (stageIndex < relationshipIndex) return false;
-      final primary = _resolvePrimaryProposal(order);
-      if (primary.code == order.code) return false;
-      return workflowStages.indexOf(primary.currentStage) >= relationshipIndex;
-    }).toList(growable: false);
+    return _orders
+        .where((order) {
+          if (order.proposalVersion <= 1) return false;
+          if (_isSubProposal(order)) return false;
+          final stageIndex = workflowStages.indexOf(order.currentStage);
+          if (stageIndex < relationshipIndex) return false;
+          final primary = _resolvePrimaryProposal(order);
+          if (primary.code == order.code) return false;
+          return workflowStages.indexOf(primary.currentStage) >=
+              relationshipIndex;
+        })
+        .toList(growable: false);
   }
 
   Future<void> _mergeProposalWithPrimary(WorkflowOrder secondary) async {
@@ -5541,8 +5746,15 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       return false;
     }
 
-    return targetStatus == InstallationWorkflowStatus.done &&
-        order.installationWorkflowStatus != InstallationWorkflowStatus.done;
+    return switch (targetStatus) {
+      InstallationWorkflowStatus.waiting ||
+      InstallationWorkflowStatus.dependsOnClient ||
+      InstallationWorkflowStatus.dependsOnDanf ||
+      InstallationWorkflowStatus.done =>
+        order.installationWorkflowStatus != targetStatus,
+      InstallationWorkflowStatus.scheduled ||
+      InstallationWorkflowStatus.doing => false,
+    };
   }
 
   Future<void> _moveInstallationOrderToKanbanColumn(
@@ -5555,7 +5767,14 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
 
     if (targetStatus == InstallationWorkflowStatus.done) {
       await _completeInstallation(order: order, force: true);
+      return;
     }
+
+    await _updateInstallationWorkflowStatus(
+      order,
+      targetStatus,
+      clearSchedule: targetStatus == InstallationWorkflowStatus.waiting,
+    );
   }
 
   Future<void> _attachContractToSelectedOrder() async {
@@ -6718,9 +6937,9 @@ class _HeaderDateBadgeState extends State<_HeaderDateBadge> {
     _secretTapCount++;
     if (_secretTapCount >= 10) {
       _secretTapCount = 0;
-      Navigator.of(context).push(
-        MaterialPageRoute(builder: (_) => const _SecretBlankScreen()),
-      );
+      Navigator.of(
+        context,
+      ).push(MaterialPageRoute(builder: (_) => const _SecretBlankScreen()));
     }
   }
 
@@ -8283,7 +8502,7 @@ class _SectorCompletionChart extends StatelessWidget {
                   ],
                 ),
               ),
-                      _StatusBadge(
+              _StatusBadge(
                 label: period.focus == _CompletionPeriodFocus.inProgress
                     ? 'Aguardando: $totalInProgress'
                     : 'Concluído: $total',
@@ -8339,7 +8558,13 @@ class _SectorCompletionBar extends StatelessWidget {
       children: [
         Row(
           children: [
-            Icon(entry.stage.icon, size: 16, color: isDarkMode ? const Color(0xFFD1D5DB) : const Color(0xFF111827)),
+            Icon(
+              entry.stage.icon,
+              size: 16,
+              color: isDarkMode
+                  ? const Color(0xFFD1D5DB)
+                  : const Color(0xFF111827),
+            ),
             const SizedBox(width: 8),
             Expanded(
               child: Text(
@@ -8376,10 +8601,7 @@ class _SectorCompletionBar extends StatelessWidget {
 }
 
 class _SectorCompletionBarChart extends StatelessWidget {
-  const _SectorCompletionBarChart({
-    required this.entries,
-    required this.focus,
-  });
+  const _SectorCompletionBarChart({required this.entries, required this.focus});
 
   final List<_SectorCompletionEntry> entries;
   final _CompletionPeriodFocus focus;
@@ -8398,13 +8620,10 @@ class _SectorCompletionBarChart extends StatelessWidget {
         ? const Color(0xFFF97316)
         : const Color(0xFF16A34A);
 
-    final rawMax = entries.fold<int>(
-      1,
-      (max, entry) {
-        final val = isInProgress ? entry.inProgressCount : entry.count;
-        return val > max ? val : max;
-      },
-    );
+    final rawMax = entries.fold<int>(1, (max, entry) {
+      final val = isInProgress ? entry.inProgressCount : entry.count;
+      return val > max ? val : max;
+    });
     final maxY = (((rawMax / 4).ceil()) * 4).toDouble();
     final interval = maxY / 4;
 
@@ -8455,7 +8674,13 @@ class _SectorCompletionBarChart extends StatelessWidget {
                       final stage = entries[index].stage;
                       return Padding(
                         padding: const EdgeInsets.only(top: 8),
-                        child: Icon(stage.icon, size: 18, color: isDarkMode ? const Color(0xFFD1D5DB) : const Color(0xFF111827)),
+                        child: Icon(
+                          stage.icon,
+                          size: 18,
+                          color: isDarkMode
+                              ? const Color(0xFFD1D5DB)
+                              : const Color(0xFF111827),
+                        ),
                       );
                     },
                   ),
@@ -11424,6 +11649,7 @@ class _StageWorkspaceSection extends StatelessWidget {
     this.onToggleInstallationExecutionItem,
     this.onOpenAssemblyPreparationChecklist,
     this.onScheduleEngineeringActivity,
+    this.onSchedulePersonalEngineeringActivity,
     this.onUpdateEngineeringChecklistStatus,
     this.onUpdateFinanceContractStatus,
     this.onUpdateRelationshipKanbanStatus,
@@ -11488,6 +11714,7 @@ class _StageWorkspaceSection extends StatelessWidget {
   onToggleInstallationExecutionItem;
   final Future<void> Function()? onOpenAssemblyPreparationChecklist;
   final Future<void> Function(String taskKey)? onScheduleEngineeringActivity;
+  final Future<void> Function()? onSchedulePersonalEngineeringActivity;
   final Future<void> Function(
     String taskKey,
     EngineeringChecklistStatus status,
@@ -12021,33 +12248,10 @@ class _StageWorkspaceSection extends StatelessWidget {
         : const <_OrdersKanbanColumnData>[];
     final installationServiceOrderKanbanColumns =
         stage == WorkflowStage.installation && showingWorkQueue
-        ? <_OrdersKanbanColumnData>[
-            for (final status in InstallationWorkflowStatus.values)
-              _OrdersKanbanColumnData(
-                title: status.title,
-                subtitle:
-                    '${installationServiceOrderSource.where((order) => order.installationWorkflowStatus == status).length} ${status.title.toLowerCase()}',
-                accent: status.color,
-                icon: switch (status) {
-                  InstallationWorkflowStatus.waiting =>
-                    Icons.hourglass_bottom_rounded,
-                  InstallationWorkflowStatus.scheduled =>
-                    Icons.event_available_outlined,
-                  InstallationWorkflowStatus.doing =>
-                    Icons.home_repair_service_outlined,
-                  InstallationWorkflowStatus.done => Icons.task_alt_rounded,
-                },
-                emptyMessage:
-                    'Nenhuma ordem de serviço com instalação ${status.title.toLowerCase()}.',
-                installationTargetStatus:
-                    status == InstallationWorkflowStatus.done ? status : null,
-                orders: installationServiceOrderSource
-                    .where(
-                      (order) => order.installationWorkflowStatus == status,
-                    )
-                    .toList(growable: false),
-              ),
-          ]
+        ? _buildInstallationKanbanColumns(
+            orders: installationServiceOrderSource,
+            serviceOrdersOnly: true,
+          )
         : const <_OrdersKanbanColumnData>[];
     final kanbanColumns = stage == WorkflowStage.warehouse && showingWorkQueue
         ? <_OrdersKanbanColumnData>[
@@ -12145,35 +12349,10 @@ class _StageWorkspaceSection extends StatelessWidget {
             ),
           ]
         : stage == WorkflowStage.installation && showingWorkQueue
-        ? <_OrdersKanbanColumnData>[
-            for (final status in InstallationWorkflowStatus.values)
-              _OrdersKanbanColumnData(
-                title: status.title,
-                subtitle:
-                    '${currentKanbanOrders.where((order) => !order.isServiceOrder && order.installationWorkflowStatus == status).length} ${status.title.toLowerCase()}',
-                accent: status.color,
-                icon: switch (status) {
-                  InstallationWorkflowStatus.waiting =>
-                    Icons.hourglass_bottom_rounded,
-                  InstallationWorkflowStatus.scheduled =>
-                    Icons.event_available_outlined,
-                  InstallationWorkflowStatus.doing =>
-                    Icons.home_repair_service_outlined,
-                  InstallationWorkflowStatus.done => Icons.task_alt_rounded,
-                },
-                emptyMessage:
-                    'Nenhum pedido com instalação ${status.title.toLowerCase()}.',
-                installationTargetStatus:
-                    status == InstallationWorkflowStatus.done ? status : null,
-                orders: currentKanbanOrders
-                    .where(
-                      (order) =>
-                          !order.isServiceOrder &&
-                          order.installationWorkflowStatus == status,
-                    )
-                    .toList(growable: false),
-              ),
-          ]
+        ? _buildInstallationKanbanColumns(
+            orders: currentKanbanOrders,
+            serviceOrdersOnly: false,
+          )
         : stage == WorkflowStage.estimating && showingWorkQueue
         ? <_OrdersKanbanColumnData>[
             for (final task in estimatingKanbanTasks)
@@ -12499,6 +12678,7 @@ class _StageWorkspaceSection extends StatelessWidget {
             orders: visibleOrders,
             selectedOrder: selectedOrder,
             onOrderSelected: onOrderSelected,
+            onSchedulePersonalActivity: onSchedulePersonalEngineeringActivity,
           ),
           const SizedBox(height: 20),
         ],
@@ -13614,6 +13794,7 @@ class _OrderDetailsScreen extends StatefulWidget {
     this.onToggleInstallationExecutionItem,
     this.onOpenAssemblyPreparationChecklist,
     this.onScheduleEngineeringActivity,
+    this.onSchedulePersonalEngineeringActivity,
     this.onUpdateEngineeringChecklistStatus,
     this.onUpdateFinanceContractStatus,
     this.onUpdateRelationshipKanbanStatus,
@@ -13654,6 +13835,7 @@ class _OrderDetailsScreen extends StatefulWidget {
   onToggleInstallationExecutionItem;
   final Future<void> Function()? onOpenAssemblyPreparationChecklist;
   final Future<void> Function(String taskKey)? onScheduleEngineeringActivity;
+  final Future<void> Function()? onSchedulePersonalEngineeringActivity;
   final Future<void> Function(
     String taskKey,
     EngineeringChecklistStatus status,
@@ -13899,6 +14081,12 @@ class _OrderDetailsScreenState extends State<_OrderDetailsScreen> {
                         }
                         _setStateSafely(() {});
                       },
+                onSchedulePersonalEngineeringActivity:
+                    widget.onSchedulePersonalEngineeringActivity == null
+                    ? null
+                    : () => _runAndRefresh(
+                        widget.onSchedulePersonalEngineeringActivity,
+                      ),
                 onUpdateEngineeringChecklistStatus:
                     widget.onUpdateEngineeringChecklistStatus == null
                     ? null
@@ -13993,6 +14181,7 @@ class _OrderDetailsPanel extends StatelessWidget {
     this.onToggleInstallationExecutionItem,
     this.onOpenAssemblyPreparationChecklist,
     this.onScheduleEngineeringActivity,
+    this.onSchedulePersonalEngineeringActivity,
     this.onUpdateEngineeringChecklistStatus,
     this.onUpdateFinanceContractStatus,
     this.onUpdateRelationshipKanbanStatus,
@@ -14029,6 +14218,7 @@ class _OrderDetailsPanel extends StatelessWidget {
   onToggleInstallationExecutionItem;
   final Future<void> Function()? onOpenAssemblyPreparationChecklist;
   final Future<void> Function(String taskKey)? onScheduleEngineeringActivity;
+  final Future<void> Function()? onSchedulePersonalEngineeringActivity;
   final Future<void> Function(
     String taskKey,
     EngineeringChecklistStatus status,
@@ -14219,6 +14409,17 @@ class _OrderDetailsPanel extends StatelessWidget {
           icon: const Icon(Icons.edit_outlined),
           label: const Text('Editar'),
         ),
+      if (showFlowActions &&
+          isEngineeringStage &&
+          onSchedulePersonalEngineeringActivity != null)
+        OutlinedButton.icon(
+          onPressed: () async {
+            await onSchedulePersonalEngineeringActivity!();
+          },
+          style: compactOutlinedHeaderButtonStyle,
+          icon: const Icon(Icons.event_note_outlined),
+          label: const Text('Agendar pessoal'),
+        ),
       if (onDeleteOrder != null)
         OutlinedButton.icon(
           onPressed: () async {
@@ -14285,7 +14486,7 @@ class _OrderDetailsPanel extends StatelessWidget {
           icon: const Icon(Icons.home_repair_service_outlined),
           label: const Text('Enviar para Instalação'),
         ),
-      if (showFlowActions && !isRelationshipStage)
+      if (showFlowActions && !isRelationshipStage && !isInstallationStage)
         FilledButton.icon(
           onPressed: canAdvance
               ? () async {
@@ -14313,6 +14514,9 @@ class _OrderDetailsPanel extends StatelessWidget {
                 : isInstallationStage
                 ? switch (order!.installationWorkflowStatus) {
                     InstallationWorkflowStatus.waiting => 'Agendar instalação',
+                    InstallationWorkflowStatus.dependsOnClient =>
+                      'Gerar agenda',
+                    InstallationWorkflowStatus.dependsOnDanf => 'Gerar agenda',
                     InstallationWorkflowStatus.scheduled => 'Iniciar visita',
                     InstallationWorkflowStatus.doing => 'Concluir/retorno',
                     InstallationWorkflowStatus.done => 'Concluído',
@@ -14650,15 +14854,14 @@ class _OrderDetailsPanel extends StatelessWidget {
                   String value, {
                   bool emphasize = false,
                   bool full = false,
-                }) =>
-                    SizedBox(
-                      width: full ? fullWidth : itemWidth,
-                      child: _InfoRow(
-                        label: label,
-                        value: value.trim().isEmpty ? 'Não informado' : value,
-                        emphasizeValue: emphasize,
-                      ),
-                    );
+                }) => SizedBox(
+                  width: full ? fullWidth : itemWidth,
+                  child: _InfoRow(
+                    label: label,
+                    value: value.trim().isEmpty ? 'Não informado' : value,
+                    emphasizeValue: emphasize,
+                  ),
+                );
 
                 final rows = <Widget>[
                   infoRow('Data de nascimento', order!.client.birthDate),
@@ -14673,7 +14876,11 @@ class _OrderDetailsPanel extends StatelessWidget {
                   infoRow('Complemento cobrança', order!.client.complement),
                   infoRow('Cidade cobrança', order!.client.city),
                   if (order!.commercialProposalNumber.trim().isNotEmpty)
-                    infoRow('Nº da proposta', order!.commercialProposalNumber, emphasize: true),
+                    infoRow(
+                      'Nº da proposta',
+                      order!.commercialProposalNumber,
+                      emphasize: true,
+                    ),
                   infoRow('Tipo de pagamento', order!.paymentType),
                   infoRow('Forma de pagamento', order!.paymentMethod),
                   if (order!.installmentValue.trim().isNotEmpty)
@@ -15216,10 +15423,9 @@ class _ProposalTabBar extends StatelessWidget {
   Widget build(BuildContext context) {
     final isDarkMode = Theme.of(context).brightness == Brightness.dark;
     final amber = const Color(0xFFB45309);
-    final borderColor =
-        isDarkMode ? const Color(0xFF3E4044) : const Color(0xFFE8E8E5);
-    final surfaceColor =
-        isDarkMode ? const Color(0xFF26282B) : Colors.white;
+    final borderColor = isDarkMode
+        ? const Color(0xFF3E4044)
+        : const Color(0xFFE8E8E5);
     final selectedBg = amber.withValues(alpha: isDarkMode ? 0.14 : 0.08);
 
     return Container(
@@ -15238,11 +15444,14 @@ class _ProposalTabBar extends StatelessWidget {
         ),
         indicatorSize: TabBarIndicatorSize.tab,
         labelColor: amber,
-        unselectedLabelColor:
-            isDarkMode ? const Color(0xFFA3A39E) : const Color(0xFF6B6B68),
+        unselectedLabelColor: isDarkMode
+            ? const Color(0xFFA3A39E)
+            : const Color(0xFF6B6B68),
         labelStyle: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
-        unselectedLabelStyle:
-            const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+        unselectedLabelStyle: const TextStyle(
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+        ),
         tabs: [
           Tab(
             child: Row(
@@ -15283,14 +15492,18 @@ class _SecondaryProposalPanelContent extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final primaryTextColor =
-        isDarkMode ? const Color(0xFFF2F2F0) : const Color(0xFF1A1A1A);
-    final secondaryTextColor =
-        isDarkMode ? const Color(0xFFA3A39E) : const Color(0xFF6B6B68);
-    final borderColor =
-        isDarkMode ? const Color(0xFF3E4044) : const Color(0xFFE8E8E5);
-    final surfaceColor =
-        isDarkMode ? const Color(0xFF202225) : const Color(0xFFF5F5F3);
+    final primaryTextColor = isDarkMode
+        ? const Color(0xFFF2F2F0)
+        : const Color(0xFF1A1A1A);
+    final secondaryTextColor = isDarkMode
+        ? const Color(0xFFA3A39E)
+        : const Color(0xFF6B6B68);
+    final borderColor = isDarkMode
+        ? const Color(0xFF3E4044)
+        : const Color(0xFFE8E8E5);
+    final surfaceColor = isDarkMode
+        ? const Color(0xFF202225)
+        : const Color(0xFFF5F5F3);
     final stageColor = order.currentStage.color;
 
     Widget infoRow(String label, String value, {bool emphasize = false}) {
@@ -15311,8 +15524,7 @@ class _SecondaryProposalPanelContent extends StatelessWidget {
                 value.trim().isEmpty ? '—' : value,
                 style: TextStyle(
                   fontSize: 13,
-                  fontWeight:
-                      emphasize ? FontWeight.w700 : FontWeight.w400,
+                  fontWeight: emphasize ? FontWeight.w700 : FontWeight.w400,
                   color: primaryTextColor,
                 ),
               ),
@@ -15326,7 +15538,8 @@ class _SecondaryProposalPanelContent extends StatelessWidget {
     final hasNextAction = order.nextAction.trim().isNotEmpty;
     final hasBlocker = order.blocker.trim().isNotEmpty;
     final visitPlanned = _plannedVisitCountForOrder(order);
-    final hasWorksheet = order.estimatingIncludedVisits.isNotEmpty &&
+    final hasWorksheet =
+        order.estimatingIncludedVisits.isNotEmpty &&
         order.estimatingMaterials.isNotEmpty;
     final isAtFinanceOrBeyond = order.currentStage == WorkflowStage.finance;
 
@@ -15342,14 +15555,8 @@ class _SecondaryProposalPanelContent extends StatelessWidget {
               label: _proposalBadgeLabel(order),
               color: const Color(0xFF1D4ED8),
             ),
-            _StatusBadge(
-              label: order.currentStage.title,
-              color: stageColor,
-            ),
-            const _StatusBadge(
-              label: 'Sub-elemento',
-              color: Color(0xFFB45309),
-            ),
+            _StatusBadge(label: order.currentStage.title, color: stageColor),
+            const _StatusBadge(label: 'Sub-elemento', color: Color(0xFFB45309)),
           ],
         ),
         const SizedBox(height: 14),
@@ -15367,7 +15574,9 @@ class _SecondaryProposalPanelContent extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                order.workName.trim().isEmpty ? '(sem nome de obra)' : order.workName,
+                order.workName.trim().isEmpty
+                    ? '(sem nome de obra)'
+                    : order.workName,
                 style: TextStyle(
                   fontSize: 16,
                   fontWeight: FontWeight.w700,
@@ -15378,12 +15587,19 @@ class _SecondaryProposalPanelContent extends StatelessWidget {
                 const SizedBox(height: 4),
                 Row(
                   children: [
-                    Icon(Icons.location_on_outlined, size: 13, color: secondaryTextColor),
+                    Icon(
+                      Icons.location_on_outlined,
+                      size: 13,
+                      color: secondaryTextColor,
+                    ),
                     const SizedBox(width: 4),
                     Expanded(
                       child: Text(
                         order.address,
-                        style: TextStyle(fontSize: 12, color: secondaryTextColor),
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: secondaryTextColor,
+                        ),
                       ),
                     ),
                   ],
@@ -15403,10 +15619,8 @@ class _SecondaryProposalPanelContent extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                if (hasNextAction)
-                  infoRow('Próxima ação', order.nextAction),
-                if (hasBlocker)
-                  infoRow('Bloqueio', order.blocker),
+                if (hasNextAction) infoRow('Próxima ação', order.nextAction),
+                if (hasBlocker) infoRow('Bloqueio', order.blocker),
               ],
             ),
           ),
@@ -15440,7 +15654,11 @@ class _SecondaryProposalPanelContent extends StatelessWidget {
               builder: (context) {
                 final rows = <Widget>[
                   if (order.commercialProposalNumber.trim().isNotEmpty)
-                    infoRow('Nº da proposta', order.commercialProposalNumber, emphasize: true),
+                    infoRow(
+                      'Nº da proposta',
+                      order.commercialProposalNumber,
+                      emphasize: true,
+                    ),
                   if (order.paymentType.trim().isNotEmpty)
                     infoRow('Tipo de pagamento', order.paymentType),
                   if (order.paymentMethod.trim().isNotEmpty)
@@ -15465,10 +15683,7 @@ class _SecondaryProposalPanelContent extends StatelessWidget {
                 if (rows.isEmpty) {
                   return Text(
                     'Nenhuma informação comercial preenchida ainda.',
-                    style: TextStyle(
-                      fontSize: 13,
-                      color: secondaryTextColor,
-                    ),
+                    style: TextStyle(fontSize: 13, color: secondaryTextColor),
                   );
                 }
                 return Column(
@@ -15894,6 +16109,7 @@ class _ProposalExtensionsCard extends StatelessWidget {
     );
   }
 }
+
 InstallationVisitLog? _plannedVisitForCurrentInstallationSchedule(
   WorkflowOrder order,
 ) {
@@ -15928,7 +16144,6 @@ class _OrderCard extends StatelessWidget {
     required this.onTap,
     required this.onOpenConversation,
     required this.workspaceProfiles,
-    this.onMoveToCompleted,
     this.onUnmergeProposal,
   });
 
@@ -15938,7 +16153,6 @@ class _OrderCard extends StatelessWidget {
   final VoidCallback onTap;
   final VoidCallback onOpenConversation;
   final List<EmployeeWorkspaceProfile> workspaceProfiles;
-  final Future<void> Function()? onMoveToCompleted;
   final Future<void> Function(WorkflowOrder secondary)? onUnmergeProposal;
 
   @override
@@ -16020,7 +16234,7 @@ class _OrderCard extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
+                      SelectableText(
                         displayCode,
                         style: TextStyle(
                           color: order.currentStage.color,
@@ -16030,7 +16244,7 @@ class _OrderCard extends StatelessWidget {
                         ),
                       ),
                       const SizedBox(height: 4),
-                      Text(
+                      SelectableText(
                         order.workName,
                         style: TextStyle(
                           fontSize: 15,
@@ -16065,7 +16279,7 @@ class _OrderCard extends StatelessWidget {
                                     color: proposalBadgeColor,
                                   ),
                                 ),
-                              Text(
+                              SelectableText(
                                 proposalSummary,
                                 style: TextStyle(
                                   color: proposalBadgeColor,
@@ -16087,19 +16301,19 @@ class _OrderCard extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 6),
-            Text(
+            SelectableText(
               '${order.client.name} • ${order.client.phone}',
               style: TextStyle(color: secondaryTextColor, fontSize: 13),
             ),
             const SizedBox(height: 2),
-            Text(
+            SelectableText(
               'Cliente ${order.client.id}',
               style: TextStyle(color: secondaryTextColor, fontSize: 12),
             ),
             if (order.currentStage == WorkflowStage.estimating &&
                 order.commercialProposalNumber.trim().isNotEmpty) ...[
               const SizedBox(height: 2),
-              Text(
+              SelectableText(
                 'Pedido nº ${order.commercialProposalNumber}',
                 style: TextStyle(
                   color: secondaryTextColor,
@@ -16111,17 +16325,14 @@ class _OrderCard extends StatelessWidget {
             if (order.currentStage == WorkflowStage.engineering) ...[
               const SizedBox(height: 6),
               Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 8,
-                  vertical: 4,
-                ),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                 decoration: BoxDecoration(
                   color: WorkflowStage.engineering.color.withValues(
                     alpha: 0.12,
                   ),
                   borderRadius: BorderRadius.circular(999),
                 ),
-                child: Text(
+                child: SelectableText(
                   _engineeringFlowSnapshot(order).currentTask?.label ??
                       'Checklist concluído',
                   style: TextStyle(
@@ -16143,11 +16354,10 @@ class _OrderCard extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 10),
-            Text(
+            SelectableText(
               order.nextAction,
               style: TextStyle(color: secondaryTextColor, fontSize: 13),
               maxLines: 2,
-              overflow: TextOverflow.ellipsis,
             ),
             if (visitProgressLabel != null) ...[
               const SizedBox(height: 8),
@@ -16256,28 +16466,6 @@ class _OrderCard extends StatelessWidget {
                     ),
                   ),
                 ),
-                if (onMoveToCompleted != null)
-                  TextButton.icon(
-                    onPressed: () => onMoveToCompleted!(),
-                    style: TextButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 10,
-                        vertical: 6,
-                      ),
-                      minimumSize: const Size(0, 32),
-                      foregroundColor: InstallationWorkflowStatus.done.color,
-                      backgroundColor: InstallationWorkflowStatus.done.color
-                          .withValues(alpha: 0.08),
-                    ),
-                    icon: const Icon(Icons.check_circle_outline, size: 16),
-                    label: const Text(
-                      'Mover para Concluído',
-                      style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w700,
-                      ),
-                    ),
-                  ),
               ],
             ),
           ],
@@ -16336,11 +16524,10 @@ class _MergeCandidatesBanner extends StatelessWidget {
           ),
           const SizedBox(height: 10),
           ...candidates.map((secondary) {
-            final primary = _proposalGroupOrders(allOrders, secondary)
-                .firstWhere(
-                  (o) => o.isPrimaryProposal,
-                  orElse: () => secondary,
-                );
+            final primary = _proposalGroupOrders(
+              allOrders,
+              secondary,
+            ).firstWhere((o) => o.isPrimaryProposal, orElse: () => secondary);
             return Padding(
               padding: const EdgeInsets.only(bottom: 8),
               child: Container(
@@ -16349,9 +16536,7 @@ class _MergeCandidatesBanner extends StatelessWidget {
                   vertical: 10,
                 ),
                 decoration: BoxDecoration(
-                  color: isDarkMode
-                      ? const Color(0xFF202225)
-                      : Colors.white,
+                  color: isDarkMode ? const Color(0xFF202225) : Colors.white,
                   borderRadius: BorderRadius.circular(10),
                   border: Border.all(color: borderColor),
                 ),
@@ -16447,16 +16632,16 @@ class _MergedProposalsCardSection extends StatelessWidget {
   Widget build(BuildContext context) {
     final stageColor = primaryOrder.currentStage.color;
     final hasMerged = linkedProposals.any(_isSubProposal);
-    final accentColor = hasMerged
-        ? const Color(0xFFB45309)
-        : stageColor;
+    final accentColor = hasMerged ? const Color(0xFFB45309) : stageColor;
     final borderColor = isDarkMode
         ? const Color(0xFF3E4044)
         : const Color(0xFFE8E8E5);
-    final primaryTextColor =
-        isDarkMode ? const Color(0xFFF2F2F0) : const Color(0xFF1A1A1A);
-    final secondaryTextColor =
-        isDarkMode ? const Color(0xFFA3A39E) : const Color(0xFF6B6B68);
+    final primaryTextColor = isDarkMode
+        ? const Color(0xFFF2F2F0)
+        : const Color(0xFF1A1A1A);
+    final secondaryTextColor = isDarkMode
+        ? const Color(0xFFA3A39E)
+        : const Color(0xFF6B6B68);
 
     Widget proposalPill(WorkflowOrder p, {required bool isPrimary}) {
       final badgeColor = isPrimary
@@ -16481,11 +16666,7 @@ class _MergedProposalsCardSection extends StatelessWidget {
             if (isMerged)
               Padding(
                 padding: const EdgeInsets.only(right: 3),
-                child: Icon(
-                  Icons.link_rounded,
-                  size: 10,
-                  color: badgeColor,
-                ),
+                child: Icon(Icons.link_rounded, size: 10, color: badgeColor),
               ),
             Text(
               _proposalBadgeLabel(p),
@@ -16511,8 +16692,9 @@ class _MergedProposalsCardSection extends StatelessWidget {
 
     final allProposals = [primaryOrder, ...linkedProposals];
     final mergedProposals = linkedProposals.where(_isSubProposal).toList();
-    final unmergedLinked =
-        linkedProposals.where((p) => !_isSubProposal(p)).toList();
+    final unmergedLinked = linkedProposals
+        .where((p) => !_isSubProposal(p))
+        .toList();
 
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
@@ -16569,9 +16751,7 @@ class _MergedProposalsCardSection extends StatelessWidget {
               child: Container(
                 padding: const EdgeInsets.all(10),
                 decoration: BoxDecoration(
-                  color: isDarkMode
-                      ? const Color(0xFF202225)
-                      : Colors.white,
+                  color: isDarkMode ? const Color(0xFF202225) : Colors.white,
                   borderRadius: BorderRadius.circular(8),
                   border: Border.all(color: borderColor),
                 ),
@@ -16586,9 +16766,9 @@ class _MergedProposalsCardSection extends StatelessWidget {
                             vertical: 2,
                           ),
                           decoration: BoxDecoration(
-                            color: const Color(0xFF1D4ED8).withValues(
-                              alpha: 0.10,
-                            ),
+                            color: const Color(
+                              0xFF1D4ED8,
+                            ).withValues(alpha: 0.10),
                             borderRadius: BorderRadius.circular(6),
                           ),
                           child: Row(
@@ -17607,6 +17787,138 @@ class _OrdersKanbanColumnData {
   final InstallationWorkflowStatus? installationTargetStatus;
 }
 
+class _InstallationKanbanColumnSpec {
+  const _InstallationKanbanColumnSpec({
+    required this.title,
+    required this.subtitleSuffix,
+    required this.accent,
+    required this.icon,
+    required this.emptyMessage,
+    required this.matches,
+    this.targetStatus,
+  });
+
+  final String title;
+  final String subtitleSuffix;
+  final Color accent;
+  final IconData icon;
+  final String emptyMessage;
+  final bool Function(WorkflowOrder order) matches;
+  final InstallationWorkflowStatus? targetStatus;
+}
+
+bool _isDateToday(DateTime? date) {
+  if (date == null) {
+    return false;
+  }
+
+  final now = DateTime.now();
+  return date.year == now.year &&
+      date.month == now.month &&
+      date.day == now.day;
+}
+
+bool _isInstallationWaitingColumnOrder(WorkflowOrder order) {
+  return order.installationWorkflowStatus == InstallationWorkflowStatus.waiting;
+}
+
+bool _isInstallationTodayColumnOrder(WorkflowOrder order) {
+  return (order.installationWorkflowStatus ==
+              InstallationWorkflowStatus.scheduled ||
+          order.installationWorkflowStatus ==
+              InstallationWorkflowStatus.doing) &&
+      _isDateToday(order.installationScheduledAt);
+}
+
+const List<_InstallationKanbanColumnSpec> _installationKanbanColumnSpecs = [
+  _InstallationKanbanColumnSpec(
+    title: 'Aguardando',
+    subtitleSuffix: 'aguardando',
+    accent: Color(0xFFB45309),
+    icon: Icons.hourglass_bottom_rounded,
+    emptyMessage: 'Nenhuma instalação aguardando.',
+    matches: _isInstallationWaitingColumnOrder,
+    targetStatus: InstallationWorkflowStatus.waiting,
+  ),
+  _InstallationKanbanColumnSpec(
+    title: 'inicializou e Depende do cliente',
+    subtitleSuffix: 'dependendo do cliente',
+    accent: Color(0xFFDC2626),
+    icon: Icons.person_outline,
+    emptyMessage: 'Nenhuma instalação dependendo do cliente.',
+    matches: _isInstallationDependsOnClientColumnOrder,
+    targetStatus: InstallationWorkflowStatus.dependsOnClient,
+  ),
+  _InstallationKanbanColumnSpec(
+    title: 'Inicializou e Depende da DANF',
+    subtitleSuffix: 'dependendo da DANF',
+    accent: Color(0xFF7C2D12),
+    icon: Icons.business_center_outlined,
+    emptyMessage: 'Nenhuma instalação dependendo da DANF.',
+    matches: _isInstallationDependsOnDanfColumnOrder,
+    targetStatus: InstallationWorkflowStatus.dependsOnDanf,
+  ),
+  _InstallationKanbanColumnSpec(
+    title: 'Hoje',
+    subtitleSuffix: 'para hoje',
+    accent: Color(0xFF2563EB),
+    icon: Icons.today_outlined,
+    emptyMessage: 'Nenhuma instalação para hoje.',
+    matches: _isInstallationTodayColumnOrder,
+  ),
+  _InstallationKanbanColumnSpec(
+    title: 'Concluido',
+    subtitleSuffix: 'concluídas',
+    accent: Color(0xFF15803D),
+    icon: Icons.task_alt_rounded,
+    emptyMessage: 'Nenhuma instalação concluída.',
+    matches: _isInstallationDoneColumnOrder,
+    targetStatus: InstallationWorkflowStatus.done,
+  ),
+];
+
+bool _isInstallationDependsOnClientColumnOrder(WorkflowOrder order) {
+  return order.installationWorkflowStatus ==
+      InstallationWorkflowStatus.dependsOnClient;
+}
+
+bool _isInstallationDependsOnDanfColumnOrder(WorkflowOrder order) {
+  return order.installationWorkflowStatus ==
+          InstallationWorkflowStatus.dependsOnDanf ||
+      (order.installationWorkflowStatus == InstallationWorkflowStatus.scheduled &&
+          order.installationScheduledAt != null &&
+          !_isDateToday(order.installationScheduledAt));
+}
+
+bool _isInstallationDoneColumnOrder(WorkflowOrder order) {
+  return order.installationWorkflowStatus == InstallationWorkflowStatus.done;
+}
+
+List<_OrdersKanbanColumnData> _buildInstallationKanbanColumns({
+  required List<WorkflowOrder> orders,
+  required bool serviceOrdersOnly,
+}) {
+  return [
+    for (final spec in _installationKanbanColumnSpecs)
+      _OrdersKanbanColumnData(
+        title: spec.title,
+        subtitle:
+            '${orders.where((order) => order.isServiceOrder == serviceOrdersOnly && spec.matches(order)).length} ${spec.subtitleSuffix}',
+        accent: spec.accent,
+        icon: spec.icon,
+        emptyMessage: spec.emptyMessage,
+        installationTargetStatus: spec.targetStatus,
+        orders: orders
+            .where(
+              (order) =>
+                  order.isServiceOrder == serviceOrdersOnly &&
+                  spec.matches(order),
+            )
+            .toList(growable: false),
+      ),
+  ];
+}
+
 class _PersonalKanbanBoard extends StatelessWidget {
   const _PersonalKanbanBoard({
     required this.tasks,
@@ -18157,52 +18469,62 @@ class _StageOrdersKanbanColumnState extends State<_StageOrdersKanbanColumn> {
                 )
               else
                 ...visibleOrders.map((order) {
-                  final canMoveOrderToInstallationDone =
-                      widget.onMoveInstallationKanbanOrder != null &&
-                      (widget.canAcceptInstallationKanbanDrop?.call(
-                            order,
-                            InstallationWorkflowStatus.done,
-                          ) ??
-                          false);
-                  final onMoveOrderToInstallationDone =
-                      canMoveOrderToInstallationDone
-                      ? () => widget.onMoveInstallationKanbanOrder!(
-                          order,
-                          InstallationWorkflowStatus.done,
-                        )
-                      : null;
+                  final canDragOrder =
+                      (widget.onMoveAssemblyKanbanOrder != null &&
+                          order.currentStage == WorkflowStage.assembly) ||
+                      (widget.onMoveEngineeringKanbanOrder != null &&
+                          order.currentStage == WorkflowStage.engineering) ||
+                      (widget.onMoveFinanceKanbanOrder != null &&
+                          order.currentStage == WorkflowStage.finance) ||
+                      (widget.onMoveRelationshipKanbanOrder != null &&
+                          order.currentStage == WorkflowStage.relationship) ||
+                      (widget.onMoveInstallationKanbanOrder != null &&
+                          order.currentStage == WorkflowStage.installation);
                   return Padding(
                     padding: const EdgeInsets.only(bottom: 10),
-                    child: acceptsDrop
-                        ? LongPressDraggable<WorkflowOrder>(
-                            data: order,
-                            dragAnchorStrategy: pointerDragAnchorStrategy,
-                            onDragUpdate: (details) {
-                              onEngineeringCardDragUpdate?.call(
-                                details.globalPosition,
-                              );
-                            },
-                            feedback: Material(
-                              color: Colors.transparent,
-                              child: SizedBox(
-                                width: 272,
-                                child: Opacity(
-                                  opacity: 0.92,
-                                  child: _OrderCard(
-                                    order: order,
-                                    allOrders: allOrders,
-                                    selected: false,
-                                    onTap: () {},
-                                    onOpenConversation: () {},
-                                    workspaceProfiles: workspaceProfiles,
-                                    onUnmergeProposal: widget.onUnmergeProposal,
+                    child: canDragOrder
+                        ? Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              Align(
+                                alignment: Alignment.centerRight,
+                                child: LongPressDraggable<WorkflowOrder>(
+                                  data: order,
+                                  dragAnchorStrategy:
+                                      pointerDragAnchorStrategy,
+                                  onDragUpdate: (details) {
+                                    onEngineeringCardDragUpdate?.call(
+                                      details.globalPosition,
+                                    );
+                                  },
+                                  feedback: Material(
+                                    color: Colors.transparent,
+                                    child: SizedBox(
+                                      width: 272,
+                                      child: Opacity(
+                                        opacity: 0.92,
+                                        child: _OrderCard(
+                                          order: order,
+                                          allOrders: allOrders,
+                                          selected: false,
+                                          onTap: () {},
+                                          onOpenConversation: () {},
+                                          workspaceProfiles: workspaceProfiles,
+                                          onUnmergeProposal:
+                                              widget.onUnmergeProposal,
+                                        ),
+                                      ),
+                                    ),
                                   ),
+                                  childWhenDragging: const Opacity(
+                                    opacity: 0.35,
+                                    child: _KanbanMoveHandle(),
+                                  ),
+                                  child: const _KanbanMoveHandle(),
                                 ),
                               ),
-                            ),
-                            childWhenDragging: Opacity(
-                              opacity: 0.35,
-                              child: _OrderCard(
+                              const SizedBox(height: 6),
+                              _OrderCard(
                                 order: order,
                                 allOrders: allOrders,
                                 selected: selectedOrderCode == order.code,
@@ -18212,18 +18534,7 @@ class _StageOrdersKanbanColumnState extends State<_StageOrdersKanbanColumn> {
                                 workspaceProfiles: workspaceProfiles,
                                 onUnmergeProposal: widget.onUnmergeProposal,
                               ),
-                            ),
-                            child: _OrderCard(
-                              order: order,
-                              allOrders: allOrders,
-                              selected: selectedOrderCode == order.code,
-                              onTap: () => onOrderSelected(order),
-                              onOpenConversation: () =>
-                                  onOpenOrderConversation(order),
-                              workspaceProfiles: workspaceProfiles,
-                              onMoveToCompleted: onMoveOrderToInstallationDone,
-                              onUnmergeProposal: widget.onUnmergeProposal,
-                            ),
+                            ],
                           )
                         : _OrderCard(
                             order: order,
@@ -18233,7 +18544,6 @@ class _StageOrdersKanbanColumnState extends State<_StageOrdersKanbanColumn> {
                             onOpenConversation: () =>
                                 onOpenOrderConversation(order),
                             workspaceProfiles: workspaceProfiles,
-                            onMoveToCompleted: onMoveOrderToInstallationDone,
                             onUnmergeProposal: widget.onUnmergeProposal,
                           ),
                   );
@@ -18263,6 +18573,41 @@ class _StageOrdersKanbanColumnState extends State<_StageOrdersKanbanColumn> {
           ),
         );
       },
+    );
+  }
+}
+
+class _KanbanMoveHandle extends StatelessWidget {
+  const _KanbanMoveHandle();
+
+  @override
+  Widget build(BuildContext context) {
+    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
+    return Tooltip(
+      message: 'Segure e arraste para mover',
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: isDarkMode ? const Color(0xFF26282B) : const Color(0xFFF5F5F3),
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(
+            color: isDarkMode
+                ? const Color(0xFF3E4044)
+                : const Color(0xFFE0E0DD),
+          ),
+        ),
+        child: const Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.open_with_rounded, size: 14),
+            SizedBox(width: 5),
+            Text(
+              'Mover',
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -18633,7 +18978,7 @@ class _InfoRow extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
+          SelectableText(
             label.toUpperCase(),
             style: TextStyle(
               color: isDarkMode
@@ -18645,7 +18990,7 @@ class _InfoRow extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 6),
-          Text(
+          SelectableText(
             value,
             style: TextStyle(
               color: isDarkMode
