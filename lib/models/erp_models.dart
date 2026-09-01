@@ -267,26 +267,55 @@ class EngineeringTaskSchedule {
   const EngineeringTaskSchedule({
     required this.scheduledAt,
     required this.notes,
+    this.title = '',
+    this.collaborators = const [],
+    this.createdBy = '',
   });
 
   final DateTime scheduledAt;
   final String notes;
+  final String title;
+  final List<String> collaborators;
+  final String createdBy;
 
-  EngineeringTaskSchedule copyWith({DateTime? scheduledAt, String? notes}) {
+  EngineeringTaskSchedule copyWith({
+    DateTime? scheduledAt,
+    String? notes,
+    String? title,
+    List<String>? collaborators,
+    String? createdBy,
+  }) {
     return EngineeringTaskSchedule(
       scheduledAt: scheduledAt ?? this.scheduledAt,
       notes: notes ?? this.notes,
+      title: title ?? this.title,
+      collaborators: collaborators ?? this.collaborators,
+      createdBy: createdBy ?? this.createdBy,
     );
   }
 
   Map<String, Object?> toMap() {
-    return {'scheduledAt': scheduledAt, 'notes': notes};
+    return {
+      'scheduledAt': scheduledAt,
+      'notes': notes,
+      'title': title,
+      'collaborators': collaborators,
+      'createdBy': createdBy,
+    };
   }
 
   factory EngineeringTaskSchedule.fromMap(Map<String, dynamic> map) {
     return EngineeringTaskSchedule(
       scheduledAt: _readDateTime(map['scheduledAt']),
       notes: (map['notes'] ?? '').toString(),
+      title: (map['title'] ?? '').toString(),
+      collaborators: map['collaborators'] is Iterable
+          ? (map['collaborators'] as Iterable)
+                .map((item) => item.toString())
+                .where((item) => item.trim().isNotEmpty)
+                .toList(growable: false)
+          : const [],
+      createdBy: (map['createdBy'] ?? '').toString(),
     );
   }
 }
@@ -561,6 +590,8 @@ class InstallationVisitLog {
     required this.serviceTime,
     required this.notes,
     required this.createdAt,
+    this.serviceName = '',
+    this.completionReport = '',
   });
 
   final DateTime scheduledAt;
@@ -570,6 +601,8 @@ class InstallationVisitLog {
   final String serviceTime;
   final String notes;
   final DateTime createdAt;
+  final String serviceName;
+  final String completionReport;
 
   InstallationVisitLog copyWith({
     DateTime? scheduledAt,
@@ -579,6 +612,8 @@ class InstallationVisitLog {
     String? serviceTime,
     String? notes,
     DateTime? createdAt,
+    String? serviceName,
+    String? completionReport,
   }) {
     return InstallationVisitLog(
       scheduledAt: scheduledAt ?? this.scheduledAt,
@@ -588,6 +623,8 @@ class InstallationVisitLog {
       serviceTime: serviceTime ?? this.serviceTime,
       notes: notes ?? this.notes,
       createdAt: createdAt ?? this.createdAt,
+      serviceName: serviceName ?? this.serviceName,
+      completionReport: completionReport ?? this.completionReport,
     );
   }
 
@@ -600,6 +637,8 @@ class InstallationVisitLog {
       'serviceTime': serviceTime,
       'notes': notes,
       'createdAt': createdAt,
+      'serviceName': serviceName,
+      'completionReport': completionReport,
     };
   }
 
@@ -630,6 +669,8 @@ class InstallationVisitLog {
       serviceTime: (map['serviceTime'] ?? '').toString().trim(),
       notes: (map['notes'] ?? '').toString(),
       createdAt: _readDateTime(map['createdAt']),
+      serviceName: (map['serviceName'] ?? '').toString(),
+      completionReport: (map['completionReport'] ?? '').toString(),
     );
   }
 }
@@ -938,6 +979,7 @@ class WorkflowOrder {
     required this.financeContractStatuses,
     required this.estimatingKanbanStatuses,
     required this.relationshipKanbanStatuses,
+    this.heatedFloorChecklist = const {},
     required this.assemblyPreparationChecklist,
     required this.assemblyWorkflowStatus,
     required this.assemblyAssignedEmployeeEmails,
@@ -982,6 +1024,7 @@ class WorkflowOrder {
     required this.integratorValue,
     required this.integratorName,
     required this.architectName,
+    this.hasElectricalProject = 'Não',
     required this.proposalServices,
     required this.isDanfClient,
     required this.danfInstallerName,
@@ -995,6 +1038,7 @@ class WorkflowOrder {
     required this.blocker,
     required this.tags,
     required this.conversationMessages,
+    required this.clientReports,
     required this.history,
   });
 
@@ -1033,6 +1077,7 @@ class WorkflowOrder {
   final Map<String, EngineeringChecklistStatus> financeContractStatuses;
   final Map<String, EngineeringChecklistStatus> estimatingKanbanStatuses;
   final Map<String, EngineeringChecklistStatus> relationshipKanbanStatuses;
+  final Map<String, bool> heatedFloorChecklist;
   final Map<String, bool> assemblyPreparationChecklist;
   final AssemblyWorkflowStatus assemblyWorkflowStatus;
   final List<String> assemblyAssignedEmployeeEmails;
@@ -1077,6 +1122,7 @@ class WorkflowOrder {
   final String integratorValue;
   final String integratorName;
   final String architectName;
+  final String hasElectricalProject;
   final List<ProposalServiceEntry> proposalServices;
   final String isDanfClient;
   final String danfInstallerName;
@@ -1090,6 +1136,7 @@ class WorkflowOrder {
   final String blocker;
   final List<String> tags;
   final List<OrderConversationMessage> conversationMessages;
+  final List<OrderConversationMessage> clientReports;
   final Map<WorkflowStage, String> history;
 
   WorkflowOrder copyWith({
@@ -1151,6 +1198,7 @@ class WorkflowOrder {
     String? integratorValue,
     String? integratorName,
     String? architectName,
+    String? hasElectricalProject,
     List<ProposalServiceEntry>? proposalServices,
     String? isDanfClient,
     String? danfInstallerName,
@@ -1180,11 +1228,13 @@ class WorkflowOrder {
     Map<String, EngineeringChecklistStatus>? financeContractStatuses,
     Map<String, EngineeringChecklistStatus>? estimatingKanbanStatuses,
     Map<String, EngineeringChecklistStatus>? relationshipKanbanStatuses,
+    Map<String, bool>? heatedFloorChecklist,
     Map<String, bool>? assemblyPreparationChecklist,
     AssemblyWorkflowStatus? assemblyWorkflowStatus,
     List<String>? assemblyAssignedEmployeeEmails,
     List<String>? tags,
     List<OrderConversationMessage>? conversationMessages,
+    List<OrderConversationMessage>? clientReports,
     Map<WorkflowStage, String>? history,
   }) {
     return WorkflowOrder(
@@ -1258,6 +1308,9 @@ class WorkflowOrder {
           Map<String, EngineeringChecklistStatus>.from(
             this.relationshipKanbanStatuses,
           ),
+      heatedFloorChecklist:
+          heatedFloorChecklist ??
+          Map<String, bool>.from(this.heatedFloorChecklist),
       assemblyPreparationChecklist:
           assemblyPreparationChecklist ??
           Map<String, bool>.from(this.assemblyPreparationChecklist),
@@ -1331,6 +1384,7 @@ class WorkflowOrder {
       integratorValue: integratorValue ?? this.integratorValue,
       integratorName: integratorName ?? this.integratorName,
       architectName: architectName ?? this.architectName,
+      hasElectricalProject: hasElectricalProject ?? this.hasElectricalProject,
       proposalServices:
           proposalServices ??
           List<ProposalServiceEntry>.from(this.proposalServices),
@@ -1351,6 +1405,9 @@ class WorkflowOrder {
       conversationMessages:
           conversationMessages ??
           List<OrderConversationMessage>.from(this.conversationMessages),
+      clientReports:
+          clientReports ??
+          List<OrderConversationMessage>.from(this.clientReports),
       history: history ?? Map<WorkflowStage, String>.from(this.history),
     );
   }
@@ -1411,6 +1468,7 @@ class WorkflowOrder {
         for (final entry in relationshipKanbanStatuses.entries)
           entry.key: entry.value.name,
       },
+      'heatedFloorChecklist': heatedFloorChecklist,
       'assemblyPreparationChecklist': assemblyPreparationChecklist,
       'assemblyWorkflowStatus': assemblyWorkflowStatus.name,
       'assemblyAssignedEmployeeEmails': assemblyAssignedEmployeeEmails,
@@ -1459,6 +1517,7 @@ class WorkflowOrder {
       'integratorValue': integratorValue,
       'integratorName': integratorName,
       'architectName': architectName,
+      'hasElectricalProject': hasElectricalProject,
       'proposalServices': proposalServices
           .map((service) => service.toMap())
           .toList(growable: false),
@@ -1478,6 +1537,9 @@ class WorkflowOrder {
       'conversationMessages': conversationMessages
           .map((message) => message.toMap())
           .toList(growable: false),
+      'clientReports': clientReports
+          .map((report) => report.toMap())
+          .toList(growable: false),
       'history': {
         for (final entry in history.entries) entry.key.name: entry.value,
       },
@@ -1493,6 +1555,7 @@ class WorkflowOrder {
     final rawFinanceContractStatuses = map['financeContractStatuses'];
     final rawEstimatingKanbanStatuses = map['estimatingKanbanStatuses'];
     final rawRelationshipKanbanStatuses = map['relationshipKanbanStatuses'];
+    final rawHeatedFloorChecklist = map['heatedFloorChecklist'];
     final rawAssemblyPreparationChecklist = map['assemblyPreparationChecklist'];
     final rawAssemblyAssignedEmployeeEmails =
         map['assemblyAssignedEmployeeEmails'];
@@ -1502,6 +1565,7 @@ class WorkflowOrder {
     final rawProposalServices = map['proposalServices'];
     final rawStageOwners = map['stageOwners'];
     final rawConversationMessages = map['conversationMessages'];
+    final rawClientReports = map['clientReports'];
     final rawWhatsappGroupMembers = map['whatsappGroupMembers'];
     final rawEstimatingIncludedVisits = map['estimatingIncludedVisits'];
     final rawEstimatingMaterials = map['estimatingMaterials'];
@@ -1595,6 +1659,11 @@ class WorkflowOrder {
       relationshipKanbanStatuses: rawRelationshipKanbanStatuses is Map
           ? _readRelationshipKanbanStatuses(
               Map<String, dynamic>.from(rawRelationshipKanbanStatuses),
+            )
+          : const {},
+      heatedFloorChecklist: rawHeatedFloorChecklist is Map
+          ? rawHeatedFloorChecklist.map(
+              (key, value) => MapEntry(key.toString(), value == true),
             )
           : const {},
       assemblyPreparationChecklist: rawAssemblyPreparationChecklist is Map
@@ -1697,6 +1766,7 @@ class WorkflowOrder {
       integratorValue: (map['integratorValue'] ?? '').toString(),
       integratorName: (map['integratorName'] ?? '').toString(),
       architectName: (map['architectName'] ?? '').toString(),
+      hasElectricalProject: (map['hasElectricalProject'] ?? 'Não').toString(),
       proposalServices: rawProposalServices is Iterable
           ? rawProposalServices
                 .map(
@@ -1734,6 +1804,17 @@ class WorkflowOrder {
           : const [],
       conversationMessages: rawConversationMessages is Iterable
           ? rawConversationMessages
+                .map(
+                  (item) => OrderConversationMessage.fromMap(
+                    item is Map<String, dynamic>
+                        ? item
+                        : Map<String, dynamic>.from(item as Map? ?? const {}),
+                  ),
+                )
+                .toList(growable: false)
+          : const [],
+      clientReports: rawClientReports is Iterable
+          ? rawClientReports
                 .map(
                   (item) => OrderConversationMessage.fromMap(
                     item is Map<String, dynamic>
@@ -1851,6 +1932,7 @@ Map<String, EngineeringTaskSchedule> _readEngineeringActivitySchedules(
     'project_presentation': 'awaiting_presentation',
     'site_presentation': 'meeting_electrician',
     'cable_conference': 'released_for_conference',
+    '__personal_engineering__': 'personal_engineering',
   };
 
   return rawSchedules.map((key, value) {

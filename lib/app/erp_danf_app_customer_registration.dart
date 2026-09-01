@@ -426,6 +426,7 @@ class _CustomerRegistrationDraft {
     required this.integratorValue,
     required this.integratorName,
     required this.architectName,
+    required this.hasElectricalProject,
     required this.proposalServices,
     required this.isDanfClient,
     required this.danfInstallerName,
@@ -471,6 +472,7 @@ class _CustomerRegistrationDraft {
   final String integratorValue;
   final String integratorName;
   final String architectName;
+  final String hasElectricalProject;
   final List<ProposalServiceEntry> proposalServices;
   final String isDanfClient;
   final String danfInstallerName;
@@ -1100,6 +1102,7 @@ class _AdditionalProposalDraft {
     required this.integratorValue,
     required this.integratorName,
     required this.architectName,
+    required this.hasElectricalProject,
     required this.proposalServices,
     required this.isDanfClient,
     required this.danfInstallerName,
@@ -1125,6 +1128,7 @@ class _AdditionalProposalDraft {
   final String integratorValue;
   final String integratorName;
   final String architectName;
+  final String hasElectricalProject;
   final List<ProposalServiceEntry> proposalServices;
   final String isDanfClient;
   final String danfInstallerName;
@@ -1421,6 +1425,7 @@ class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
   final _integratorValueController = TextEditingController();
   final _integratorNameController = TextEditingController();
   final _architectNameController = TextEditingController();
+  final _hasElectricalProjectController = TextEditingController(text: 'Não');
   final _isDanfClientController = TextEditingController();
   final _danfInstallerNameController = TextEditingController();
   final _canHaveDanfPlateController = TextEditingController();
@@ -1457,6 +1462,7 @@ class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
     _integratorValueController.dispose();
     _integratorNameController.dispose();
     _architectNameController.dispose();
+    _hasElectricalProjectController.dispose();
     _isDanfClientController.dispose();
     _danfInstallerNameController.dispose();
     _canHaveDanfPlateController.dispose();
@@ -1650,6 +1656,7 @@ class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
         integratorValue: _integratorValueController.text.trim(),
         integratorName: _integratorNameController.text.trim(),
         architectName: _architectNameController.text.trim(),
+        hasElectricalProject: _hasElectricalProjectController.text.trim(),
         proposalServices: _proposalServiceRows
             .map(
               (row) => ProposalServiceEntry(
@@ -2138,6 +2145,19 @@ class _AdditionalProposalDialogState extends State<_AdditionalProposalDialog> {
                             ),
                             const SizedBox(height: 12),
                           ],
+                          _DialogChoiceField(
+                            value: _hasElectricalProjectController.text,
+                            label: 'Projeto elétrico',
+                            options: _yesNoOptions,
+                            validator: _requiredField,
+                            onChanged: (value) {
+                              setState(() {
+                                _hasElectricalProjectController.text =
+                                    value ?? 'Não';
+                              });
+                            },
+                          ),
+                          const SizedBox(height: 16),
                           Row(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
@@ -2434,6 +2454,7 @@ class _CustomerRegistrationDialogState
   final _integratorValueController = TextEditingController();
   final _integratorNameController = TextEditingController();
   final _architectNameController = TextEditingController();
+  final _hasElectricalProjectController = TextEditingController(text: 'Não');
   final _isDanfClientController = TextEditingController();
   final _danfInstallerNameController = TextEditingController();
   final _canHaveDanfPlateController = TextEditingController();
@@ -2489,6 +2510,7 @@ class _CustomerRegistrationDialogState
     _integratorValueController.text = draft.integratorValue;
     _integratorNameController.text = draft.integratorName;
     _architectNameController.text = draft.architectName;
+    _hasElectricalProjectController.text = draft.hasElectricalProject;
     _isDanfClientController.text = draft.isDanfClient;
     _danfInstallerNameController.text = draft.danfInstallerName;
     _canHaveDanfPlateController.text = draft.canHaveDanfPlate;
@@ -2551,6 +2573,7 @@ class _CustomerRegistrationDialogState
     _integratorValueController.dispose();
     _integratorNameController.dispose();
     _architectNameController.dispose();
+    _hasElectricalProjectController.dispose();
     _isDanfClientController.dispose();
     _danfInstallerNameController.dispose();
     _canHaveDanfPlateController.dispose();
@@ -2612,6 +2635,7 @@ class _CustomerRegistrationDialogState
         integratorValue: _integratorValueController.text.trim(),
         integratorName: _integratorNameController.text.trim(),
         architectName: _architectNameController.text.trim(),
+        hasElectricalProject: _hasElectricalProjectController.text.trim(),
         proposalServices: _proposalServiceRows
             .map(
               (row) => ProposalServiceEntry(
@@ -3531,6 +3555,19 @@ class _CustomerRegistrationDialogState
                                 ),
                                 const SizedBox(height: 12),
                               ],
+                              _DialogChoiceField(
+                                value: _hasElectricalProjectController.text,
+                                label: 'Projeto elétrico',
+                                options: _yesNoOptions,
+                                validator: _requiredField,
+                                onChanged: (value) {
+                                  setState(() {
+                                    _hasElectricalProjectController.text =
+                                        value ?? 'Não';
+                                  });
+                                },
+                              ),
+                              const SizedBox(height: 16),
                               Row(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [

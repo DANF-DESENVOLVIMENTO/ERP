@@ -6,12 +6,14 @@ class _EngineeringStageCalendarBoard extends StatefulWidget {
     required this.onOrderSelected,
     this.selectedOrder,
     this.onSchedulePersonalActivity,
+    this.onDeletePersonalActivity,
   });
 
   final List<WorkflowOrder> orders;
   final WorkflowOrder? selectedOrder;
   final ValueChanged<WorkflowOrder> onOrderSelected;
   final Future<void> Function()? onSchedulePersonalActivity;
+  final Future<void> Function(WorkflowOrder order)? onDeletePersonalActivity;
 
   @override
   State<_EngineeringStageCalendarBoard> createState() =>
@@ -85,9 +87,7 @@ class _EngineeringStageCalendarBoardState
           padding: const EdgeInsets.symmetric(vertical: 6),
           decoration: BoxDecoration(
             color: isSelected ? accent.withValues(alpha: 0.16) : null,
-            border: isToday && !isSelected
-                ? Border.all(color: accent)
-                : null,
+            border: isToday && !isSelected ? Border.all(color: accent) : null,
             borderRadius: BorderRadius.circular(10),
           ),
           child: Column(
@@ -180,6 +180,12 @@ class _EngineeringStageCalendarBoardState
     final stageOrders = widget.orders
         .where((order) => order.currentStage == WorkflowStage.engineering)
         .toList(growable: false);
+    final personalScheduleOrder =
+        widget.selectedOrder?.currentStage == WorkflowStage.engineering
+        ? widget.selectedOrder
+        : stageOrders.isEmpty
+        ? null
+        : stageOrders.first;
     final scheduledEntries = <_EngineeringCalendarEntry>[];
     for (final order in stageOrders) {
       for (final entry in order.engineeringActivitySchedules.entries) {
@@ -221,15 +227,30 @@ class _EngineeringStageCalendarBoardState
             'Calendário da engenharia',
             style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
           ),
-          if (widget.selectedOrder?.currentStage == WorkflowStage.engineering &&
-              widget.onSchedulePersonalActivity != null) ...[
+          if (widget.onSchedulePersonalActivity != null) ...[
             const SizedBox(height: 10),
             OutlinedButton.icon(
-              onPressed: () async {
-                await widget.onSchedulePersonalActivity!();
-              },
+              onPressed: personalScheduleOrder == null
+                  ? null
+                  : () async {
+                      try {
+                        await widget.onSchedulePersonalActivity!();
+                      } catch (error) {
+                        if (!context.mounted) {
+                          return;
+                        }
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text(
+                              'Não foi possível salvar a agenda pessoal: $error',
+                            ),
+                            backgroundColor: const Color(0xFFB91C1C),
+                          ),
+                        );
+                      }
+                    },
               icon: const Icon(Icons.event_note_outlined),
-              label: const Text('Agendar pessoal'),
+              label: const Text('Criar agenda pessoal'),
             ),
           ],
           const SizedBox(height: 6),
@@ -272,7 +293,10 @@ class _EngineeringStageCalendarBoardState
                 padding: const EdgeInsets.all(12),
                 child: _buildCalendarGrid(
                   scheduledDates: scheduledEntries
-                      .map((entry) => DateUtils.dateOnly(entry.schedule.scheduledAt))
+                      .map(
+                        (entry) =>
+                            DateUtils.dateOnly(entry.schedule.scheduledAt),
+                      )
                       .toSet(),
                   secondaryTextColor: secondaryTextColor,
                 ),
@@ -392,12 +416,37 @@ class _EngineeringStageCalendarBoardState
                                     ],
                                   ),
                                   const SizedBox(height: 10),
-                                  Text(
-                                    entry.task.label,
-                                    style: const TextStyle(
-                                      fontSize: 15,
-                                      fontWeight: FontWeight.w800,
-                                    ),
+                                  Row(
+                                    children: [
+                                      Expanded(
+                                        child: Text(
+                                          entry.schedule.title.trim().isEmpty
+                                              ? entry.task.label
+                                              : entry.schedule.title.trim(),
+                                          style: const TextStyle(
+                                            fontSize: 15,
+                                            fontWeight: FontWeight.w800,
+                                          ),
+                                        ),
+                                      ),
+                                      if (entry.task.key ==
+                                              _engineeringPersonalScheduleKey &&
+                                          widget.onDeletePersonalActivity !=
+                                              null)
+                                        IconButton(
+                                          tooltip: 'Excluir agendamento',
+                                          onPressed: () async {
+                                            await widget
+                                                .onDeletePersonalActivity!(
+                                              entry.order,
+                                            );
+                                          },
+                                          color: const Color(0xFFB91C1C),
+                                          icon: const Icon(
+                                            Icons.delete_outline,
+                                          ),
+                                        ),
+                                    ],
                                   ),
                                   const SizedBox(height: 4),
                                   Text(
@@ -417,6 +466,33 @@ class _EngineeringStageCalendarBoardState
                                         color: secondaryTextColor,
                                         fontSize: 12,
                                         height: 1.35,
+                                      ),
+                                    ),
+                                  ],
+                                  if (entry
+                                      .schedule
+                                      .collaborators
+                                      .isNotEmpty) ...[
+                                    const SizedBox(height: 8),
+                                    Text(
+                                      'Colaboradores: ${entry.schedule.collaborators.join(', ')}',
+                                      style: TextStyle(
+                                        color: secondaryTextColor,
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                    ),
+                                  ],
+                                  if (entry.schedule.createdBy
+                                      .trim()
+                                      .isNotEmpty) ...[
+                                    const SizedBox(height: 8),
+                                    Text(
+                                      'Criado por: ${entry.schedule.createdBy.trim()}',
+                                      style: TextStyle(
+                                        color: secondaryTextColor,
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w600,
                                       ),
                                     ),
                                   ],
@@ -456,15 +532,20 @@ class _GeneralCalendarSection extends StatefulWidget {
   const _GeneralCalendarSection({
     required this.orders,
     required this.onOrderSelected,
+    required this.onSchedulePersonalActivity,
+    required this.onDeletePersonalActivity,
     this.selectedOrder,
   });
 
   final List<WorkflowOrder> orders;
   final WorkflowOrder? selectedOrder;
   final ValueChanged<String> onOrderSelected;
+  final Future<void> Function() onSchedulePersonalActivity;
+  final Future<void> Function(WorkflowOrder order) onDeletePersonalActivity;
 
   @override
-  State<_GeneralCalendarSection> createState() => _GeneralCalendarSectionState();
+  State<_GeneralCalendarSection> createState() =>
+      _GeneralCalendarSectionState();
 }
 
 class _GeneralCalendarSectionState extends State<_GeneralCalendarSection> {
@@ -514,9 +595,18 @@ class _GeneralCalendarSectionState extends State<_GeneralCalendarSection> {
           _GeneralCalendarEntry(
             order: order,
             stage: WorkflowStage.engineering,
+            isPersonal: scheduleEntry.key == _engineeringPersonalScheduleKey,
             scheduledAt: scheduleEntry.value.scheduledAt,
-            title: task.label,
-            notes: scheduleEntry.value.notes,
+            title: scheduleEntry.value.title.trim().isEmpty
+                ? task.label
+                : scheduleEntry.value.title.trim(),
+            notes: [
+              scheduleEntry.value.notes.trim(),
+              if (scheduleEntry.value.collaborators.isNotEmpty)
+                'Colaboradores: ${scheduleEntry.value.collaborators.join(', ')}',
+              if (scheduleEntry.value.createdBy.trim().isNotEmpty)
+                'Criado por: ${scheduleEntry.value.createdBy.trim()}',
+            ].where((text) => text.isNotEmpty).join('\n'),
             accent: WorkflowStage.engineering.color,
             icon: scheduleEntry.key == _engineeringPersonalScheduleKey
                 ? Icons.event_note_outlined
@@ -555,7 +645,9 @@ class _GeneralCalendarSectionState extends State<_GeneralCalendarSection> {
       }
     }
 
-    entries.sort((left, right) => left.scheduledAt.compareTo(right.scheduledAt));
+    entries.sort(
+      (left, right) => left.scheduledAt.compareTo(right.scheduledAt),
+    );
     return entries;
   }
 
@@ -707,6 +799,19 @@ class _GeneralCalendarSectionState extends State<_GeneralCalendarSection> {
             'Calendário geral',
             style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800),
           ),
+          const SizedBox(height: 10),
+          OutlinedButton.icon(
+            onPressed:
+                widget.orders.any(
+                  (order) => order.currentStage == WorkflowStage.engineering,
+                )
+                ? () async {
+                    await widget.onSchedulePersonalActivity();
+                  }
+                : null,
+            icon: const Icon(Icons.event_note_outlined),
+            label: const Text('Criar agenda pessoal'),
+          ),
           const SizedBox(height: 6),
           Text(
             'Agenda unificada da engenharia, montagem e instalação.',
@@ -811,7 +916,8 @@ class _GeneralCalendarSectionState extends State<_GeneralCalendarSection> {
                         return Padding(
                           padding: const EdgeInsets.only(bottom: 10),
                           child: InkWell(
-                            onTap: () => widget.onOrderSelected(entry.order.code),
+                            onTap: () =>
+                                widget.onOrderSelected(entry.order.code),
                             borderRadius: BorderRadius.circular(14),
                             child: Container(
                               width: double.infinity,
@@ -824,7 +930,9 @@ class _GeneralCalendarSectionState extends State<_GeneralCalendarSection> {
                                     : const Color(0xFFF5F5F3),
                                 borderRadius: BorderRadius.circular(14),
                                 border: Border.all(
-                                  color: isSelected ? entry.accent : borderColor,
+                                  color: isSelected
+                                      ? entry.accent
+                                      : borderColor,
                                 ),
                               ),
                               child: Column(
@@ -855,7 +963,9 @@ class _GeneralCalendarSectionState extends State<_GeneralCalendarSection> {
                                             ),
                                             const SizedBox(width: 6),
                                             Text(
-                                              _formatTimeOnly(entry.scheduledAt),
+                                              _formatTimeOnly(
+                                                entry.scheduledAt,
+                                              ),
                                               style: TextStyle(
                                                 color: entry.accent,
                                                 fontWeight: FontWeight.w800,
@@ -866,7 +976,9 @@ class _GeneralCalendarSectionState extends State<_GeneralCalendarSection> {
                                       ),
                                       const SizedBox(width: 10),
                                       _StatusBadge(
-                                        label: entry.stage.title,
+                                        label: entry.isPersonal
+                                            ? 'Agenda pessoal'
+                                            : entry.stage.title,
                                         color: entry.accent,
                                       ),
                                       const SizedBox(width: 10),
@@ -884,6 +996,20 @@ class _GeneralCalendarSectionState extends State<_GeneralCalendarSection> {
                                           ),
                                         ),
                                       ),
+                                      if (entry.isPersonal)
+                                        IconButton(
+                                          tooltip: 'Excluir agendamento',
+                                          onPressed: () async {
+                                            await widget
+                                                .onDeletePersonalActivity(
+                                                  entry.order,
+                                                );
+                                          },
+                                          color: const Color(0xFFB91C1C),
+                                          icon: const Icon(
+                                            Icons.delete_outline,
+                                          ),
+                                        ),
                                     ],
                                   ),
                                   const SizedBox(height: 10),
@@ -954,6 +1080,7 @@ class _GeneralCalendarEntry {
     required this.notes,
     required this.accent,
     required this.icon,
+    this.isPersonal = false,
   });
 
   final WorkflowOrder order;
@@ -963,6 +1090,7 @@ class _GeneralCalendarEntry {
   final String notes;
   final Color accent;
   final IconData icon;
+  final bool isPersonal;
 }
 
 class _SecretBlankScreen extends StatelessWidget {
@@ -1197,10 +1325,14 @@ class _EngineeringActivityScheduleDraft {
   const _EngineeringActivityScheduleDraft({
     required this.scheduledAt,
     required this.notes,
+    required this.title,
+    required this.collaborators,
   });
 
   final DateTime scheduledAt;
   final String notes;
+  final String title;
+  final List<String> collaborators;
 }
 
 class _EngineeringActivityScheduleDialog extends StatefulWidget {
@@ -1208,11 +1340,13 @@ class _EngineeringActivityScheduleDialog extends StatefulWidget {
     required this.order,
     required this.task,
     required this.initialDraft,
+    required this.availableCollaborators,
   });
 
   final WorkflowOrder order;
   final EngineeringChecklistTask task;
   final _EngineeringActivityScheduleDraft initialDraft;
+  final List<EmployeeWorkspaceProfile> availableCollaborators;
 
   @override
   State<_EngineeringActivityScheduleDialog> createState() =>
@@ -1223,17 +1357,22 @@ class _EngineeringActivityScheduleDialogState
     extends State<_EngineeringActivityScheduleDialog> {
   late DateTime _scheduledAt;
   late TextEditingController _notesController;
+  late TextEditingController _titleController;
+  late Set<String> _selectedCollaborators;
 
   @override
   void initState() {
     super.initState();
     _scheduledAt = widget.initialDraft.scheduledAt;
     _notesController = TextEditingController(text: widget.initialDraft.notes);
+    _titleController = TextEditingController(text: widget.initialDraft.title);
+    _selectedCollaborators = widget.initialDraft.collaborators.toSet();
   }
 
   @override
   void dispose() {
     _notesController.dispose();
+    _titleController.dispose();
     super.dispose();
   }
 
@@ -1280,10 +1419,18 @@ class _EngineeringActivityScheduleDialogState
   }
 
   void _submit() {
+    if (_titleController.text.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Informe o título do agendamento.')),
+      );
+      return;
+    }
     Navigator.of(context).pop(
       _EngineeringActivityScheduleDraft(
         scheduledAt: _scheduledAt,
         notes: _notesController.text.trim(),
+        title: _titleController.text.trim(),
+        collaborators: _selectedCollaborators.toList(growable: false),
       ),
     );
   }
@@ -1357,12 +1504,22 @@ class _EngineeringActivityScheduleDialogState
                 ],
               ),
             ),
-            Flexible(
+            ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight: MediaQuery.sizeOf(context).height * 0.68,
+              ),
               child: SingleChildScrollView(
                 padding: const EdgeInsets.all(24),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    _DialogField(
+                      controller: _titleController,
+                      label: 'Título do agendamento',
+                      validator: (_) => null,
+                      hintText: 'Ex.: Reunião de alinhamento',
+                    ),
+                    const SizedBox(height: 20),
                     LayoutBuilder(
                       builder: (context, constraints) {
                         final useTwoColumns = constraints.maxWidth >= 560;
@@ -1395,6 +1552,36 @@ class _EngineeringActivityScheduleDialogState
                           ],
                         );
                       },
+                    ),
+                    const SizedBox(height: 20),
+                    const Text(
+                      'Colaboradores',
+                      style: TextStyle(fontWeight: FontWeight.w800),
+                    ),
+                    const SizedBox(height: 10),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: widget.availableCollaborators
+                          .map((profile) {
+                            final name = profile.name.trim().isEmpty
+                                ? profile.email
+                                : profile.name.trim();
+                            return FilterChip(
+                              label: Text(name),
+                              selected: _selectedCollaborators.contains(name),
+                              onSelected: (selected) {
+                                setState(() {
+                                  if (selected) {
+                                    _selectedCollaborators.add(name);
+                                  } else {
+                                    _selectedCollaborators.remove(name);
+                                  }
+                                });
+                              },
+                            );
+                          })
+                          .toList(growable: false),
                     ),
                     const SizedBox(height: 20),
                     _DialogField(
@@ -2780,7 +2967,9 @@ class _RelationshipStageCalendarBoardState
       }
     }
 
-    entries.sort((left, right) => left.scheduledAt.compareTo(right.scheduledAt));
+    entries.sort(
+      (left, right) => left.scheduledAt.compareTo(right.scheduledAt),
+    );
     return entries;
   }
 
@@ -3031,14 +3220,18 @@ class _RelationshipStageCalendarBoardState
                               width: double.infinity,
                               padding: const EdgeInsets.all(14),
                               decoration: BoxDecoration(
-                                color: widget.selectedOrder?.code == entry.order.code
+                                color:
+                                    widget.selectedOrder?.code ==
+                                        entry.order.code
                                     ? entry.accent.withValues(alpha: 0.08)
                                     : isDarkMode
                                     ? const Color(0xFF1C1D20)
                                     : const Color(0xFFF5F5F3),
                                 borderRadius: BorderRadius.circular(14),
                                 border: Border.all(
-                                  color: widget.selectedOrder?.code == entry.order.code
+                                  color:
+                                      widget.selectedOrder?.code ==
+                                          entry.order.code
                                       ? entry.accent
                                       : borderColor,
                                 ),
@@ -3054,8 +3247,12 @@ class _RelationshipStageCalendarBoardState
                                           vertical: 6,
                                         ),
                                         decoration: BoxDecoration(
-                                          color: entry.accent.withValues(alpha: 0.12),
-                                          borderRadius: BorderRadius.circular(999),
+                                          color: entry.accent.withValues(
+                                            alpha: 0.12,
+                                          ),
+                                          borderRadius: BorderRadius.circular(
+                                            999,
+                                          ),
                                         ),
                                         child: Text(
                                           entry.label,
@@ -3181,6 +3378,9 @@ class _RelationshipChecklistCard extends StatelessWidget {
           _RelationshipFlowKanban(
             flowSnapshot: flowSnapshot,
             whatsappGroupMembers: order.whatsappGroupMembers,
+            whatsappGroupObservation: order.whatsappGroupObservation,
+            whatsappGroupAlreadyCreated:
+                order.hasWhatsappGroup.trim().toLowerCase() == 'sim',
             isDarkMode: isDarkMode,
             borderColor: borderColor,
             isEditable: isEditable,
@@ -3196,6 +3396,8 @@ class _RelationshipFlowKanban extends StatelessWidget {
   const _RelationshipFlowKanban({
     required this.flowSnapshot,
     required this.whatsappGroupMembers,
+    required this.whatsappGroupObservation,
+    required this.whatsappGroupAlreadyCreated,
     required this.isDarkMode,
     required this.borderColor,
     required this.isEditable,
@@ -3204,6 +3406,8 @@ class _RelationshipFlowKanban extends StatelessWidget {
 
   final _RelationshipKanbanFlowSnapshot flowSnapshot;
   final List<WhatsappGroupMember> whatsappGroupMembers;
+  final String whatsappGroupObservation;
+  final bool whatsappGroupAlreadyCreated;
   final bool isDarkMode;
   final Color borderColor;
   final bool isEditable;
@@ -3225,6 +3429,8 @@ class _RelationshipFlowKanban extends StatelessWidget {
             tasks: flowSnapshot.completedTasks,
             emptyMessage: 'Nenhuma etapa concluída ainda.',
             whatsappGroupMembers: whatsappGroupMembers,
+            whatsappGroupObservation: whatsappGroupObservation,
+            whatsappGroupAlreadyCreated: whatsappGroupAlreadyCreated,
             isDarkMode: isDarkMode,
             borderColor: borderColor,
             isEditable: isEditable,
@@ -3239,6 +3445,8 @@ class _RelationshipFlowKanban extends StatelessWidget {
                 : [flowSnapshot.currentTask!],
             emptyMessage: 'Fluxo do relacionamento concluído.',
             whatsappGroupMembers: whatsappGroupMembers,
+            whatsappGroupObservation: whatsappGroupObservation,
+            whatsappGroupAlreadyCreated: whatsappGroupAlreadyCreated,
             isDarkMode: isDarkMode,
             borderColor: borderColor,
             isEditable: isEditable,
@@ -3251,6 +3459,8 @@ class _RelationshipFlowKanban extends StatelessWidget {
             tasks: flowSnapshot.upcomingTasks,
             emptyMessage: 'Não existem próximas etapas pendentes.',
             whatsappGroupMembers: whatsappGroupMembers,
+            whatsappGroupObservation: whatsappGroupObservation,
+            whatsappGroupAlreadyCreated: whatsappGroupAlreadyCreated,
             isDarkMode: isDarkMode,
             borderColor: borderColor,
             isEditable: isEditable,
@@ -3291,6 +3501,8 @@ class _RelationshipFlowKanbanColumn extends StatelessWidget {
     required this.tasks,
     required this.emptyMessage,
     required this.whatsappGroupMembers,
+    required this.whatsappGroupObservation,
+    required this.whatsappGroupAlreadyCreated,
     required this.isDarkMode,
     required this.borderColor,
     required this.isEditable,
@@ -3303,6 +3515,8 @@ class _RelationshipFlowKanbanColumn extends StatelessWidget {
   final List<RelationshipKanbanTask> tasks;
   final String emptyMessage;
   final List<WhatsappGroupMember> whatsappGroupMembers;
+  final String whatsappGroupObservation;
+  final bool whatsappGroupAlreadyCreated;
   final bool isDarkMode;
   final Color borderColor;
   final bool isEditable;
@@ -3394,6 +3608,8 @@ class _RelationshipFlowKanbanColumn extends StatelessWidget {
                   taskState: taskState,
                   accent: accent,
                   whatsappGroupMembers: whatsappGroupMembers,
+                  whatsappGroupObservation: whatsappGroupObservation,
+                  whatsappGroupAlreadyCreated: whatsappGroupAlreadyCreated,
                   isDarkMode: isDarkMode,
                   isEditable: isEditable,
                   onStatusChanged: onStatusChanged,
@@ -3412,6 +3628,8 @@ class _RelationshipFlowTaskCard extends StatelessWidget {
     required this.taskState,
     required this.accent,
     required this.whatsappGroupMembers,
+    required this.whatsappGroupObservation,
+    required this.whatsappGroupAlreadyCreated,
     required this.isDarkMode,
     required this.isEditable,
     this.onStatusChanged,
@@ -3421,6 +3639,8 @@ class _RelationshipFlowTaskCard extends StatelessWidget {
   final _EngineeringFlowTaskState taskState;
   final Color accent;
   final List<WhatsappGroupMember> whatsappGroupMembers;
+  final String whatsappGroupObservation;
+  final bool whatsappGroupAlreadyCreated;
   final bool isDarkMode;
   final bool isEditable;
   final Future<void> Function(
@@ -3469,6 +3689,8 @@ class _RelationshipFlowTaskCard extends StatelessWidget {
             const SizedBox(height: 10),
             _RelationshipWhatsappMembersList(
               members: whatsappGroupMembers,
+              observation: whatsappGroupObservation,
+              groupAlreadyCreated: whatsappGroupAlreadyCreated,
               isDarkMode: isDarkMode,
             ),
           ],
@@ -3506,10 +3728,14 @@ class _RelationshipFlowTaskCard extends StatelessWidget {
 class _RelationshipWhatsappMembersList extends StatelessWidget {
   const _RelationshipWhatsappMembersList({
     required this.members,
+    required this.observation,
+    required this.groupAlreadyCreated,
     required this.isDarkMode,
   });
 
   final List<WhatsappGroupMember> members;
+  final String observation;
+  final bool groupAlreadyCreated;
   final bool isDarkMode;
 
   @override
@@ -3525,7 +3751,9 @@ class _RelationshipWhatsappMembersList extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          'Pessoas para adicionar no grupo',
+          groupAlreadyCreated
+              ? 'Situação do grupo'
+              : 'Pessoas para adicionar no grupo',
           style: TextStyle(
             fontWeight: FontWeight.w700,
             fontSize: 12,
@@ -3533,7 +3761,26 @@ class _RelationshipWhatsappMembersList extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 6),
-        if (members.isEmpty)
+        if (groupAlreadyCreated)
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+            decoration: BoxDecoration(
+              color: cardColor,
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: const Row(
+              children: [
+                Icon(Icons.check_circle_outline, size: 18),
+                SizedBox(width: 8),
+                Text(
+                  'Grupo já criado',
+                  style: TextStyle(fontWeight: FontWeight.w700, fontSize: 12),
+                ),
+              ],
+            ),
+          )
+        else if (members.isEmpty)
           Text(
             'Nenhum membro informado no cadastro do cliente.',
             style: TextStyle(color: mutedTextColor, height: 1.3, fontSize: 12),
@@ -3559,16 +3806,42 @@ class _RelationshipWhatsappMembersList extends StatelessWidget {
                     ),
                   ),
                   Text(
-                    [
-                      if (member.phone.trim().isNotEmpty) member.phone,
-                      if (member.role.trim().isNotEmpty) member.role,
-                    ].join(' • '),
+                    'Telefone: ${member.phone.trim().isEmpty ? 'Não informado' : member.phone.trim()}',
                     style: TextStyle(color: mutedTextColor, fontSize: 12),
                   ),
+                  if (member.role.trim().isNotEmpty)
+                    Text(
+                      'Função: ${member.role.trim()}',
+                      style: TextStyle(color: mutedTextColor, fontSize: 12),
+                    ),
                 ],
               ),
             ),
           ),
+        if (observation.trim().isNotEmpty) ...[
+          const SizedBox(height: 6),
+          Text(
+            'Observação do grupo',
+            style: TextStyle(
+              fontWeight: FontWeight.w700,
+              fontSize: 12,
+              color: mutedTextColor,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            decoration: BoxDecoration(
+              color: cardColor,
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Text(
+              observation.trim(),
+              style: TextStyle(color: mutedTextColor, fontSize: 12),
+            ),
+          ),
+        ],
       ],
     );
   }
@@ -3642,6 +3915,10 @@ ImageProvider<Object>? _resolveProfileImageProvider(String? filePath) {
   }
 
   return FileImage(io.File(normalized));
+}
+
+ImageErrorListener? _profileImageErrorHandler(String? filePath) {
+  return _resolveProfileImageProvider(filePath) == null ? null : (_, _) {};
 }
 
 String _normalizeProfileImageUrl(String url) {

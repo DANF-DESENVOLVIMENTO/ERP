@@ -1333,8 +1333,14 @@ class _EstimatingWorksheetSummaryCard extends StatelessWidget {
   bool get _hasNamedMaterialGroups =>
       _materialsByService.keys.any((key) => key.isNotEmpty);
 
-  List<ProposalServiceEntry> get consolidatedServices => order.proposalServices
-      .where((service) => service.consolidated.trim().toLowerCase() == 'sim')
+  List<ProposalServiceEntry> get proposalServiceDetails => order
+      .proposalServices
+      .where(
+        (service) =>
+            service.consolidated.trim().isNotEmpty ||
+            service.prepareInProject.trim().isNotEmpty ||
+            service.observations.trim().isNotEmpty,
+      )
       .toList(growable: false);
 
   @override
@@ -1425,16 +1431,17 @@ class _EstimatingWorksheetSummaryCard extends StatelessWidget {
                 const SizedBox(height: 14),
               ],
           ],
-          if (showConsolidatedProjects && consolidatedServices.isNotEmpty) ...[
+          if (showConsolidatedProjects &&
+              proposalServiceDetails.isNotEmpty) ...[
             const SizedBox(height: 14),
             const Divider(height: 1, color: Color(0xFFE0E0DD)),
             const SizedBox(height: 14),
             const Text(
-              'Projetos consolidados (Engenharia)',
+              'Consolidação da proposta',
               style: TextStyle(fontWeight: FontWeight.w800, fontSize: 15),
             ),
             const SizedBox(height: 8),
-            for (final service in consolidatedServices)
+            for (final service in proposalServiceDetails)
               Padding(
                 padding: const EdgeInsets.only(bottom: 8),
                 child: Column(
@@ -1445,20 +1452,26 @@ class _EstimatingWorksheetSummaryCard extends StatelessWidget {
                       style: const TextStyle(fontWeight: FontWeight.w700),
                     ),
                     Text(
-                      'Preparar em projeto: ${service.prepareInProject.trim().isEmpty ? 'Não informado' : service.prepareInProject}',
+                      'Consolidado: ${service.consolidated.trim().isEmpty ? 'Não informado' : service.consolidated}',
                       style: const TextStyle(
                         fontSize: 13,
                         color: Color(0xFF6B6B68),
                       ),
                     ),
-                    if (service.observations.trim().isNotEmpty)
-                      Text(
-                        service.observations.trim(),
-                        style: const TextStyle(
-                          fontSize: 13,
-                          color: Color(0xFF6B6B68),
-                        ),
+                    Text(
+                      'Projeto: ${service.prepareInProject.trim().isEmpty ? 'Não informado' : service.prepareInProject}',
+                      style: const TextStyle(
+                        fontSize: 13,
+                        color: Color(0xFF6B6B68),
                       ),
+                    ),
+                    Text(
+                      'Observação: ${service.observations.trim().isEmpty ? 'Sem observação' : service.observations.trim()}',
+                      style: const TextStyle(
+                        fontSize: 13,
+                        color: Color(0xFF6B6B68),
+                      ),
+                    ),
                   ],
                 ),
               ),
@@ -1476,72 +1489,74 @@ class _MaterialsTable extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: const [
-            SizedBox(
-              width: 72,
-              child: Text(
-                'Material',
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w700,
-                  color: Color(0xFF6B6B68),
-                ),
-              ),
-            ),
-            Expanded(
-              child: Text(
-                'Descrição',
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w700,
-                  color: Color(0xFF6B6B68),
-                ),
-              ),
-            ),
-            SizedBox(width: 12),
-            Expanded(
-              child: Text(
-                'Modelo',
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w700,
-                  color: Color(0xFF6B6B68),
-                ),
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 6),
-        for (final material in materials)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 8),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                SizedBox(
-                  width: 72,
-                  child: Text(
-                    material.quantity,
-                    style: const TextStyle(fontWeight: FontWeight.w700),
+    return SelectionArea(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: const [
+              SizedBox(
+                width: 72,
+                child: Text(
+                  'Material',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF6B6B68),
                   ),
                 ),
-                Expanded(child: Text(material.description)),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    material.model,
-                    style: const TextStyle(color: Color(0xFF6B6B68)),
+              ),
+              Expanded(
+                child: Text(
+                  'Descrição',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF6B6B68),
                   ),
                 ),
-              ],
-            ),
+              ),
+              SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  'Modelo',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF6B6B68),
+                  ),
+                ),
+              ),
+            ],
           ),
-      ],
+          const SizedBox(height: 6),
+          for (final material in materials)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SizedBox(
+                    width: 72,
+                    child: Text(
+                      material.quantity,
+                      style: const TextStyle(fontWeight: FontWeight.w700),
+                    ),
+                  ),
+                  Expanded(child: Text(material.description)),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      material.model,
+                      style: const TextStyle(color: Color(0xFF6B6B68)),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
     );
   }
 }

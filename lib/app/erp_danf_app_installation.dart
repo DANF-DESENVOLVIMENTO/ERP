@@ -197,7 +197,9 @@ class _InstallationScheduleCard extends StatelessWidget {
                         backgroundImage: _resolveProfileImageProvider(
                           profile.photoFilePath,
                         ),
-                        onBackgroundImageError: (_, _) {},
+                        onBackgroundImageError: _profileImageErrorHandler(
+                          profile.photoFilePath,
+                        ),
                         child:
                             profile.photoFilePath == null ||
                                 profile.photoFilePath!.trim().isEmpty
@@ -271,6 +273,16 @@ class _InstallationScheduleCard extends StatelessWidget {
                         _formatDateWithWeekday(visit.scheduledAt),
                         style: const TextStyle(fontWeight: FontWeight.w800),
                       ),
+                      if (visit.serviceName.trim().isNotEmpty) ...[
+                        const SizedBox(height: 4),
+                        Text(
+                          'Serviço: ${visit.serviceName}',
+                          style: TextStyle(
+                            color: WorkflowStage.installation.color,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ],
                       const SizedBox(height: 4),
                       Text(
                         'Registrado em ${_formatDateTime(visit.createdAt)}',
@@ -341,6 +353,22 @@ class _InstallationScheduleCard extends StatelessWidget {
                           ),
                         ),
                       ],
+                      if (visit.completionReport.trim().isNotEmpty) ...[
+                        const SizedBox(height: 10),
+                        Text(
+                          'Relatório da visita',
+                          style: TextStyle(
+                            color: secondaryTextColor,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          visit.completionReport,
+                          style: const TextStyle(height: 1.35),
+                        ),
+                      ],
                     ],
                   ),
                 ),
@@ -361,6 +389,7 @@ class _InstallationCalendarBoard extends StatefulWidget {
     required this.onOrderSelected,
     this.selectedOrder,
     this.onScheduleSelectedOrder,
+    this.onScheduleService,
   });
 
   final List<WorkflowOrder> orders;
@@ -369,6 +398,7 @@ class _InstallationCalendarBoard extends StatefulWidget {
   final ValueChanged<DateTime> onDateSelected;
   final ValueChanged<WorkflowOrder> onOrderSelected;
   final Future<void> Function()? onScheduleSelectedOrder;
+  final Future<void> Function(String serviceName)? onScheduleService;
 
   @override
   State<_InstallationCalendarBoard> createState() =>
@@ -554,6 +584,9 @@ class _InstallationCalendarBoardState
     final stageOrders = orders
         .where((order) => order.currentStage == WorkflowStage.installation)
         .toList(growable: false);
+    final ordersWithConsolidatedServices = stageOrders
+        .where((order) => _consolidatedInstallationServices(order).isNotEmpty)
+        .toList(growable: false);
     final scheduledOrders =
         stageOrders
             .where((order) => order.installationScheduledAt != null)
@@ -565,7 +598,11 @@ class _InstallationCalendarBoardState
           );
     final selectedDayOrders = scheduledOrders
         .where(
-          (order) => _isSameDate(order.installationScheduledAt!, selectedDate),
+          (order) =>
+              _isSameDate(order.installationScheduledAt!, selectedDate) ||
+              order.installationVisitHistory.any(
+                (visit) => _isSameDate(visit.scheduledAt, selectedDate),
+              ),
         )
         .toList(growable: false);
     final unscheduledCount = stageOrders
@@ -636,6 +673,74 @@ class _InstallationCalendarBoardState
               ),
             ],
           ),
+          if (ordersWithConsolidatedServices.isNotEmpty) ...[
+            const SizedBox(height: 18),
+            const Text(
+              'Serviços consolidados',
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
+            ),
+            const SizedBox(height: 10),
+            ...ordersWithConsolidatedServices.expand((serviceOrder) {
+              final services = _consolidatedInstallationServices(serviceOrder);
+              return services.map((serviceName) {
+                final visits = serviceOrder.installationVisitHistory
+                    .where(
+                      (visit) =>
+                          visit.serviceName == serviceName ||
+                          (visit.serviceName.isEmpty && services.length == 1),
+                    )
+                    .toList(growable: false);
+                return Container(
+                  width: double.infinity,
+                  margin: const EdgeInsets.only(bottom: 8),
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: surfaceColor,
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: borderColor),
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              '${serviceOrder.workName} • $serviceName',
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              visits.isEmpty
+                                  ? 'Nenhum dia reservado • 0 visitas'
+                                  : '${visits.map((visit) => _formatDate(visit.scheduledAt)).join(' • ')} • ${visits.length} visita(s)',
+                              style: TextStyle(
+                                color: secondaryTextColor,
+                                fontSize: 12,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      FilledButton.icon(
+                        onPressed: widget.onScheduleService == null
+                            ? null
+                            : () async {
+                                onOrderSelected(serviceOrder);
+                                await widget.onScheduleService!(serviceName);
+                              },
+                        icon: const Icon(Icons.event_outlined),
+                        label: const Text('Agendar'),
+                      ),
+                    ],
+                  ),
+                );
+              });
+            }),
+          ],
           const SizedBox(height: 18),
           LayoutBuilder(
             builder: (context, constraints) {
@@ -649,7 +754,14 @@ class _InstallationCalendarBoardState
                 padding: const EdgeInsets.all(12),
                 child: _buildCalendarGrid(
                   scheduledDates: scheduledOrders
-                      .map((order) => order.installationScheduledAt!)
+                      .expand(
+                        (order) => <DateTime>{
+                          order.installationScheduledAt!,
+                          ...order.installationVisitHistory.map(
+                            (visit) => visit.scheduledAt,
+                          ),
+                        },
+                      )
                       .toSet(),
                   secondaryTextColor: secondaryTextColor,
                   accent: WorkflowStage.installation.color,
@@ -744,7 +856,16 @@ class _InstallationCalendarBoardState
                                         ),
                                         child: Text(
                                           _formatTimeOnly(
-                                            order.installationScheduledAt!,
+                                            order.installationVisitHistory
+                                                    .where(
+                                                      (visit) => _isSameDate(
+                                                        visit.scheduledAt,
+                                                        selectedDate,
+                                                      ),
+                                                    )
+                                                    .lastOrNull
+                                                    ?.scheduledAt ??
+                                                order.installationScheduledAt!,
                                           ),
                                           style: TextStyle(
                                             color: WorkflowStage
@@ -1112,10 +1233,12 @@ class _InstallationScheduleDialog extends StatefulWidget {
   const _InstallationScheduleDialog({
     required this.order,
     required this.initialDraft,
+    this.serviceName = '',
   });
 
   final WorkflowOrder order;
   final _InstallationScheduleDraft initialDraft;
+  final String serviceName;
 
   @override
   State<_InstallationScheduleDialog> createState() =>
@@ -1126,7 +1249,6 @@ class _InstallationScheduleDialogState
     extends State<_InstallationScheduleDialog> {
   late DateTime _scheduledAt;
   late final TextEditingController _notesController;
-  final Set<String> _selectedItems = <String>{};
   late final TextEditingController _customItemsController;
 
   @override
@@ -1134,16 +1256,9 @@ class _InstallationScheduleDialogState
     super.initState();
     _scheduledAt = widget.initialDraft.scheduledAt;
     _notesController = TextEditingController(text: widget.initialDraft.notes);
-    _customItemsController = TextEditingController();
-    for (final item in widget.initialDraft.plannedItems) {
-      if (WorkflowStage.installation.checklist.contains(item)) {
-        _selectedItems.add(item);
-      }
-    }
-    final customItems = widget.initialDraft.plannedItems
-        .where((item) => !WorkflowStage.installation.checklist.contains(item))
-        .join('\n');
-    _customItemsController.text = customItems;
+    _customItemsController = TextEditingController(
+      text: widget.initialDraft.plannedItems.join('\n'),
+    );
   }
 
   @override
@@ -1200,10 +1315,7 @@ class _InstallationScheduleDialogState
         .split('\n')
         .map((item) => item.trim())
         .where((item) => item.isNotEmpty);
-    final plannedItems = {
-      ..._selectedItems,
-      ...customItems,
-    }.toList(growable: false);
+    final plannedItems = customItems.toSet().toList(growable: false);
     if (plannedItems.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -1287,7 +1399,8 @@ class _InstallationScheduleDialogState
                         ),
                         const SizedBox(height: 4),
                         Text(
-                          '${_displayOrderCode(widget.order)} • ${widget.order.workName}',
+                          '${_displayOrderCode(widget.order)} • ${widget.order.workName}'
+                          '${widget.serviceName.isEmpty ? '' : ' • ${widget.serviceName}'}',
                           style: const TextStyle(color: Colors.white70),
                         ),
                       ],
@@ -1340,33 +1453,33 @@ class _InstallationScheduleDialogState
                       },
                     ),
                     const SizedBox(height: 20),
-                    const Text(
-                      'Trabalhos da instalação',
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w800,
-                      ),
+                    const Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Padding(
+                          padding: EdgeInsets.only(top: 7),
+                          child: Icon(Icons.circle, size: 7),
+                        ),
+                        SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'Digite um trabalho e pressione Enter para inserir o próximo item do checklist.',
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: Color(0xFF64748B),
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                     const SizedBox(height: 10),
-                    _InstallationChecklistSelector(
-                      selectedItems: _selectedItems,
-                      onChanged: (item, value) {
-                        setState(() {
-                          if (value) {
-                            _selectedItems.add(item);
-                          } else {
-                            _selectedItems.remove(item);
-                          }
-                        });
-                      },
-                    ),
-                    const SizedBox(height: 14),
                     _DialogField(
                       controller: _customItemsController,
-                      label: 'Outros trabalhos',
+                      label: 'Trabalhos da instalação',
                       validator: (_) => null,
-                      hintText: 'Um trabalho por linha',
-                      maxLines: 3,
+                      hintText: 'Ex.: Instalar painel',
+                      maxLines: 6,
                     ),
                     const SizedBox(height: 16),
                     _DialogField(

@@ -14,6 +14,7 @@ class FirebaseWorkflowRepository {
 
   final FirebaseFirestore _firestore;
   final CompanyDriveStorageService _driveStorage;
+  bool get _driveUploadsEnabled => false;
 
   bool get isDriveUploadConfigured => _driveStorage.isConfigured;
   bool get isUsingLocalDriveUpload => _driveStorage.isLocalDebugEndpoint;
@@ -128,7 +129,9 @@ class FirebaseWorkflowRepository {
   Future<EmployeeWorkspaceProfile> saveWorkspaceProfile(
     EmployeeWorkspaceProfile profile,
   ) async {
-    final resolvedProfile = await _resolveWorkspaceProfilePhoto(profile);
+    final resolvedProfile = _driveUploadsEnabled
+        ? await _resolveWorkspaceProfilePhoto(profile)
+        : profile;
     await _profilesCollection.doc(_profileDocumentId(profile.email)).set({
       ...resolvedProfile.toMap(),
       'updatedAt': DateTime.now(),
@@ -184,7 +187,9 @@ class FirebaseWorkflowRepository {
   }
 
   Future<WorkflowOrder> saveOrder(WorkflowOrder order) async {
-    final resolvedOrder = await _resolveOrderAttachments(order);
+    final resolvedOrder = _driveUploadsEnabled
+        ? await _resolveOrderAttachments(order)
+        : order;
     final document = _ordersCollection.doc(resolvedOrder.code);
     final existing = await document.get();
     final now = DateTime.now();
@@ -197,6 +202,28 @@ class FirebaseWorkflowRepository {
 
     await document.set(payload, SetOptions(merge: true));
     return resolvedOrder;
+  }
+
+  Future<WorkflowOrder> saveEngineeringCalendar(WorkflowOrder order) async {
+    final serializedOrder = order.toMap();
+    await _ordersCollection.doc(order.code).set({
+      'engineeringActivitySchedules':
+          serializedOrder['engineeringActivitySchedules'],
+      'history': serializedOrder['history'],
+      'updatedAt': DateTime.now(),
+    }, SetOptions(merge: true));
+    return order;
+  }
+
+  Future<WorkflowOrder> deleteEngineeringCalendarEntry(
+    WorkflowOrder order,
+    String scheduleKey,
+  ) async {
+    await _ordersCollection.doc(order.code).update({
+      'engineeringActivitySchedules.$scheduleKey': FieldValue.delete(),
+      'updatedAt': DateTime.now(),
+    });
+    return order;
   }
 
   Future<void> deleteOrder(String orderCode) async {

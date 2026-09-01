@@ -311,13 +311,43 @@ enum _DriveSyncStatus { checking, synced, offline, notConfigured }
 
 enum _InstallationProgressAction { complete, dependsOnClient, dependsOnDanf }
 
-const String _engineeringPersonalScheduleKey = '__personal_engineering__';
+bool _engineeringAttachmentsAreEnabled() => false;
+
+const String _engineeringPersonalScheduleKey = 'personal_engineering';
+const String _legacyEngineeringPersonalScheduleKey = '__personal_engineering__';
 const EngineeringChecklistTask _engineeringPersonalScheduleTask =
     EngineeringChecklistTask(
       key: _engineeringPersonalScheduleKey,
       label: 'Agenda pessoal',
       supportsScheduling: true,
     );
+
+const Map<String, String> _heatedFloorChecklistItems = {
+  'purchase_material': 'Compra material',
+  'send_infrastructure': 'Enviar Infra para obra',
+  'guide_infrastructure': 'Orientar responsável pela infraestrutura',
+  'schedule_installation': 'Agendar instalação',
+  'execute_installation': 'Executar instalação',
+  'install_thermostat':
+      'No final da obra (obra limpa), instalar termostato e realizar teste final',
+};
+
+bool _hasConsolidatedHeatedFloor(WorkflowOrder order) {
+  return order.proposalServices.any(
+    (service) =>
+        service.serviceName.trim().toLowerCase() == 'piso aquecido' &&
+        service.consolidated.trim().toLowerCase() == 'sim',
+  );
+}
+
+List<String> _consolidatedInstallationServices(WorkflowOrder order) {
+  return order.proposalServices
+      .where((service) => service.consolidated.trim().toLowerCase() == 'sim')
+      .map((service) => service.serviceName.trim())
+      .where((name) => name.isNotEmpty)
+      .toSet()
+      .toList(growable: false);
+}
 
 class ErpDanfApp extends StatefulWidget {
   const ErpDanfApp({
@@ -691,6 +721,7 @@ class ErpDashboardPage extends StatefulWidget {
 
 class _ErpDashboardPageState extends State<ErpDashboardPage> {
   static const _platformLogStorageKey = 'erp_danf_platform_logs';
+  bool get _driveIntegrationEnabled => false;
   final FirebaseWorkflowRepository _repository = FirebaseWorkflowRepository();
   final SoftwareUpdateService _softwareUpdateService = SoftwareUpdateService();
   List<WorkflowOrder> _orders = List.of(mockOrders);
@@ -738,7 +769,9 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     unawaited(_loadPlatformLogs());
     _startFirebaseSync();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      unawaited(_refreshDriveSyncStatus());
+      if (_driveIntegrationEnabled) {
+        unawaited(_refreshDriveSyncStatus());
+      }
       unawaited(_checkForSoftwareUpdate(showNoUpdateMessage: false));
     });
   }
@@ -1276,11 +1309,58 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     return true;
   }
 
+  Future<bool> _addClientReport(String orderCode, String reportText) async {
+    final selected = _findOrderByCode(orderCode);
+    final normalizedReport = reportText.trim();
+    if (selected == null || normalizedReport.isEmpty) {
+      return false;
+    }
+
+    final authorProfile = _currentWorkspaceProfile;
+    final authorEmail = (_currentUserEmail ?? authorProfile.email)
+        .trim()
+        .toLowerCase();
+    final report = OrderConversationMessage(
+      id: DateTime.now().microsecondsSinceEpoch.toString(),
+      authorEmail: authorEmail,
+      authorName: authorProfile.name.trim().isEmpty
+          ? (authorProfile.login.trim().isEmpty
+                ? 'Colaborador'
+                : authorProfile.login.trim())
+          : authorProfile.name.trim(),
+      message: normalizedReport,
+      createdAt: DateTime.now(),
+      mentionedUserEmails: const [],
+      readByUserEmails: authorEmail.isEmpty ? const [] : [authorEmail],
+    );
+    final updatedOrder = selected.copyWith(
+      clientReports: [...selected.clientReports, report],
+    );
+    final savedOrder = await _runBusyTask(
+      () => _repository.saveOrder(updatedOrder),
+      busyMessage: 'Salvando relatório do cliente...',
+      errorPrefix: 'Não foi possível salvar o relatório',
+    );
+    if (savedOrder == null) {
+      return false;
+    }
+    _mergeOrderLocally(savedOrder);
+    unawaited(
+      _appendPlatformLog(
+        action: 'Adicionou relatório do cliente',
+        area: savedOrder.currentStage.title,
+        details: '${_displayOrderCode(savedOrder)} • ${savedOrder.workName}',
+      ),
+    );
+    return true;
+  }
+
   Future<void> _openOrderDetailsScreen(
     WorkflowOrder order, {
     bool openConversationOnLoad = false,
+    WorkflowStage? historyStage,
   }) async {
-    final orderStage = order.currentStage;
+    final orderStage = historyStage ?? order.currentStage;
     setState(() {
       _selectedViewKey = 'stage:${orderStage.name}';
       _selectedOrderCode = order.code;
@@ -1296,9 +1376,10 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
           stage: orderStage,
           orderCode: order.code,
           showEngineeringChecklist: orderStage == WorkflowStage.engineering,
-          showFlowActions: _currentWorkspaceProfile.allowedStages.contains(
-            orderStage,
-          ),
+          showFlowActions:
+              historyStage == null &&
+              _currentWorkspaceProfile.allowedStages.contains(orderStage),
+          historyStage: historyStage,
           resolveOrderByCode: _findOrderByCode,
           getAllOrders: () =>
               List<WorkflowOrder>.from(_orders, growable: false),
@@ -1308,6 +1389,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
           openConversationOnLoad: openConversationOnLoad,
           onMarkConversationRead: _markConversationMentionsAsRead,
           onSendConversationMessage: _sendConversationMessage,
+          onAddClientReport: _addClientReport,
           onAdvanceOrder: () => _moveSelectedOrder(1),
           onReturnOrder: () => _moveSelectedOrder(-1),
           onSendToEngineering: () =>
@@ -1338,6 +1420,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
           onUpdateEngineeringChecklistStatus: _updateEngineeringChecklistStatus,
           onUpdateFinanceContractStatus: _updateFinanceContractStatus,
           onUpdateRelationshipKanbanStatus: _updateRelationshipKanbanStatus,
+          onUpdateHeatedFloorChecklistItem: _updateHeatedFloorChecklistItem,
           onEditOrder:
               (!_currentWorkspaceProfile.isAdministrator &&
                       !_currentWorkspaceProfile.allowedStages.contains(
@@ -2363,6 +2446,8 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
         orders: _orders,
         selectedOrder: _selectedOrder,
         onOrderSelected: _openOrderFromWorkspace,
+        onSchedulePersonalActivity: _schedulePersonalEngineeringActivity,
+        onDeletePersonalActivity: _deletePersonalEngineeringActivity,
       );
     }
 
@@ -2410,7 +2495,14 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       orders: _orders,
       selectedOrder: _selectedStage == stage ? _selectedOrder : null,
       onOrderSelected: _selectOrder,
-      onOpenOrderDetails: _openOrderDetailsScreen,
+      onOpenOrderDetails: (order) => _openOrderDetailsScreen(
+        order,
+        historyStage:
+            _stageWorkspaceSubtabIndex(stage) == 0 &&
+                order.currentStage != stage
+            ? stage
+            : null,
+      ),
       onOpenOrderConversation: (order) =>
           _openOrderDetailsScreen(order, openConversationOnLoad: true),
       onAdvanceOrder: () => _moveSelectedOrder(1),
@@ -2433,12 +2525,14 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       onToggleFinanceClientApproval:
           _toggleFinanceClientApprovalForSelectedOrder,
       onScheduleInstallation: _scheduleInstallationForSelectedOrder,
+      onScheduleInstallationForService: _scheduleInstallationForSelectedOrder,
       onToggleInstallationExecutionItem: _toggleInstallationExecutionItem,
       onOpenAssemblyPreparationChecklist:
           _openAssemblyChecklistForSelectedOrder,
       onScheduleEngineeringActivity: _scheduleEngineeringActivity,
       onSchedulePersonalEngineeringActivity:
           _schedulePersonalEngineeringActivity,
+      onDeletePersonalEngineeringActivity: _deletePersonalEngineeringActivity,
       onUpdateEngineeringChecklistStatus: _updateEngineeringChecklistStatus,
       onUpdateFinanceContractStatus: _updateFinanceContractStatus,
       onUpdateRelationshipKanbanStatus: _updateRelationshipKanbanStatus,
@@ -2558,6 +2652,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
                 integratorValue: order.integratorValue,
                 integratorName: order.integratorName,
                 architectName: order.architectName,
+                hasElectricalProject: order.hasElectricalProject,
                 proposalServices: order.proposalServices,
                 isDanfClient: order.isDanfClient,
                 danfInstallerName: order.danfInstallerName,
@@ -2619,6 +2714,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
         integratorValue: draft.integratorValue,
         integratorName: draft.integratorName,
         architectName: draft.architectName,
+        hasElectricalProject: draft.hasElectricalProject,
         proposalServices: draft.proposalServices,
         isDanfClient: draft.isDanfClient,
         danfInstallerName: draft.danfInstallerName,
@@ -2751,6 +2847,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       integratorValue: draft.integratorValue,
       integratorName: draft.integratorName,
       architectName: draft.architectName,
+      hasElectricalProject: draft.hasElectricalProject,
       proposalServices: draft.proposalServices,
       isDanfClient: draft.isDanfClient,
       danfInstallerName: draft.danfInstallerName,
@@ -2764,6 +2861,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       blocker: 'Aguardando conferência do cadastro e anexos.',
       tags: const ['Novo cadastro'],
       conversationMessages: const [],
+      clientReports: const [],
       history: {
         WorkflowStage.customerRegistration:
             'Cadastro criado por $creatorLabel em ${_formatDateTime(now)}',
@@ -2896,6 +2994,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       blocker: 'Aguardando emissão da ordem de serviço pelo Orçamentista.',
       tags: const ['Ordem de serviço'],
       conversationMessages: const [],
+      clientReports: const [],
       history: {
         WorkflowStage.relationship:
             'OS criada por $actorLabel em ${_formatDateTime(now)}',
@@ -2937,22 +3036,32 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     );
   }
 
-  Future<void> _scheduleInstallationForSelectedOrder() async {
+  Future<void> _scheduleInstallationForSelectedOrder([
+    String serviceName = '',
+  ]) async {
     final selected = _selectedOrder;
     if (selected == null) {
       return;
     }
 
-    final existingPlannedVisit = _plannedInstallationVisitForSchedule(
-      selected,
-      selected.installationScheduledAt,
-    );
+    final existingPlannedVisit = serviceName.isEmpty
+        ? _plannedInstallationVisitForSchedule(
+            selected,
+            selected.installationScheduledAt,
+          )
+        : selected.installationVisitHistory
+              .cast<InstallationVisitLog?>()
+              .lastWhere(
+                (visit) => visit?.serviceName == serviceName,
+                orElse: () => null,
+              );
 
     final draft = await showDialog<_InstallationScheduleDraft>(
       context: context,
       barrierDismissible: false,
       builder: (context) => _InstallationScheduleDialog(
         order: selected,
+        serviceName: serviceName,
         initialDraft: _InstallationScheduleDraft(
           scheduledAt:
               selected.installationScheduledAt ??
@@ -2994,6 +3103,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
         serviceTime: '',
         notes: draft.notes.trim(),
         createdAt: now,
+        serviceName: serviceName,
       ),
     ];
     final previewOrder = selected.copyWith(
@@ -3392,6 +3502,51 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       }
       serviceTime = completionData.serviceTime.trim();
       completionObservation = completionData.conclusionObservation.trim();
+    } else {
+      final reportController = TextEditingController(
+        text: activeVisit?.completionReport ?? '',
+      );
+      final report = await showDialog<String>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Text(
+            activeVisit?.serviceName.trim().isNotEmpty == true
+                ? 'Relatório • ${activeVisit!.serviceName}'
+                : 'Relatório da visita',
+          ),
+          content: TextField(
+            controller: reportController,
+            autofocus: true,
+            minLines: 4,
+            maxLines: 8,
+            decoration: const InputDecoration(
+              labelText: 'Relatório do serviço realizado',
+              hintText: 'Descreva o que foi executado nesta visita.',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Cancelar'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final value = reportController.text.trim();
+                if (value.isNotEmpty) {
+                  Navigator.of(context).pop(value);
+                }
+              },
+              child: const Text('Salvar relatório'),
+            ),
+          ],
+        ),
+      );
+      reportController.dispose();
+      if (report == null) {
+        return;
+      }
+      completionObservation = report;
     }
 
     final now = DateTime.now();
@@ -3401,6 +3556,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     if (activeVisit != null) {
       updatedVisits[activeVisitIndex] = activeVisit.copyWith(
         serviceTime: serviceTime,
+        completionReport: completionObservation,
         completedItems: pendingItems.isEmpty
             ? activeVisit.completedItems
             : activeVisit.plannedItems,
@@ -3702,20 +3858,35 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
   }
 
   Future<void> _schedulePersonalEngineeringActivity() async {
-    final selected = _selectedOrder;
-    if (selected == null ||
-        selected.currentStage != WorkflowStage.engineering) {
+    final currentSelection = _selectedOrder;
+    final engineeringOrders = _orders.where(
+      (order) => order.currentStage == WorkflowStage.engineering,
+    );
+    final selected = currentSelection?.currentStage == WorkflowStage.engineering
+        ? currentSelection
+        : engineeringOrders.isEmpty
+        ? null
+        : engineeringOrders.first;
+    if (selected == null) {
+      _showAppMessage(
+        'Não há pedido na Engenharia para vincular a agenda pessoal.',
+        isError: true,
+      );
       return;
     }
 
     final existingSchedule =
-        selected.engineeringActivitySchedules[_engineeringPersonalScheduleKey];
+        selected
+            .engineeringActivitySchedules[_engineeringPersonalScheduleKey] ??
+        selected
+            .engineeringActivitySchedules[_legacyEngineeringPersonalScheduleKey];
     final draft = await showDialog<_EngineeringActivityScheduleDraft>(
       context: context,
       barrierDismissible: false,
       builder: (context) => _EngineeringActivityScheduleDialog(
         order: selected,
         task: _engineeringPersonalScheduleTask,
+        availableCollaborators: _workspaceProfiles,
         initialDraft: _EngineeringActivityScheduleDraft(
           scheduledAt:
               existingSchedule?.scheduledAt ??
@@ -3726,6 +3897,8 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
                 8,
               ),
           notes: existingSchedule?.notes ?? '',
+          title: existingSchedule?.title ?? '',
+          collaborators: existingSchedule?.collaborators ?? const [],
         ),
       ),
     );
@@ -3737,10 +3910,18 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     final scheduled = EngineeringTaskSchedule(
       scheduledAt: draft.scheduledAt,
       notes: draft.notes.trim(),
+      title: draft.title.trim(),
+      collaborators: draft.collaborators,
+      createdBy: existingSchedule?.createdBy.trim().isNotEmpty == true
+          ? existingSchedule!.createdBy.trim()
+          : _currentWorkspaceProfile.name.trim().isNotEmpty
+          ? _currentWorkspaceProfile.name.trim()
+          : (_currentUserEmail ?? 'Usuário'),
     );
     final updatedSchedules = Map<String, EngineeringTaskSchedule>.from(
       selected.engineeringActivitySchedules,
-    )..[_engineeringPersonalScheduleKey] = scheduled;
+    )..remove(_legacyEngineeringPersonalScheduleKey);
+    updatedSchedules[_engineeringPersonalScheduleKey] = scheduled;
 
     final historyMessage =
         'Agenda pessoal da Engenharia marcada para ${_formatDateTime(scheduled.scheduledAt)}';
@@ -3751,18 +3932,15 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     );
 
     final savedOrder = await _runBusyTask(
-      () => _repository.saveOrder(updatedOrder),
+      () => _repository.saveEngineeringCalendar(updatedOrder),
       busyMessage: 'Salvando agenda pessoal da engenharia...',
       successMessage: 'Agenda pessoal da engenharia salva.',
       errorPrefix: 'Não foi possível salvar a agenda pessoal da engenharia',
     );
-    if (savedOrder == null) {
+    if (savedOrder == null || !mounted) {
       return;
     }
 
-    setState(() {
-      _selectedOrderCode = savedOrder.code;
-    });
     _mergeOrderLocally(savedOrder);
     unawaited(
       _appendPlatformLog(
@@ -3774,6 +3952,58 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
             '${_displayOrderCode(savedOrder)} • Agenda pessoal • ${_formatDateTime(scheduled.scheduledAt)}',
       ),
     );
+  }
+
+  Future<void> _deletePersonalEngineeringActivity(WorkflowOrder order) async {
+    final schedule =
+        order.engineeringActivitySchedules[_engineeringPersonalScheduleKey];
+    if (schedule == null || !mounted) {
+      return;
+    }
+
+    final title = schedule.title.trim().isEmpty
+        ? 'Agenda pessoal'
+        : schedule.title.trim();
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Excluir agendamento pessoal?'),
+        content: Text('O agendamento “$title” será removido.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            style: FilledButton.styleFrom(
+              backgroundColor: const Color(0xFFB91C1C),
+            ),
+            child: const Text('Excluir'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) {
+      return;
+    }
+
+    final updatedSchedules = Map<String, EngineeringTaskSchedule>.from(
+      order.engineeringActivitySchedules,
+    )..remove(_engineeringPersonalScheduleKey);
+    final savedOrder = await _runBusyTask(
+      () => _repository.deleteEngineeringCalendarEntry(
+        order.copyWith(engineeringActivitySchedules: updatedSchedules),
+        _engineeringPersonalScheduleKey,
+      ),
+      busyMessage: 'Excluindo agenda pessoal da engenharia...',
+      successMessage: 'Agenda pessoal excluída.',
+      errorPrefix: 'Não foi possível excluir a agenda pessoal',
+    );
+    if (savedOrder == null || !mounted) {
+      return;
+    }
+    _mergeOrderLocally(savedOrder);
   }
 
   Future<EngineeringTaskSchedule?> _pickEngineeringActivitySchedule(
@@ -3796,6 +4026,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       builder: (context) => _EngineeringActivityScheduleDialog(
         order: order,
         task: task,
+        availableCollaborators: _workspaceProfiles,
         initialDraft: _EngineeringActivityScheduleDraft(
           scheduledAt:
               existingSchedule?.scheduledAt ??
@@ -3806,6 +4037,8 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
                 8,
               ),
           notes: existingSchedule?.notes ?? '',
+          title: existingSchedule?.title ?? task.label,
+          collaborators: existingSchedule?.collaborators ?? const [],
         ),
       ),
     );
@@ -3817,6 +4050,8 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     return EngineeringTaskSchedule(
       scheduledAt: draft.scheduledAt,
       notes: draft.notes.trim(),
+      title: draft.title.trim(),
+      collaborators: draft.collaborators,
     );
   }
 
@@ -4491,6 +4726,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
       integratorValue: draft.integratorValue,
       integratorName: draft.integratorName,
       architectName: draft.architectName,
+      hasElectricalProject: draft.hasElectricalProject,
       proposalServices: draft.proposalServices,
       isDanfClient: draft.isDanfClient,
       danfInstallerName: draft.danfInstallerName,
@@ -4505,6 +4741,7 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
           'Nova proposta vinculada criada para o cliente principal. Aguardando conferência do cadastro.',
       tags: ['Proposta $nextProposalVersion', 'Cliente existente'],
       conversationMessages: const [],
+      clientReports: const [],
       history: {
         WorkflowStage.customerRegistration:
             'Proposta $nextProposalVersion criada por $creatorLabel em ${_formatDateTime(now)}',
@@ -6345,6 +6582,42 @@ class _ErpDashboardPageState extends State<ErpDashboardPage> {
     );
   }
 
+  Future<void> _updateHeatedFloorChecklistItem(
+    String itemKey,
+    bool completed,
+  ) async {
+    final selected = _selectedOrder;
+    if (selected == null || !_hasConsolidatedHeatedFloor(selected)) {
+      return;
+    }
+
+    final updatedChecklist = Map<String, bool>.from(
+      selected.heatedFloorChecklist,
+    )..[itemKey] = completed;
+    final savedOrder = await _runBusyTask(
+      () => _repository.saveOrder(
+        selected.copyWith(heatedFloorChecklist: updatedChecklist),
+      ),
+      busyMessage: 'Atualizando checklist do Piso Aquecido...',
+      successMessage: 'Checklist do Piso Aquecido atualizado.',
+      errorPrefix: 'Não foi possível atualizar o checklist do Piso Aquecido',
+    );
+    if (savedOrder == null) {
+      return;
+    }
+    _mergeOrderLocally(savedOrder);
+    unawaited(
+      _appendPlatformLog(
+        action: completed
+            ? 'Concluiu item do Piso Aquecido'
+            : 'Reabriu item do Piso Aquecido',
+        area: savedOrder.currentStage.title,
+        details:
+            '${_displayOrderCode(savedOrder)} • ${_heatedFloorChecklistItems[itemKey] ?? itemKey}',
+      ),
+    );
+  }
+
   bool _canMoveFinanceOrderToTarget(
     WorkflowOrder order,
     String? targetTaskKey,
@@ -7152,8 +7425,6 @@ class _DesktopShellHeader extends StatelessWidget {
           const SizedBox(width: 14),
           const _HeaderDateBadge(),
           const SizedBox(width: 10),
-          _DriveSyncIndicator(status: driveSyncStatus),
-          const SizedBox(width: 10),
           _SoftwareUpdateCheckButton(
             isChecking: isCheckingSoftwareUpdate,
             onPressed: onCheckSoftwareUpdate,
@@ -7274,64 +7545,6 @@ class _SoftwareVersionLabel extends StatelessWidget {
             fontSize: compact ? 11 : 12,
             fontWeight: FontWeight.w800,
           ),
-        ),
-      ),
-    );
-  }
-}
-
-class _DriveSyncIndicator extends StatelessWidget {
-  const _DriveSyncIndicator({required this.status});
-
-  final _DriveSyncStatus status;
-
-  @override
-  Widget build(BuildContext context) {
-    final isDarkMode = Theme.of(context).brightness == Brightness.dark;
-    final color = switch (status) {
-      _DriveSyncStatus.synced => const Color(0xFF16A34A),
-      _DriveSyncStatus.checking => const Color(0xFF2563EB),
-      _DriveSyncStatus.offline => const Color(0xFFDC2626),
-      _DriveSyncStatus.notConfigured => const Color(0xFFF59E0B),
-    };
-    final icon = switch (status) {
-      _DriveSyncStatus.synced => Icons.cloud_done_outlined,
-      _DriveSyncStatus.checking => Icons.sync_rounded,
-      _DriveSyncStatus.offline => Icons.cloud_off_outlined,
-      _DriveSyncStatus.notConfigured => Icons.cloud_queue_outlined,
-    };
-    final label = switch (status) {
-      _DriveSyncStatus.synced => 'Drive sincronizado',
-      _DriveSyncStatus.checking => 'Verificando Drive',
-      _DriveSyncStatus.offline => 'Drive offline',
-      _DriveSyncStatus.notConfigured => 'Drive não configurado',
-    };
-
-    return Tooltip(
-      message: label,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-        decoration: BoxDecoration(
-          color: isDarkMode
-              ? color.withValues(alpha: 0.14)
-              : color.withValues(alpha: 0.10),
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: color.withValues(alpha: 0.32)),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, size: 18, color: color),
-            const SizedBox(width: 8),
-            Text(
-              label,
-              style: TextStyle(
-                color: isDarkMode ? const Color(0xFFF2F2F0) : color,
-                fontWeight: FontWeight.w800,
-                fontSize: 12,
-              ),
-            ),
-          ],
         ),
       ),
     );
@@ -8713,10 +8926,13 @@ class _SectorCompletionChart extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isDarkMode = Theme.of(context).brightness == Brightness.dark;
-    final total = entries.fold<int>(0, (sum, entry) => sum + entry.count);
+    final total = entries.fold<int>(
+      0,
+      (totalCount, entry) => totalCount + entry.count,
+    );
     final totalInProgress = entries.fold<int>(
       0,
-      (sum, entry) => sum + entry.inProgressCount,
+      (totalCount, entry) => totalCount + entry.inProgressCount,
     );
     final maxCount = entries.fold<int>(0, (max, entry) {
       final val = period.focus == _CompletionPeriodFocus.inProgress
@@ -9035,11 +9251,14 @@ List<_SectorCompletionEntry> _completionEntriesForPeriod({
   required List<WorkflowOrder> orders,
   required _CompletionPeriod period,
 }) {
+  final primaryOrders = orders
+      .where((order) => !order.isServiceOrder && !_isSubProposal(order))
+      .toList(growable: false);
   return workflowStages
       .map(
         (stage) => _SectorCompletionEntry(
           stage: stage,
-          count: orders
+          count: primaryOrders
               .where(
                 (order) => _wasStageCompletedInPeriod(
                   order: order,
@@ -9048,11 +9267,11 @@ List<_SectorCompletionEntry> _completionEntriesForPeriod({
                 ),
               )
               .length,
-          inProgressCount: orders
+          inProgressCount: primaryOrders
               .where(
                 (order) =>
                     order.currentStage == stage &&
-                    _isOrderAwaitingInStage(order, stage),
+                    _isOrderActiveInStage(order, stage),
               )
               .length,
         ),
@@ -9060,30 +9279,24 @@ List<_SectorCompletionEntry> _completionEntriesForPeriod({
       .toList(growable: false);
 }
 
-bool _isOrderAwaitingInStage(WorkflowOrder order, WorkflowStage stage) {
+bool _isOrderActiveInStage(WorkflowOrder order, WorkflowStage stage) {
   switch (stage) {
     case WorkflowStage.customerRegistration:
       return true;
     case WorkflowStage.estimating:
-      return order.isServiceOrder ||
-          _estimatingKanbanFlowSnapshot(order).currentTask?.key == 'waiting';
+      return !_estimatingKanbanFlowSnapshot(order).isComplete;
     case WorkflowStage.finance:
-      return order.isServiceOrder ||
-          _financeContractFlowSnapshot(order).currentTask?.key == 'waiting';
+      return !_financeContractFlowSnapshot(order).isComplete;
     case WorkflowStage.relationship:
-      return order.isServiceOrder ||
-          _relationshipKanbanFlowSnapshot(order).currentTask?.key ==
-              'in_progress';
+      return !_relationshipKanbanFlowSnapshot(order).isComplete;
     case WorkflowStage.engineering:
-      return !order.engineeringDependsOnClient &&
-          _engineeringFlowSnapshot(order).currentTask?.key ==
-              'depending_on_client';
+      return order.engineeringDependsOnClient ||
+          !_engineeringFlowSnapshot(order).isComplete;
     case WorkflowStage.assembly:
-      return order.assemblyWorkflowStatus == AssemblyWorkflowStatus.waiting;
+      return order.assemblyWorkflowStatus != AssemblyWorkflowStatus.done;
     case WorkflowStage.installation:
-      return order.isServiceOrder ||
-          order.installationWorkflowStatus ==
-              InstallationWorkflowStatus.waiting;
+      return order.installationWorkflowStatus !=
+          InstallationWorkflowStatus.done;
     case WorkflowStage.warehouse:
     case WorkflowStage.stock:
       return true;
@@ -12025,10 +12238,12 @@ class _StageWorkspaceSection extends StatelessWidget {
     this.onAttachServiceOrderPdf,
     this.onToggleFinanceClientApproval,
     this.onScheduleInstallation,
+    this.onScheduleInstallationForService,
     this.onToggleInstallationExecutionItem,
     this.onOpenAssemblyPreparationChecklist,
     this.onScheduleEngineeringActivity,
     this.onSchedulePersonalEngineeringActivity,
+    this.onDeletePersonalEngineeringActivity,
     this.onUpdateEngineeringChecklistStatus,
     this.onUpdateFinanceContractStatus,
     this.onUpdateRelationshipKanbanStatus,
@@ -12089,11 +12304,15 @@ class _StageWorkspaceSection extends StatelessWidget {
   final Future<void> Function()? onAttachServiceOrderPdf;
   final Future<void> Function()? onToggleFinanceClientApproval;
   final Future<void> Function()? onScheduleInstallation;
+  final Future<void> Function(String serviceName)?
+  onScheduleInstallationForService;
   final Future<void> Function(int visitIndex, String item)?
   onToggleInstallationExecutionItem;
   final Future<void> Function()? onOpenAssemblyPreparationChecklist;
   final Future<void> Function(String taskKey)? onScheduleEngineeringActivity;
   final Future<void> Function()? onSchedulePersonalEngineeringActivity;
+  final Future<void> Function(WorkflowOrder order)?
+  onDeletePersonalEngineeringActivity;
   final Future<void> Function(
     String taskKey,
     EngineeringChecklistStatus status,
@@ -12230,7 +12449,8 @@ class _StageWorkspaceSection extends StatelessWidget {
     final visibleOrders = showingRegisteredCatalog
         ? orders
               .where((item) {
-                if (item.currentStage == WorkflowStage.customerRegistration) {
+                if (item.currentStage == WorkflowStage.customerRegistration &&
+                    stage != WorkflowStage.relationship) {
                   return false;
                 }
 
@@ -12644,7 +12864,19 @@ class _StageWorkspaceSection extends StatelessWidget {
             serviceOrdersOnly: true,
           )
         : const <_OrdersKanbanColumnData>[];
-    final kanbanColumns = stage == WorkflowStage.warehouse && showingWorkQueue
+    final kanbanColumns =
+        stage == WorkflowStage.relationship && showingStageRegisteredClients
+        ? <_OrdersKanbanColumnData>[
+            _OrdersKanbanColumnData(
+              title: 'Todos os clientes',
+              subtitle: '${visibleOrders.length} cadastrados',
+              accent: WorkflowStage.relationship.color,
+              icon: Icons.people_alt_outlined,
+              emptyMessage: 'Nenhum cliente cadastrado.',
+              orders: visibleOrders,
+            ),
+          ]
+        : stage == WorkflowStage.warehouse && showingWorkQueue
         ? <_OrdersKanbanColumnData>[
             for (final item in WorkflowStage.warehouse.checklist)
               _OrdersKanbanColumnData(
@@ -13032,6 +13264,7 @@ class _StageWorkspaceSection extends StatelessWidget {
             onDateSelected: onInstallationCalendarDateChanged!,
             onOrderSelected: onOrderSelected,
             onScheduleSelectedOrder: onScheduleInstallation,
+            onScheduleService: onScheduleInstallationForService,
           ),
           const SizedBox(height: 20),
         ],
@@ -13042,6 +13275,7 @@ class _StageWorkspaceSection extends StatelessWidget {
             selectedOrder: selectedOrder,
             onOrderSelected: onOrderSelected,
             onSchedulePersonalActivity: onSchedulePersonalEngineeringActivity,
+            onDeletePersonalActivity: onDeletePersonalEngineeringActivity,
           ),
           const SizedBox(height: 20),
         ],
@@ -14107,6 +14341,7 @@ class _OrderDetailsScreen extends StatefulWidget {
     required this.orderCode,
     required this.showEngineeringChecklist,
     required this.showFlowActions,
+    this.historyStage,
     required this.resolveOrderByCode,
     required this.getAllOrders,
     required this.currentProfile,
@@ -14114,6 +14349,7 @@ class _OrderDetailsScreen extends StatefulWidget {
     required this.unreadMentionCount,
     required this.onMarkConversationRead,
     required this.onSendConversationMessage,
+    required this.onAddClientReport,
     required this.onAdvanceOrder,
     required this.onReturnOrder,
     required this.onSendToEngineering,
@@ -14138,6 +14374,7 @@ class _OrderDetailsScreen extends StatefulWidget {
     this.onUpdateEngineeringChecklistStatus,
     this.onUpdateFinanceContractStatus,
     this.onUpdateRelationshipKanbanStatus,
+    this.onUpdateHeatedFloorChecklistItem,
     this.onEditOrder,
     this.onDeleteOrder,
   });
@@ -14146,6 +14383,7 @@ class _OrderDetailsScreen extends StatefulWidget {
   final String orderCode;
   final bool showEngineeringChecklist;
   final bool showFlowActions;
+  final WorkflowStage? historyStage;
   final WorkflowOrder? Function(String code) resolveOrderByCode;
   final List<WorkflowOrder> Function() getAllOrders;
   final EmployeeWorkspaceProfile currentProfile;
@@ -14154,6 +14392,8 @@ class _OrderDetailsScreen extends StatefulWidget {
   final Future<void> Function(String orderCode) onMarkConversationRead;
   final Future<bool> Function(String orderCode, String message)
   onSendConversationMessage;
+  final Future<bool> Function(String orderCode, String report)
+  onAddClientReport;
   final Future<void> Function() onAdvanceOrder;
   final Future<void> Function() onReturnOrder;
   final Future<void> Function() onSendToEngineering;
@@ -14191,6 +14431,8 @@ class _OrderDetailsScreen extends StatefulWidget {
     EngineeringChecklistStatus status,
   )?
   onUpdateRelationshipKanbanStatus;
+  final Future<void> Function(String itemKey, bool completed)?
+  onUpdateHeatedFloorChecklistItem;
   final Future<void> Function()? onEditOrder;
   final Future<void> Function()? onDeleteOrder;
 
@@ -14282,6 +14524,31 @@ class _OrderDetailsScreenState extends State<_OrderDetailsScreen> {
     _setStateSafely(() {});
   }
 
+  Future<void> _openClientReportsDialog() async {
+    final order = _currentOrder;
+    if (order == null) {
+      return;
+    }
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => _OrderConversationDialog(
+        order: order,
+        currentProfile: widget.currentProfile,
+        profiles: widget.workspaceProfiles,
+        initialMessages: order.clientReports,
+        title: 'Relatórios do cliente',
+        inputHint:
+            'Registre informações, ocorrências e observações do cliente.',
+        submitLabel: 'Salvar relatório',
+        onSendMessage: (report) => widget.onAddClientReport(order.code, report),
+      ),
+    );
+    if (mounted) {
+      _setStateSafely(() {});
+    }
+  }
+
   Future<void> _runStageTransition(Future<void> Function() action) async {
     await action();
     if (!mounted) {
@@ -14353,6 +14620,9 @@ class _OrderDetailsScreenState extends State<_OrderDetailsScreen> {
                 onOpenConversation: _openConversationDialog,
                 conversationCount: order?.conversationMessages.length ?? 0,
                 unreadConversationCount: _unreadConversationCount,
+                historyStage: widget.historyStage,
+                onOpenClientReports: _openClientReportsDialog,
+                clientReportCount: order?.clientReports.length ?? 0,
                 showEngineeringChecklist: widget.showEngineeringChecklist,
                 onAttachMaterials: widget.onAttachMaterials == null
                     ? null
@@ -14466,6 +14736,19 @@ class _OrderDetailsScreenState extends State<_OrderDetailsScreen> {
                         }
                         _setStateSafely(() {});
                       },
+                onUpdateHeatedFloorChecklistItem:
+                    widget.historyStage != null ||
+                        widget.onUpdateHeatedFloorChecklistItem == null
+                    ? null
+                    : (itemKey, completed) async {
+                        await widget.onUpdateHeatedFloorChecklistItem!(
+                          itemKey,
+                          completed,
+                        );
+                        if (mounted) {
+                          _setStateSafely(() {});
+                        }
+                      },
                 onEditOrder: widget.onEditOrder == null
                     ? null
                     : () => _runAndRefresh(widget.onEditOrder),
@@ -14506,6 +14789,9 @@ class _OrderDetailsPanel extends StatelessWidget {
     this.onOpenConversation,
     this.conversationCount = 0,
     this.unreadConversationCount = 0,
+    this.historyStage,
+    this.onOpenClientReports,
+    this.clientReportCount = 0,
     this.showEngineeringChecklist = false,
     this.onAttachMaterials,
     this.onSetEstimatingWasEstimate,
@@ -14525,6 +14811,7 @@ class _OrderDetailsPanel extends StatelessWidget {
     this.onUpdateEngineeringChecklistStatus,
     this.onUpdateFinanceContractStatus,
     this.onUpdateRelationshipKanbanStatus,
+    this.onUpdateHeatedFloorChecklistItem,
     this.showFlowActions = true,
     this.onEditOrder,
     this.onDeleteOrder,
@@ -14542,6 +14829,9 @@ class _OrderDetailsPanel extends StatelessWidget {
   final Future<void> Function()? onOpenConversation;
   final int conversationCount;
   final int unreadConversationCount;
+  final WorkflowStage? historyStage;
+  final Future<void> Function()? onOpenClientReports;
+  final int clientReportCount;
   final bool showEngineeringChecklist;
   final Future<void> Function()? onAttachMaterials;
   final Future<void> Function()? onSetEstimatingWasEstimate;
@@ -14574,6 +14864,8 @@ class _OrderDetailsPanel extends StatelessWidget {
     EngineeringChecklistStatus status,
   )?
   onUpdateRelationshipKanbanStatus;
+  final Future<void> Function(String itemKey, bool completed)?
+  onUpdateHeatedFloorChecklistItem;
   final bool showFlowActions;
   final Future<void> Function()? onEditOrder;
   final Future<void> Function()? onDeleteOrder;
@@ -14640,13 +14932,7 @@ class _OrderDetailsPanel extends StatelessWidget {
         stageIndex > workflowStages.indexOf(WorkflowStage.engineering);
     final hasReachedAssembly =
         stageIndex >= workflowStages.indexOf(WorkflowStage.assembly);
-    final showEngineeringFilesSection =
-        isEngineeringStage ||
-        order!.engineeringChecklistStatuses.isNotEmpty ||
-        hasElectricalProject ||
-        hasPanelLayout ||
-        hasPushButtonTable ||
-        hasEngineeringData;
+    final showEngineeringFilesSection = _engineeringAttachmentsAreEnabled();
     final showEngineeringFilesInStageFiles =
         hasPassedEngineering && showEngineeringFilesSection;
     final showEngineeringFilesInEngineering =
@@ -14739,6 +15025,19 @@ class _OrderDetailsPanel extends StatelessWidget {
             conversationCount > 0
                 ? 'Conversa ($conversationCount)'
                 : 'Conversa',
+          ),
+        ),
+      if (onOpenClientReports != null)
+        OutlinedButton.icon(
+          onPressed: () async {
+            await onOpenClientReports!();
+          },
+          style: compactOutlinedHeaderButtonStyle,
+          icon: const Icon(Icons.description_outlined),
+          label: Text(
+            clientReportCount > 0
+                ? 'Relatórios ($clientReportCount)'
+                : 'Relatórios',
           ),
         ),
       if (showEditOrderAction)
@@ -14874,6 +15173,9 @@ class _OrderDetailsPanel extends StatelessWidget {
           ),
         ),
     ];
+    if (historyStage != null) {
+      headerActions.clear();
+    }
     final uniformHeaderActions = <Widget>[
       for (var index = 0; index < headerActions.length; index++) ...[
         if (index > 0) const SizedBox(width: headerActionSpacing),
@@ -14998,10 +15300,9 @@ class _OrderDetailsPanel extends StatelessWidget {
               info('ID do cliente', order!.client.id, emphasize: true),
               info('Obra', order!.workName, emphasize: true),
               info('Cliente', order!.client.name, emphasize: true),
+              info('Número da proposta', order!.commercialProposalNumber),
               info('Telefone', order!.client.phone),
               infoFull('Endereço', order!.address),
-              if (order!.currentStage == WorkflowStage.estimating)
-                info('Número da proposta', order!.commercialProposalNumber),
               if (showFullCustomerRegistrationData) ...[
                 info('Data de nascimento', order!.client.birthDate),
                 info('E-mail', order!.client.email),
@@ -15018,7 +15319,6 @@ class _OrderDetailsPanel extends StatelessWidget {
                 info('Número obra', order!.workNumber),
                 info('Bairro obra', order!.workNeighborhood),
                 info('Complemento obra', order!.workComplement),
-                info('Número da proposta', order!.commercialProposalNumber),
                 info(
                   'Valor consolidado',
                   order!.value == 0 ? '' : order!.value.toStringAsFixed(2),
@@ -15052,6 +15352,41 @@ class _OrderDetailsPanel extends StatelessWidget {
         },
       ),
     );
+    final heatedFloorSection = !_hasConsolidatedHeatedFloor(order!)
+        ? null
+        : _CollapsibleDetailSection(
+            title: 'Piso Aquecido',
+            subtitle:
+                'Checklist compartilhado entre todos os setores e colaboradores.',
+            initiallyExpanded: true,
+            child: Column(
+              children: _heatedFloorChecklistItems.entries
+                  .map(
+                    (item) => CheckboxListTile(
+                      contentPadding: EdgeInsets.zero,
+                      controlAffinity: ListTileControlAffinity.leading,
+                      title: Text(
+                        item.value,
+                        style: TextStyle(
+                          fontWeight: FontWeight.w600,
+                          decoration:
+                              order!.heatedFloorChecklist[item.key] == true
+                              ? TextDecoration.lineThrough
+                              : null,
+                        ),
+                      ),
+                      value: order!.heatedFloorChecklist[item.key] == true,
+                      onChanged: onUpdateHeatedFloorChecklistItem == null
+                          ? null
+                          : (checked) => onUpdateHeatedFloorChecklistItem!(
+                              item.key,
+                              checked == true,
+                            ),
+                    ),
+                  )
+                  .toList(growable: false),
+            ),
+          );
     final serviceOrderSection = !isServiceOrder
         ? null
         : _CollapsibleDetailSection(
@@ -15272,7 +15607,8 @@ class _OrderDetailsPanel extends StatelessWidget {
                   order: order!,
                   canEdit: showFlowActions && isEstimatingStage,
                   onEditWorksheet: onAttachMaterials,
-                  showConsolidatedProjects: isEngineeringStage,
+                  showConsolidatedProjects:
+                      isEngineeringStage || isRelationshipStage,
                 ),
                 ...mergedSubProposals.map(
                   (p) => Padding(
@@ -15291,7 +15627,8 @@ class _OrderDetailsPanel extends StatelessWidget {
                           order: p,
                           canEdit: false,
                           onEditWorksheet: null,
-                          showConsolidatedProjects: isEngineeringStage,
+                          showConsolidatedProjects:
+                              isEngineeringStage || isRelationshipStage,
                         ),
                       ],
                     ),
@@ -15489,7 +15826,9 @@ class _OrderDetailsPanel extends StatelessWidget {
                               backgroundImage: _resolveProfileImageProvider(
                                 profile.photoFilePath,
                               ),
-                              onBackgroundImageError: (_, _) {},
+                              onBackgroundImageError: _profileImageErrorHandler(
+                                profile.photoFilePath,
+                              ),
                               child:
                                   profile.photoFilePath == null ||
                                       profile.photoFilePath!.trim().isEmpty
@@ -15544,7 +15883,7 @@ class _OrderDetailsPanel extends StatelessWidget {
     final serviceOrderFlowIndex = isServiceOrder
         ? _serviceOrderFlowStageIndex(order!)
         : -1;
-    final flowSection = showFlowActions
+    final flowSection = showFlowActions || historyStage != null
         ? _CollapsibleDetailSection(
             title: 'Passagem do fluxo',
             subtitle: isServiceOrder
@@ -15641,6 +15980,29 @@ class _OrderDetailsPanel extends StatelessWidget {
             ),
           )
         : null;
+    final sectorHistorySection = historyStage == null
+        ? null
+        : _CollapsibleDetailSection(
+            title: 'Histórico de ${historyStage!.title}',
+            subtitle: 'Consulta somente leitura da passagem por este setor.',
+            initiallyExpanded: true,
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: historyStage!.color.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(
+                  color: historyStage!.color.withValues(alpha: 0.24),
+                ),
+              ),
+              child: Text(
+                order!.history[historyStage!] ??
+                    'Nenhum histórico registrado para este setor.',
+                style: const TextStyle(height: 1.4),
+              ),
+            ),
+          );
 
     final primaryBody = Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -15657,6 +16019,14 @@ class _OrderDetailsPanel extends StatelessWidget {
         ),
         const SizedBox(height: 18),
         customerDataSection,
+        if (heatedFloorSection != null) ...[
+          const SizedBox(height: 12),
+          heatedFloorSection,
+        ],
+        if (sectorHistorySection != null) ...[
+          const SizedBox(height: 12),
+          sectorHistorySection,
+        ],
         if (relationshipSection != null) ...[
           const SizedBox(height: 12),
           relationshipSection,
@@ -15981,7 +16351,8 @@ class _SecondaryProposalPanelContent extends StatelessWidget {
               canEdit: false,
               onEditWorksheet: null,
               showConsolidatedProjects:
-                  order.currentStage == WorkflowStage.engineering,
+                  order.currentStage == WorkflowStage.engineering ||
+                  order.currentStage == WorkflowStage.relationship,
             ),
           ),
         ],
@@ -16842,7 +17213,9 @@ class _OrderCard extends StatelessWidget {
                           backgroundImage: _resolveProfileImageProvider(
                             profile.photoFilePath,
                           ),
-                          onBackgroundImageError: (_, _) {},
+                          onBackgroundImageError: _profileImageErrorHandler(
+                            profile.photoFilePath,
+                          ),
                           child:
                               profile.photoFilePath == null ||
                                   profile.photoFilePath!.trim().isEmpty
@@ -17393,12 +17766,20 @@ class _OrderConversationDialog extends StatefulWidget {
     required this.currentProfile,
     required this.profiles,
     required this.onSendMessage,
+    this.initialMessages,
+    this.title = 'Conversa do cliente',
+    this.inputHint = 'Use @login para mencionar outro colaborador.',
+    this.submitLabel = 'Enviar mensagem',
   });
 
   final WorkflowOrder order;
   final EmployeeWorkspaceProfile currentProfile;
   final List<EmployeeWorkspaceProfile> profiles;
   final Future<bool> Function(String message) onSendMessage;
+  final List<OrderConversationMessage>? initialMessages;
+  final String title;
+  final String inputHint;
+  final String submitLabel;
 
   @override
   State<_OrderConversationDialog> createState() =>
@@ -17415,7 +17796,7 @@ class _OrderConversationDialogState extends State<_OrderConversationDialog> {
   void initState() {
     super.initState();
     _messages = List<OrderConversationMessage>.from(
-      widget.order.conversationMessages,
+      widget.initialMessages ?? widget.order.conversationMessages,
     )..sort((left, right) => left.createdAt.compareTo(right.createdAt));
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _scrollToBottom(jump: true);
@@ -17637,9 +18018,9 @@ class _OrderConversationDialogState extends State<_OrderConversationDialog> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Text(
-                          'Conversa do cliente',
-                          style: TextStyle(
+                        Text(
+                          widget.title,
+                          style: const TextStyle(
                             fontSize: 22,
                             fontWeight: FontWeight.w800,
                           ),
@@ -17712,7 +18093,7 @@ class _OrderConversationDialogState extends State<_OrderConversationDialog> {
                 textInputAction: TextInputAction.newline,
                 decoration: InputDecoration(
                   labelText: 'Mensagem do card',
-                  hintText: 'Use @login para mencionar outro colaborador.',
+                  hintText: widget.inputHint,
                   alignLabelWithHint: true,
                   filled: true,
                   fillColor: isDarkMode
@@ -17795,7 +18176,7 @@ class _OrderConversationDialogState extends State<_OrderConversationDialog> {
                                   )
                                 : const Icon(Icons.send_rounded),
                             label: Text(
-                              _isSending ? 'Enviando...' : 'Enviar mensagem',
+                              _isSending ? 'Salvando...' : widget.submitLabel,
                             ),
                           ),
                         ],
